@@ -34,7 +34,7 @@ def engine(messages, agent, num_agents=1, stop_sequences=None, persona_configs=N
         # Get generation parameters: prefer config, fall back to agent defaults
         temperature = config.get('temperature', getattr(current_agent, 'temperature', 1.0)) if config else getattr(current_agent, 'temperature', 1.0)
         top_p = config.get('top_p', getattr(current_agent, 'top_p', 0.9)) if config else getattr(current_agent, 'top_p', 0.9)
-        max_new_tokens = config.get('max_new_tokens', getattr(current_agent, 'max_new_tokens', 512)) if config else getattr(current_agent, 'max_new_tokens', 512)
+        max_new_tokens = config.get('max_new_tokens', getattr(current_agent, 'max_new_tokens', 2048)) if config else getattr(current_agent, 'max_new_tokens', 512)
 
         # API-like chat agents (Azure OpenAI or local OpenAI-compatible servers like vLLM)
         if getattr(current_agent, 'kind', None) in {'azure_openai', 'openai_compat'}:
@@ -46,6 +46,7 @@ def engine(messages, agent, num_agents=1, stop_sequences=None, persona_configs=N
                 max_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                extra_body={"thinking_token_budget": 1024},
                 #logprobs=True
             )
 

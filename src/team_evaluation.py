@@ -7,14 +7,13 @@ Provides `run_team_evaluation(selected_team, sampled_questions, args)` which:
 - Computes per-agent accuracies and returns a report dict
 """
 from copy import deepcopy
-import re
 from typing import List, Dict
 
 import numpy as np
 
 from model.model_utils import get_agents, engine, get_persona_config
 import concurrent.futures
-from evaluator import get_instruction_suffix, evaluate_gsm8k, evaluate_mcq, base_evaluate_gsm8k, base_evaluate_mcq
+from evaluator import evaluate_question, get_instruction_suffix
 
 
 def _response_text(resp):
@@ -33,41 +32,6 @@ def _response_text(resp):
         return resp
     # Fallback to str()
     return str(resp)
-
-
-def _infer_data_type(sampled_questions) -> str:
-    """Heuristic: decide whether dataset is numeric (gsm8k) or MCQ-like.
-
-    Looks at the first non-empty answer value.
-    """
-    if len(sampled_questions) == 0:
-        return "mcq"
-
-    first = None
-    for item in sampled_questions:
-        a = item.get("answer") if isinstance(item, dict) else item['answer']
-        if a is None:
-            continue
-        first = a
-        break
-
-    if first is None:
-        return "mcq"
-
-    # Numeric string or number -> gsm8k
-    try:
-        float(first)
-        return "gsm8k"
-    except Exception:
-        pass
-
-    # MCQ style '(A)' or single letter
-    s = str(first).strip()
-    if re.match(r"^\(?[A-Za-z]\)?$", s):
-        return "mcq"
-
-    # default to mcq
-    return "mcq"
 
 
 def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Dict:
@@ -97,11 +61,6 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Di
 
     agents, personas = get_agents(args)
 
-    # Decide evaluation type and suffix
-    data_type = _infer_data_type(sampled_questions)
-    args.data = data_type
-    SUFFIX = get_instruction_suffix(args)
-
     # Build per-agent counters
     per_agent_correct = {name: 0 for name in selected_team}
     total = 0
@@ -126,6 +85,9 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Di
         total += 1
         question = sample.get('question') if isinstance(sample, dict) else sample['question']
         answer = sample.get('answer') if isinstance(sample, dict) else sample['answer']
+        data_type = sample.get('dataset') if isinstance(sample, dict) else sample['dataset']
+        args.data = data_type
+        suffix = get_instruction_suffix(args)
         sample_tags = sample.get('tags') if isinstance(sample, dict) else sample['tags']
         if sample_tags is None:
             sample_tags = []
@@ -138,10 +100,10 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Di
         for i, pname in enumerate(selected_team):
             p_data = personas.get(pname)
             if isinstance(p_data, dict):
-                content = f"{p_data.get('prompt','')}\n\n{question + SUFFIX}"
+                content = f"{p_data.get('prompt','')}\n\n{question + suffix}"
                 persona_configs.append(get_persona_config(pname, personas))
             else:
-                content = f"{p_data}\n\n{question + SUFFIX}" if p_data else f"{question + SUFFIX}"
+                content = f"{p_data}\n\n{question + suffix}" if p_data else f"{question + suffix}"
                 persona_configs.append(None)
 
             messages.append({"role": "user", "content": content})
@@ -174,17 +136,16 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Di
         # Preserve original agent order when zipping names -> responses
         agent_responses = dict(zip(agent_names, response_texts))
 
-        print("\n" + "=" * 60)
-        print("AGENT RESPONSES")
-        print("=" * 60)
-        print(f"{agent_responses}\n")
-        print("=" * 60)
+        # print("\n" + "=" * 60)
+        # print("AGENT RESPONSES")
+        # print("=" * 60)
+        # print(f"{agent_responses}\n")
+        # print("=" * 60)
 
         # Use repository evaluator voting logic to get team decision and per-agent final answers
-        if data_type == 'gsm8k':
-            final_answers, debate_answer, is_corr = evaluate_gsm8k(agent_responses, answer)
-        else:
-            final_answers, debate_answer, is_corr = evaluate_mcq(agent_responses, answer)
+        final_answers, debate_answer, is_corr = evaluate_question(
+            agent_responses, answer, data_type
+        )
 
         # final_answers is a list in the same order as agent_responses insertion
         for name, pred in zip(agent_names, final_answers):

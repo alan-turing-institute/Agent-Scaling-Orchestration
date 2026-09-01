@@ -159,7 +159,7 @@ if __name__ == "__main__":
             evaluations.append({
                 "chosen_tag": result.get("chosen_tag"),
                 "batch_size": result.get("batch_size"),
-                "tag_profile": result.get("tag_profile"),
+                "tag_profile": result.get("tag_frequencies"),
                 "selected_team": selected_team,
                 "report": report,
             })

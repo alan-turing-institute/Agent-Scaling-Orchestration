@@ -11,7 +11,8 @@ ROUNDS=3
 DATA_DIR="./data"
 
 # HET_AGENT_MODELS="llama3.1-8b,qwen2.5-7b,mistral-7b"
-HET_AGENT_MODELS="llama3.1-8b,qwen2.5-7b,mistral-7b,qwen3-8b"
+#HET_AGENT_MODELS="llama3.1-8b,qwen2.5-7b,mistral-7b,qwen3-8b"
+HET_AGENT_MODELS="claude-sonnet-4-6,gpt-4.1,o3-mini,DeepSeek-V3.2"
 
 SEED=42
 
@@ -30,10 +31,10 @@ AGENT_NUMS=(2 4 8 12 16)
 SOLVERS=("debate" "vote")
 
 # Available physical GPU IDs
-GPU_LIST=(0 1 2 3 4 5)
-GPU_COUNT=${#GPU_LIST[@]}
-MAX_JOBS_PER_GPU=2
-MAX_PARALLEL_JOBS=$((GPU_COUNT * MAX_JOBS_PER_GPU))
+#GPU_LIST=(0 1 2 3 4 5)
+#GPU_COUNT=${#GPU_LIST[@]}
+#MAX_JOBS_PER_GPU=2
+#MAX_PARALLEL_JOBS=$((GPU_COUNT * MAX_JOBS_PER_GPU))
 
 # vLLM configuration
 export USE_VLLM=1
@@ -46,16 +47,16 @@ echo "Exp1: Marginal gain analysis (heterogeneous only)"
 echo "Dataset: ${DATA}"
 echo "Output directory: ${OUT_DIR}"
 echo "Log directory: ${LOG_DIR}"
-echo "Max parallel jobs: ${MAX_PARALLEL_JOBS}"
+#echo "Max parallel jobs: ${MAX_PARALLEL_JOBS}"
 echo "Start time: $(date)"
-echo "GPU_LIST: ${GPU_LIST[*]}"
+#echo "GPU_LIST: ${GPU_LIST[*]}"
 echo "=========================================="
 
 run_experiment() {
     local SOLVER=$1
     local NUM_AGENTS=$2
-    local GPU_ID=$3                # Logical GPU index: 0..GPU_COUNT-1
-    local PHYS_GPU_ID=${GPU_LIST[$GPU_ID]}  # Map to physical GPU
+    #local GPU_ID=$3                # Logical GPU index: 0..GPU_COUNT-1
+    #local PHYS_GPU_ID=${GPU_LIST[$GPU_ID]}  # Map to physical GPU
 
     local START_TIME
     START_TIME=$(date +%s)

@@ -90,33 +90,40 @@ def save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path="out
         response = orchestrator.client.chat.completions.create(
             model=orchestrator.model_name,
             messages=messages,
-            max_tokens=4096,
+            max_tokens=8192,
+            extra_body={"thinking_token_budget": 2048},
             temperature=0.5,
         )
 
+        print(f"\n--- SUMMARISER RESPONSE ---\n{response}\n")
+
         md_content = response.choices[0].message.content
-    except Exception:
+    except Exception as e:
         # If LLM call fails, fall back to appending a simple programmatic section
-        fallback = []
-        fallback.append("# Agent performance summary (auto-generated fallback)")
-        if existing_md:
-            fallback.append(existing_md)
-        fallback.append("\n## Recent evaluation additions\n")
-        fallback.append("```json\n" + json.dumps(summary_items, indent=2, default=str) + "\n```")
-        md_content = "\n\n".join(fallback)
+        print(f"Summariser call failed: {e}")
+        # fallback = []
+        # fallback.append("# Agent performance summary (auto-generated fallback)")
+        # if existing_md:
+        #     fallback.append(existing_md)
+        # fallback.append("\n## Recent evaluation additions\n")
+        # fallback.append("```json\n" + json.dumps(summary_items, indent=2, default=str) + "\n```")
+        # md_content = "\n\n".join(fallback)
 
     if not isinstance(md_content, str):
         md_content = str(md_content)
 
     # Atomic write: write to a temp file then replace
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".md", dir=str(out_path.parent))
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-            fh.write(md_content)
-        os.replace(tmp_path, str(out_path))
-    except Exception:
-        # Best-effort fallback write
-        with out_path.open("w", encoding="utf-8") as fh:
-            fh.write(md_content)
+    if md_content is None:
+        print(f"Failed to generate markdown content. Writing fallback content to {out_path}")
+    else:
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".md", dir=str(out_path.parent))
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                fh.write(md_content)
+            os.replace(tmp_path, str(out_path))
+        except Exception:
+            # Best-effort fallback write
+            with out_path.open("w", encoding="utf-8") as fh:
+                fh.write(md_content)
 
-    print(f"Saved agent performance summary to {out_path}")
+        print(f"Saved agent performance summary to {out_path}")

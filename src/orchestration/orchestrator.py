@@ -72,6 +72,7 @@ Output ONLY a JSON object with this exact structure (no markdown, no extra text)
             max_tokens=self.max_tokens,
             temperature=0.1,
             top_p=0.5,
+            extra_body={"thinking_token_budget": 2048},
         )
 
         return self._parse_team_response(response)
