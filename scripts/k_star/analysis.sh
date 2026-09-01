@@ -6,11 +6,12 @@ GPUS=(0 1 2 3 4 5)
 BATCH_SIZE=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ANALYSIS_PY="${SCRIPT_DIR}/analysis.py"
-BASE_DIR="${SCRIPT_DIR}"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+ANALYSIS_PY="${REPO_ROOT}/src/analysis/k_star/analysis.py"
+BASE_DIR="${REPO_ROOT}/results"
 CACHE_FOLDER="${HF_CACHE_DIR:-./.cache/huggingface}"
 
-BASE_OUT="${SCRIPT_DIR}/ALL_ANALYSIS_OUTPUT"
+BASE_OUT="${REPO_ROOT}/results/k_star"
 
 # Bypass proxy
 # unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY 2>/dev/null || true

@@ -3,9 +3,10 @@ set -eo pipefail
 
 # ===== Configuration =====
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ANALYSIS_PY="${SCRIPT_DIR}/analysis_improved.py"
-BASE_DIR="${SCRIPT_DIR}"
-BASE_OUT="${SCRIPT_DIR}/ALL_ANALYSIS_OUTPUT"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+ANALYSIS_PY="${REPO_ROOT}/src/analysis/k_star/analysis_improved.py"
+BASE_DIR="${REPO_ROOT}/results"
+BASE_OUT="${REPO_ROOT}/results/k_star"
 
 # Directory list
 DIRS=(

@@ -2,39 +2,133 @@
 
 This repository provides the codebase for studying **how scaling the number of heterogeneous LLM agents with diverse reasoning personas improves collective performance** through debate and voting mechanisms. We introduce the **K\* metric** (effective diversity) based on embedding eigenvalue entropy to quantify semantic diversity among agents, and show that persona-guided multi-agent collaboration yields consistent gains across reasoning benchmarks.
 
+## What is in this repository
+
+Two pipelines share the same agent, persona and evaluation code:
+
+1. **Debate and voting** (`src/main.py`, `scripts/`, `src/analysis/k_star/`) — the
+   published pipeline. N persona-guided agents answer a benchmark question,
+   optionally debate for R rounds, and a majority vote decides. The K\* analysis
+   then measures the semantic diversity of the recorded responses.
+2. **Orchestration** (`src/train_orchestrator.py`, `src/orchestration/`) — an LLM
+   orchestrator picks a team of agents per batch of questions from their topic
+   tags, the team is scored, and the result is written back as a natural-language
+   scoreboard the orchestrator reads before its next choice.
+
+Working notes on the architecture, and the traps worth knowing before editing,
+are in [CLAUDE.md](CLAUDE.md).
+
+## Setup
+
+```bash
+python3 -m venv env && source env/bin/activate
+pip install -r requirements.txt
+```
+
+Every command below is run **from the repository root**. Scripts under `src/`
+import as though `src/` were the root (`from model.model_utils import ...`), so
+`python src/main.py` works while `python -m src.main` does not.
+
+Credentials are read from the environment: `AZURE_OPENAI_ENDPOINT`,
+`AZURE_OPENAI_API_KEY_ENV` (this holds the key itself), `OPENAI_API_KEY`,
+`OPENAI_BASE_URL`, `VLLM_BASE_URLS`, `VLLM_API_KEY`.
+
+## The orchestration pipeline
+
+Three stages, run in order. Stages 1 and 2 produce the tagged dataset; stage 3 is
+the loop under active development.
+
+**1. Tag the questions.** Labels each question with short topic tags.
+
+```bash
+python src/tag_questions.py \
+    --data gsm8k arc hellaswag truthfulqa winogrande pro_medicine formal_logic \
+    --split test --data_size 100 \
+    --use_vllm --vllm_base_url http://127.0.0.1:8001/v1
+```
+
+Writes `out/question_tags/<datasets>_<split>_<size>_tags.jsonl`.
+
+**2. Build the tagged dataset.** Unifies tag synonyms, drops tags appearing fewer
+than five times, and saves a HuggingFace dataset.
+
+```bash
+python src/tag_dataset.py
+```
+
+Writes `data/tagged_dataset/` — 699 questions across seven benchmarks, and the
+only stage output that is version-controlled.
+
+**3. Run the orchestrator loop.**
+
+```bash
+python src/train_orchestrator.py \
+    --dataset_path data/tagged_dataset \
+    --model_name <served-model> \
+    --api_base_url http://localhost:8001/v1 \
+    --solver vote
+```
+
+Each iteration samples a tag, asks the orchestrator to pick four agents for the
+questions carrying it, scores that team, and rewrites
+`out/agent_performance_by_tag.md` — the scoreboard that is fed back on the next
+iteration as the loop's only memory.
+
+> **Status.** Stage 3 is not yet ready for experiments. Known issues include the
+> agent endpoint being hard-coded rather than taken from `--api_base_url`,
+> `--solver debate` being accepted but ignored, no seeding, and no
+> machine-readable run record. Treat any numbers it prints as provisional.
+
 ## Project Structure
+
+Three rules keep the tree predictable:
+
+- **All Python lives under `src/`.** Nothing executable sits at the repository root.
+- **All shell runners live under `scripts/`.** They hold experiment configuration
+  (dataset, model list, GPU pool, vLLM ports) as variables at the top of the file.
+- **All generated output lives under `results/`** (plus the legacy `out/` and
+  `out-baseline/` directories) and is never committed.
 
 ```
 .
-├── src/                          # Core source code
-│   ├── main.py                   # Main orchestration: debate/voting loop
-│   ├── evaluator.py              # Answer extraction & scoring (math, MCQ)
-│   ├── data/                     # Dataset loaders
-│   │   ├── data_utils.py         # Central data router
-│   │   ├── gsm8k.py              # Grade School Math 8K
-│   │   ├── arc.py                # ARC-Challenge / ARC-Easy
-│   │   ├── hellaswag.py          # HellaSwag
-│   │   ├── truthfulqa.py         # TruthfulQA
-│   │   ├── winogrande.py         # WinoGrande
-│   │   ├── mmlu_pro_medicine.py  # MMLU-Pro Medicine
-│   │   └── mmlu_formal_logic.py  # MMLU Formal Logic
-│   └── model/                    # Model wrappers
-│       ├── model_utils.py        # Agent factory, persona definitions, unified engine
-│       ├── llama.py              # LLaMA (v2/v3) wrapper via HuggingFace
-│       ├── qwen.py               # Qwen wrapper via HuggingFace
-│       ├── openai_compat.py      # OpenAI-compatible API client (vLLM, etc.)
-│       └── azure_openai.py       # Azure OpenAI wrapper
-├── scripts/                      # Experiment runner scripts
-│   ├── add*.sh                   # Heterogeneous multi-agent experiments
-│   ├── add*_noperspn.sh          # Same experiments without personas
-│   └── ablation*.sh              # Ablation studies (persona impact, agent count)
-├── K_star_analysis/              # K* diversity metric computation
-│   ├── analysis.py               # Core N* (effective diversity) from embeddings
-│   ├── analysis_improved.py      # Extended metrics: N*_conditioned, N*_weighted, Delta-N*
-│   ├── exp2_embedding_robustness.py  # Cross-embedding-model robustness validation
-│   ├── analysis.sh               # Runner for analysis.py
-│   └── analysis_improved.sh      # Runner for analysis_improved.py
-└── .gitignore
+├── src/                                # All Python
+│   ├── main.py                         # Debate / voting loop over N persona agents
+│   ├── evaluator.py                    # Answer extraction & scoring (math, MCQ)
+│   ├── tag_questions.py                # Stage 1 of the orchestrator pipeline
+│   ├── tag_dataset.py                  # Stage 2: tag JSONL -> HF dataset on disk
+│   ├── train_orchestrator.py           # Stage 3: the team-selection loop
+│   ├── team_evaluation.py              # Runs a selected team, scores per agent & per tag
+│   ├── summariser.py                   # Rewrites the per-tag performance scoreboard
+│   ├── orchestration/
+│   │   └── orchestrator.py             # OrchestratorAgent, tag sampling, team selection
+│   ├── data/                           # Dataset loaders, routed by data_utils.load_data
+│   │   ├── data_utils.py               # Central data router
+│   │   ├── gsm8k.py  arc.py  hellaswag.py  truthfulqa.py  winogrande.py
+│   │   └── mmlu_pro_medicine.py  mmlu_formal_logic.py
+│   ├── model/                          # Backend dispatch and model wrappers
+│   │   ├── model_utils.py              # Agent factory, persona definitions, unified engine
+│   │   ├── llama.py  qwen.py           # Local HuggingFace wrappers
+│   │   ├── openai_compat.py            # OpenAI-compatible client (vLLM, etc.)
+│   │   └── azure_openai.py             # Azure OpenAI wrapper
+│   └── analysis/                       # Post-hoc analysis, not part of a run
+│       ├── k_star/
+│       │   ├── analysis.py             # Core N* (effective diversity) from embeddings
+│       │   ├── analysis_improved.py    # N*_conditioned, N*_weighted, Delta-N*
+│       │   └── exp2_embedding_robustness.py
+│       ├── overlap_viz.py              # Agent-selection overlap plots and CSVs
+│       ├── agent_selection_sweep.py    # Sweeps main.py over pre-chosen agent sets
+│       └── orchestrator_pool_sweep.py  # Standalone agent-pool selection probe
+├── scripts/                            # All shell runners
+│   ├── add*.sh                         # Heterogeneous multi-agent experiments
+│   ├── add*_noperspn.sh                # Same experiments without personas
+│   ├── ablation*.sh                    # Ablations (persona impact, agent count)
+│   └── k_star/*.sh                     # Batch runners for the K* analysis
+├── configs/
+│   └── personas.json                   # Canonical persona set per task
+├── data/
+│   └── tagged_dataset/                 # Tagged questions, the orchestrator's input
+├── notebooks/                          # Exploratory analysis
+└── results/                            # Generated output (git-ignored)
 ```
 
 ## Installation
@@ -97,7 +191,7 @@ python src/main.py \
 ### 4. Run K\* Analysis
 
 ```bash
-python K_star_analysis/analysis.py \
+python src/analysis/k_star/analysis.py \
     --jsonl_dir out/history/ \
     --mode round_agent_avg \
     --output_dir analysis/results/
