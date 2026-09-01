@@ -136,11 +136,13 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Di
         # Preserve original agent order when zipping names -> responses
         agent_responses = dict(zip(agent_names, response_texts))
 
-        # print("\n" + "=" * 60)
-        # print("AGENT RESPONSES")
-        # print("=" * 60)
-        # print(f"{agent_responses}\n")
-        # print("=" * 60)
+        if getattr(args, 'debug', False):
+            print("\n" + "=" * 60)
+            print("AGENT RESPONSES")
+            print("=" * 60)
+            for name, text in agent_responses.items():
+                print(f"[{name}]\n{text}\n")
+            print("=" * 60)
 
         # Use repository evaluator voting logic to get team decision and per-agent final answers
         final_answers, debate_answer, is_corr = evaluate_question(

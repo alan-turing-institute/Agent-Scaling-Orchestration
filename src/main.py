@@ -7,6 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 from datetime import datetime
 import torch
+from defaults import MAX_NEW_TOKENS, THINKING_TOKEN_BUDGET
 from model.model_utils import get_agents, engine, get_persona_config
 from data.data_utils import load_data
 from evaluator import (
@@ -75,7 +76,9 @@ def get_args():
     parser.add_argument('--vllm_base_urls', type=str, default=os.getenv('VLLM_BASE_URLS', ''))
     parser.add_argument('--vllm_base_url', type=str, default=os.getenv('VLLM_BASE_URL', 'http://127.0.0.1:8000/v1'))
     parser.add_argument('--vllm_api_key', type=str, default=os.getenv('VLLM_API_KEY', 'EMPTY'))
-    parser.add_argument('--max_new_tokens', type=int, default=512)
+    parser.add_argument('--max_new_tokens', type=int, default=MAX_NEW_TOKENS)
+    parser.add_argument('--thinking_token_budget', type=int, default=THINKING_TOKEN_BUDGET,
+                        help='Reasoning budget for API models that accept it')
     parser.add_argument('--temperature', type=float, default=1.0)
     parser.add_argument('--top_p', type=float, default=0.9)
 

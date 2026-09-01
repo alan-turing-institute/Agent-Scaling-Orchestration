@@ -184,8 +184,12 @@ Python goes under `src/` — nothing executable at the repository root. Shell ru
 goes under `results/`; `out/` and `out-baseline/` predate that convention and still hold the
 debate-pipeline results, and `--out_dir` still defaults to `out/`.
 
-`src/analysis/` holds post-hoc scripts that are not part of a run. They resolve their own paths
-from `__file__` rather than the working directory, so they can be invoked from anywhere.
+Experiment entry points sit at the top of `src/`. `src/analysis/` holds only the scripts that
+read results and draw plots. Both resolve their paths from `__file__` rather than the working
+directory, so they can be invoked from anywhere.
+
+Generation defaults live in `src/defaults.py` and are the single source for `max_new_tokens`,
+`temperature`, `top_p` and the reasoning budget — do not reintroduce literals at call sites.
 
 ## Credentials
 

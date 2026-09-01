@@ -7,6 +7,8 @@ import tempfile
 
 from datasets import load_from_disk
 
+from defaults import THINKING_TOKEN_BUDGET
+
 from orchestration.orchestrator import OrchestratorAgent, team_selection
 from team_evaluation import run_team_evaluation
 from summariser import save_evaluation_summary_with_llm
@@ -49,6 +51,8 @@ def parse_args():
     parser.add_argument("--num_samples", type=int, default=5, help="Number of questions to sample for team selection")
     parser.add_argument("--solver", choices=["vote", "debate"], default="vote", help="How to aggregate the selected team answers")
     parser.add_argument("--output_path", default="out/orchestrator_results.json", help="Where to save the evaluation report")
+    parser.add_argument("--thinking_token_budget", type=int, default=THINKING_TOKEN_BUDGET,
+                        help="Reasoning budget for API models that accept it")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode for verbose output")
     parser.add_argument("--md_file", default="out/agent_performance_by_tag.md", help="Path to the markdown summary file")
     return parser.parse_args()
@@ -109,6 +113,7 @@ if __name__ == "__main__":
         AGENT_POOL,
         api_key=args.api_key,
         base_url=args.api_base_url,
+        thinking_token_budget=args.thinking_token_budget,
         debug=args.debug,
     )
 

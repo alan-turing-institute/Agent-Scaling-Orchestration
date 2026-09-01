@@ -83,7 +83,8 @@ iteration as the loop's only memory.
 
 Three rules keep the tree predictable:
 
-- **All Python lives under `src/`.** Nothing executable sits at the repository root.
+- **All Python lives under `src/`.** Experiment entry points sit at the top of `src/`;
+  `src/analysis/` holds the scripts that read results and draw plots.
 - **All shell runners live under `scripts/`.** They hold experiment configuration
   (dataset, model list, GPU pool, vLLM ports) as variables at the top of the file.
 - **All generated output lives under `results/`** (plus the legacy `out/` and
@@ -97,6 +98,9 @@ Three rules keep the tree predictable:
 │   ├── tag_questions.py                # Stage 1 of the orchestrator pipeline
 │   ├── tag_dataset.py                  # Stage 2: tag JSONL -> HF dataset on disk
 │   ├── train_orchestrator.py           # Stage 3: the team-selection loop
+│   ├── agent_selection_sweep.py        # Sweeps main.py over pre-chosen agent sets
+│   ├── orchestrator_pool_sweep.py      # Agent-pool selection probe
+│   ├── defaults.py                     # Shared generation defaults
 │   ├── team_evaluation.py              # Runs a selected team, scores per agent & per tag
 │   ├── summariser.py                   # Rewrites the per-tag performance scoreboard
 │   ├── orchestration/
@@ -110,14 +114,12 @@ Three rules keep the tree predictable:
 │   │   ├── llama.py  qwen.py           # Local HuggingFace wrappers
 │   │   ├── openai_compat.py            # OpenAI-compatible client (vLLM, etc.)
 │   │   └── azure_openai.py             # Azure OpenAI wrapper
-│   └── analysis/                       # Post-hoc analysis, not part of a run
+│   └── analysis/                       # Reading data and drawing plots
 │       ├── k_star/
 │       │   ├── analysis.py             # Core N* (effective diversity) from embeddings
 │       │   ├── analysis_improved.py    # N*_conditioned, N*_weighted, Delta-N*
 │       │   └── exp2_embedding_robustness.py
-│       ├── overlap_viz.py              # Agent-selection overlap plots and CSVs
-│       ├── agent_selection_sweep.py    # Sweeps main.py over pre-chosen agent sets
-│       └── orchestrator_pool_sweep.py  # Standalone agent-pool selection probe
+│       └── overlap_viz.py              # Agent-selection overlap plots and CSVs
 ├── scripts/                            # All shell runners
 │   ├── add*.sh                         # Heterogeneous multi-agent experiments
 │   ├── add*_noperspn.sh                # Same experiments without personas

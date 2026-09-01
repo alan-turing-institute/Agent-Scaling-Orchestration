@@ -1,5 +1,12 @@
 # model_utils.py - enhanced version
 
+from defaults import (
+    MAX_NEW_TOKENS,
+    TEMPERATURE,
+    THINKING_TOKEN_BUDGET,
+    TOP_P,
+)
+
 model_dirs = {
     'llama3.1-8b': 'meta-llama/Meta-Llama-3.1-8B-Instruct',
     'qwen2.5-7b': 'Qwen/Qwen2.5-7B-Instruct',
@@ -32,9 +39,14 @@ def engine(messages, agent, num_agents=1, stop_sequences=None, persona_configs=N
     def _run_one(current_agent, msg, config=None):
         """Run one agent on one message with optional per-agent config."""
         # Get generation parameters: prefer config, fall back to agent defaults
-        temperature = config.get('temperature', getattr(current_agent, 'temperature', 1.0)) if config else getattr(current_agent, 'temperature', 1.0)
-        top_p = config.get('top_p', getattr(current_agent, 'top_p', 0.9)) if config else getattr(current_agent, 'top_p', 0.9)
-        max_new_tokens = config.get('max_new_tokens', getattr(current_agent, 'max_new_tokens', 2048)) if config else getattr(current_agent, 'max_new_tokens', 512)
+        config = config or {}
+        temperature = config.get('temperature', getattr(current_agent, 'temperature', TEMPERATURE))
+        top_p = config.get('top_p', getattr(current_agent, 'top_p', TOP_P))
+        max_new_tokens = config.get('max_new_tokens', getattr(current_agent, 'max_new_tokens', MAX_NEW_TOKENS))
+        thinking_token_budget = config.get(
+            'thinking_token_budget',
+            getattr(current_agent, 'thinking_token_budget', THINKING_TOKEN_BUDGET),
+        )
 
         # API-like chat agents (Azure OpenAI or local OpenAI-compatible servers like vLLM)
         if getattr(current_agent, 'kind', None) in {'azure_openai', 'openai_compat'}:
@@ -46,7 +58,7 @@ def engine(messages, agent, num_agents=1, stop_sequences=None, persona_configs=N
                 max_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
-                extra_body={"thinking_token_budget": 1024},
+                extra_body={"thinking_token_budget": thinking_token_budget},
                 #logprobs=True
             )
 
@@ -109,12 +121,12 @@ def engine(messages, agent, num_agents=1, stop_sequences=None, persona_configs=N
         input_ids,
         attention_mask=attention_mask,
         pad_token_id=agent.tokenizer.eos_token_id,
-        max_new_tokens=getattr(agent, 'max_new_tokens', 512),
+        max_new_tokens=getattr(agent, 'max_new_tokens', MAX_NEW_TOKENS),
         return_dict_in_generate=True,
         output_scores=True,
         do_sample=True,
-        temperature=getattr(agent, 'temperature', 1.0),
-        top_p=getattr(agent, 'top_p', 0.9),
+        temperature=getattr(agent, 'temperature', TEMPERATURE),
+        top_p=getattr(agent, 'top_p', TOP_P),
         num_return_sequences=1,
         return_legacy_cache=True
     )
@@ -205,9 +217,10 @@ def get_agents(args, peft_path=None):
     if not getattr(args, 'agent_models', ''):
         print(vllm_urls)
         agent = _make_agent(args.model, vllm_base_url=vllm_urls[0])
-        agent.max_new_tokens = getattr(args, 'max_new_tokens', 512)
-        agent.temperature = getattr(args, 'temperature', 0)
-        agent.top_p = getattr(args, 'top_p', 0.9)
+        agent.max_new_tokens = getattr(args, 'max_new_tokens', MAX_NEW_TOKENS)
+        agent.temperature = getattr(args, 'temperature', TEMPERATURE)
+        agent.top_p = getattr(args, 'top_p', TOP_P)
+        agent.thinking_token_budget = getattr(args, 'thinking_token_budget', THINKING_TOKEN_BUDGET)
 
         if hasattr(agent, 'tokenizer') and hasattr(agent, 'huggingface_model'):
             if agent.tokenizer.pad_token is None:
@@ -219,9 +232,10 @@ def get_agents(args, peft_path=None):
     agents = []
     for idx, mk in enumerate(agent_model_keys):
         a = _make_agent(mk, vllm_base_url=vllm_urls[idx % len(vllm_urls)])
-        a.max_new_tokens = getattr(args, 'max_new_tokens', 512)
-        a.temperature = getattr(args, 'temperature', 0)
-        a.top_p = getattr(args, 'top_p', 0.9)
+        a.max_new_tokens = getattr(args, 'max_new_tokens', MAX_NEW_TOKENS)
+        a.temperature = getattr(args, 'temperature', TEMPERATURE)
+        a.top_p = getattr(args, 'top_p', TOP_P)
+        a.thinking_token_budget = getattr(args, 'thinking_token_budget', THINKING_TOKEN_BUDGET)
         if hasattr(a, 'tokenizer') and hasattr(a, 'huggingface_model'):
             if a.tokenizer.pad_token is None:
                 a.tokenizer.add_special_tokens({'pad_token': '[PAD]'})
@@ -243,7 +257,7 @@ def _build_chosen_personas(args):
     Build list of personas based on what was chosen by the orchestrator
     """
     if not (getattr(args, 'chosen_agents', False)):
-        return {"None": {"prompt": "", "temperature": 0, "top_p": 0.9, "style": "default"}}
+        return {"None": {"prompt": "", "temperature": 0, "top_p": TOP_P, "style": "default"}}
 
     all_personas = {
         "Conservative_Verifier": {
@@ -795,7 +809,7 @@ def _build_enhanced_personas(args):
     Enhanced Personas: includes prompt, temperature, top_p, and reasoning style.
     """
     if not (getattr(args, 'multi_persona', False) or getattr(args, 'baseline_a', False) or getattr(args, 'baseline_b', False)):
-        return {"None": {"prompt": "", "temperature": 0, "top_p": 0.9, "style": "default"}}
+        return {"None": {"prompt": "", "temperature": 0, "top_p": TOP_P, "style": "default"}}
 
     # ============================================================
     # Enhanced Personas for math/arithmetic tasks
@@ -1452,7 +1466,7 @@ def get_persona_config(persona_name: str, personas: dict) -> dict:
         p = personas[persona_name]
         return {
             "temperature": p.get("temperature", 0),
-            "top_p": p.get("top_p", 0.9),
-            "max_new_tokens": p.get("max_new_tokens", 512)
+            "top_p": p.get("top_p", TOP_P),
+            "max_new_tokens": p.get("max_new_tokens", MAX_NEW_TOKENS)
         }
-    return {"temperature": 1.0, "top_p": 0.9, "max_new_tokens": 512}
+    return {"temperature": TEMPERATURE, "top_p": TOP_P, "max_new_tokens": MAX_NEW_TOKENS}

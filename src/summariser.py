@@ -3,6 +3,13 @@ import os
 import tempfile
 from pathlib import Path
 
+from defaults import (
+    SUMMARISER_MAX_ATTEMPTS,
+    SUMMARISER_MAX_TOKENS,
+    SUMMARISER_TEMPERATURE,
+    THINKING_TOKEN_BUDGET,
+)
+
 
 
 def summariser_prompt(existing_md, summary_items):
@@ -81,49 +88,43 @@ def save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path="out
             existing_md = None
     messages = summariser_prompt(existing_md, summary_items)
 
-    print(f"\n--- SUMMARISER MESSAGES ---\n")
-    for msg in messages:
-        print(f"{msg['role']}: {msg['content']}")
-
     md_content = None
-    try:
-        response = orchestrator.client.chat.completions.create(
-            model=orchestrator.model_name,
-            messages=messages,
-            max_tokens=8192,
-            extra_body={"thinking_token_budget": 2048},
-            temperature=0.5,
+    last_error = None
+    for attempt in range(1, SUMMARISER_MAX_ATTEMPTS + 1):
+        try:
+            response = orchestrator.client.chat.completions.create(
+                model=orchestrator.model_name,
+                messages=messages,
+                max_tokens=SUMMARISER_MAX_TOKENS,
+                extra_body={"thinking_token_budget": THINKING_TOKEN_BUDGET},
+                temperature=SUMMARISER_TEMPERATURE,
+            )
+            content = response.choices[0].message.content
+            if isinstance(content, str) and content.strip():
+                md_content = content
+                break
+            last_error = "empty response"
+        except Exception as e:
+            last_error = e
+        print(
+            f"Summariser attempt {attempt}/{SUMMARISER_MAX_ATTEMPTS} failed: {last_error}"
         )
 
-        print(f"\n--- SUMMARISER RESPONSE ---\n{response}\n")
-
-        md_content = response.choices[0].message.content
-    except Exception as e:
-        # If LLM call fails, fall back to appending a simple programmatic section
-        print(f"Summariser call failed: {e}")
-        # fallback = []
-        # fallback.append("# Agent performance summary (auto-generated fallback)")
-        # if existing_md:
-        #     fallback.append(existing_md)
-        # fallback.append("\n## Recent evaluation additions\n")
-        # fallback.append("```json\n" + json.dumps(summary_items, indent=2, default=str) + "\n```")
-        # md_content = "\n\n".join(fallback)
-
-    if not isinstance(md_content, str):
-        md_content = str(md_content)
-
-    # Atomic write: write to a temp file then replace
+    # The scoreboard is the loop's only memory. Leave the previous version in
+    # place rather than replacing it with a failed generation.
     if md_content is None:
-        print(f"Failed to generate markdown content. Writing fallback content to {out_path}")
-    else:
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".md", dir=str(out_path.parent))
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-                fh.write(md_content)
-            os.replace(tmp_path, str(out_path))
-        except Exception:
-            # Best-effort fallback write
-            with out_path.open("w", encoding="utf-8") as fh:
-                fh.write(md_content)
+        raise RuntimeError(
+            f"Summariser failed after {SUMMARISER_MAX_ATTEMPTS} attempts; "
+            f"{out_path} left unchanged. Last error: {last_error}"
+        )
 
-        print(f"Saved agent performance summary to {out_path}")
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".md", dir=str(out_path.parent))
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            fh.write(md_content)
+        os.replace(tmp_path, str(out_path))
+    except Exception:
+        os.unlink(tmp_path)
+        raise
+
+    print(f"Saved agent performance summary to {out_path}")

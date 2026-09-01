@@ -5,15 +5,8 @@ import json
 from collections import Counter
 from openai import OpenAI
 
-# Read from environment variables
-api_key = os.getenv("AZURE_OPENAI_API_KEY_ENV")
-endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-
-# Create client
-client = OpenAI(
-    api_key=api_key,
-    base_url=endpoint
-)
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SELECTIONS_DIR = os.path.join(REPO_ROOT, "results", "agent-selection")
 
 orchestrator_system_prompt = """You are an expert Multi-Agent System Orchestrator.
 
@@ -561,55 +554,62 @@ responses = {dataset: [] for dataset, _ in tasks.items()}
 # random.shuffle(agent_list)
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--model_name", type=str, default="gpt-4.1")
-parser.add_argument("--num_agents", type=int, default=4)
-parser.add_argument("--agent_detail", choices=["name", "single", "full"])
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_name", type=str, default="gpt-4.1")
+    parser.add_argument("--num_agents", type=int, default=4)
+    parser.add_argument("--agent_detail", choices=["name", "single", "full"])
 
-args = parser.parse_args()
-model_name = args.model_name
-num_agents = args.num_agents
-agent_detail = args.agent_detail
+    args = parser.parse_args()
 
-output_fname = f"{model_name}-agents={num_agents}-{agent_detail}"
+    client = OpenAI(
+        api_key=os.getenv("AZURE_OPENAI_API_KEY_ENV"),
+        base_url=os.environ.get("AZURE_OPENAI_ENDPOINT"),
+    )
 
-for task_name in tasks.keys():
-    for _ in range(10):
-        agents = list(agent_list.keys())
-        random.shuffle(agents)
+    model_name = args.model_name
+    num_agents = args.num_agents
+    agent_detail = args.agent_detail
 
-        if agent_detail == "name":
-            agent_descs = ",".join(f"{agent}" for agent in agents)
-        elif agent_detail == "single":
-            agent_descs = "\n".join(f"- {agent}: {agent_list[agent]['single']}" for agent in agents)
-        else:
-            agent_descs = "\n".join(f"* {agent}: {agent_list[agent]['single']}" + f" {agent_list[agent]['full']}" for agent in agents)
+    output_fname = os.path.join(SELECTIONS_DIR, f"{model_name}-agents={num_agents}-{agent_detail}")
 
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": orchestrator_system_prompt},
-                {"role": "user", "content": orchestrator_user_prompt.format(
-                    task=tasks[task_name],
-                    n_agents=args.num_agents,
-                    agent_list=agent_descs
-                )}
-            ],
-            max_completion_tokens=1024
-        )
+    for task_name in tasks.keys():
+        for _ in range(10):
+            agents = list(agent_list.keys())
+            random.shuffle(agents)
+
+            if agent_detail == "name":
+                agent_descs = ",".join(f"{agent}" for agent in agents)
+            elif agent_detail == "single":
+                agent_descs = "\n".join(f"- {agent}: {agent_list[agent]['single']}" for agent in agents)
+            else:
+                agent_descs = "\n".join(f"* {agent}: {agent_list[agent]['single']}" + f" {agent_list[agent]['full']}" for agent in agents)
+
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": orchestrator_system_prompt},
+                    {"role": "user", "content": orchestrator_user_prompt.format(
+                        task=tasks[task_name],
+                        n_agents=args.num_agents,
+                        agent_list=agent_descs
+                    )}
+                ],
+                max_completion_tokens=1024
+            )
         
-        responses[task_name].append(response.model_dump())
-        print(response.choices[0].message.content)
+            responses[task_name].append(response.model_dump())
+            print(response.choices[0].message.content)
         
-        orchestrator_response = json.loads(response.choices[0].message.content)
+            orchestrator_response = json.loads(response.choices[0].message.content)
         
-        selected_agents = orchestrator_response["selected_agents"]
-        chosen_agents[task_name].append([agent["name"] for agent in selected_agents])
+            selected_agents = orchestrator_response["selected_agents"]
+            chosen_agents[task_name].append([agent["name"] for agent in selected_agents])
 
-with open(f"{output_fname}-chosen-agents.json", "w") as f:
-    json.dump(chosen_agents, f)
+    with open(f"{output_fname}-chosen-agents.json", "w") as f:
+        json.dump(chosen_agents, f)
 
-with open(f"{output_fname}-responses.json", "w") as f:
-    json.dump(responses, f)
+    with open(f"{output_fname}-responses.json", "w") as f:
+        json.dump(responses, f)
 
-print(chosen_agents)
+    print(chosen_agents)
