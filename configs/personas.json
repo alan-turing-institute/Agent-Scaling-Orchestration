@@ -50,7 +50,7 @@
         "Bias_Resistance_Checker",
         "Contrastive_Tester",
         "Coreference_Formalist",
-        "Elimination_Specialist",
+        "Elimination_Based_Solver",
         "Scenario_Simulator"
     ]
 }

@@ -1,3 +1,4 @@
+import argparse
 import json
 import csv
 import os
@@ -625,16 +626,24 @@ def visualize_overlap_distribution(first_dict: Dict,
 # ============================================================================
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Plot how far LLM-selected agent teams overlap with the canonical set")
+    parser.add_argument("--model_name", default="gpt-4.1",
+                        help="Model whose chosen-agents file to read")
+    parser.add_argument("--agent_desc", default="single", choices=["name", "single", "full"],
+                        help="Which agent-description variant of that file")
+    parser.add_argument("--num_agents", type=int, default=4)
+    args = parser.parse_args()
 
     ensure_dirs()
 
-    model_name = "gpt-4.1"
-    agent_desc = "single"
+    model_name = args.model_name
+    agent_desc = args.agent_desc
 
     fname = f"{model_name}_{agent_desc}"
 
     first_dict, canonical_dict = load_dicts(
-        f"{SELECTIONS_DIR}/{model_name}-agents=4-{agent_desc}-chosen-agents.json",
+        f"{SELECTIONS_DIR}/{model_name}-agents={args.num_agents}-{agent_desc}-chosen-agents.json",
         PERSONAS_JSON,
     )
 

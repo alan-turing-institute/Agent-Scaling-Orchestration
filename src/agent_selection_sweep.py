@@ -5,6 +5,8 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
+from defaults import MAX_NEW_TOKENS
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SELECTIONS_DIR = os.path.join(REPO_ROOT, "results", "agent-selection")
 
@@ -17,6 +19,18 @@ def get_args():
     parser.add_argument("--agent_type", type=str, default="default", choices=["chosen", "default"])
 
     parser.add_argument("--choose_type", type=str, choices=["name", "full", "single"], default="name")
+
+    # Passed through to each src/main.py run
+    parser.add_argument("--selection_model", type=str, default="gpt-4.1",
+                        help="Model whose chosen-agents file supplies the teams")
+    parser.add_argument("--agent_models", type=str, default="ministral-3b")
+    parser.add_argument("--num_agents", type=int, default=4)
+    parser.add_argument("--data_size", type=int, default=100)
+    parser.add_argument("--max_new_tokens", type=int, default=MAX_NEW_TOKENS)
+    parser.add_argument("--solver", type=str, default="vote", choices=["vote", "debate"])
+    parser.add_argument("--debate_rounds", type=int, default=0)
+    parser.add_argument("--max_workers", type=int, default=10,
+                        help="Concurrent src/main.py runs")
 
     return parser.parse_args()
 
@@ -47,24 +61,24 @@ if __name__ == "__main__":
 
     # for choose_type in ["name", "full", "single"]:
     for choose_type in ["name"]:
-        with open(f"{SELECTIONS_DIR}/gpt-4.1-agents=4-{choose_type}-chosen-agents.json", "r") as f:
+        selections = (f"{SELECTIONS_DIR}/{args.selection_model}"
+                      f"-agents={args.num_agents}-{choose_type}-chosen-agents.json")
+        with open(selections, "r") as f:
             data = json.load(f)
 
         jobs = []
         for dataset, agent_lists in data.items():
             # if dataset == args.dataset:
             for agents in agent_lists:
-                cmd = ["python", "src/main.py", 
+                cmd = [sys.executable, "src/main.py",
                        "--data", dataset,
-                       "--max_new_tokens", "1024", 
-                       "--num_agents", "4", 
-                       "--data_size", "100",
-                       "--agent_models", "ministral-3b",
-                       # "--chosen_agents",
-                       # "--agents", ",".join(agents),
-                       "--solver", "vote",
-                       "--debate_rounds", "0",
-                       "--multi_persona"
+                       "--max_new_tokens", str(args.max_new_tokens),
+                       "--num_agents", str(args.num_agents),
+                       "--data_size", str(args.data_size),
+                       "--agent_models", args.agent_models,
+                       "--solver", args.solver,
+                       "--debate_rounds", str(args.debate_rounds),
+                       "--multi_persona",
                       ]
                 if args.agent_type == "chosen":
                     cmd.append("--comment")
@@ -79,7 +93,7 @@ if __name__ == "__main__":
     
         print(f"Queued {len(jobs)} jobs.")
         # print(jobs)
-        with ThreadPoolExecutor(max_workers=10) as ex:
+        with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
             results = list(ex.map(run_cmd, jobs))
 
         print("Done")

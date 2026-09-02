@@ -101,8 +101,10 @@ Two mutually exclusive persona builders, both returning `{name: {prompt, tempera
 
 - `_build_enhanced_personas(args)` — the experiment path. Persona sets are **branched on
   `args.data`** (gsm8k / pro_medicine / formal_logic / truthfulqa / arc / winogrande /
-  humaneval+mbpp / piqa). A new dataset needs a new branch or agents silently fall through
-  with no persona.
+  humaneval+mbpp). A dataset with no branch falls through to a generic five-persona set.
+  The per-dataset name lists are mirrored in `configs/personas.json`, which
+  `src/analysis/overlap_viz.py` reads as the canonical set — the two agree exactly, so keep
+  them in step when adding a persona.
 - `_build_chosen_personas(args)` — the orchestrator path. Holds one flat `all_personas` dict
   and returns only the names in `args.chosen_personas`; an unknown name raises `KeyError`.
 
@@ -112,8 +114,9 @@ and `_build_enhanced_personas` appends NVIDIA persona blocks under
 missing, while `main.py`'s argparse defaults them to *False*. Any hand-built `args`
 namespace (as in `team_evaluation.run_team_evaluation`) must set both explicitly.
 
-Note there are two `elif args.data in ['truthfulqa']` branches in `_build_enhanced_personas`;
-the second is unreachable.
+`Elimination_Specialist` (ARC, scientific option elimination) and `Elimination_Based_Solver`
+(WinoGrande, pronoun resolution) were the same name until recently. Do not merge them — they
+are different personas, and the names are recorded in every output file.
 
 ### Debate loop (`src/main.py`)
 
@@ -188,8 +191,10 @@ Experiment entry points sit at the top of `src/`. `src/analysis/` holds only the
 read results and draw plots. Both resolve their paths from `__file__` rather than the working
 directory, so they can be invoked from anywhere.
 
-Generation defaults live in `src/defaults.py` and are the single source for `max_new_tokens`,
-`temperature`, `top_p` and the reasoning budget — do not reintroduce literals at call sites.
+`src/defaults.py` exists to supply argparse defaults, nothing else. Read the value from
+`args` (or from a function parameter) at the point of use; importing a constant and using it
+inline means the flag silently does nothing. `get_agents` puts the agent-facing ones on the
+agent object, and `engine` resolves them persona config -> agent attribute -> default.
 
 ## Credentials
 

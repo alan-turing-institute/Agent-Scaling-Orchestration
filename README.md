@@ -36,7 +36,8 @@ Credentials are read from the environment: `AZURE_OPENAI_ENDPOINT`,
 ## The orchestration pipeline
 
 Three stages, run in order. Stages 1 and 2 produce the tagged dataset; stage 3 is
-the loop under active development.
+the loop under active development. Full flags for each are in
+[Runnable scripts](#runnable-scripts).
 
 **1. Tag the questions.** Labels each question with short topic tags.
 
@@ -78,6 +79,298 @@ iteration as the loop's only memory.
 > agent endpoint being hard-coded rather than taken from `--api_base_url`,
 > `--solver debate` being accepted but ignored, no seeding, and no
 > machine-readable run record. Treat any numbers it prints as provisional.
+
+## Runnable scripts
+
+Every Python entry point is run from the repository root and takes `--help`.
+Generation defaults (`--max_new_tokens`, `--temperature`, `--top_p`,
+`--thinking_token_budget`) come from `src/defaults.py`, which exists to supply
+argparse defaults — pass the flag to change behaviour.
+
+### `src/main.py` — debate and voting runner
+
+Runs N persona-guided agents over a benchmark, optionally debates for R rounds,
+and aggregates by majority vote. Writes per-question histories to
+`{out_dir}/history/{name}.jsonl` and an accuracy summary to `{out_dir}/{name}.csv`.
+
+```bash
+python src/main.py --data gsm8k --num_agents 4 --solver debate --debate_rounds 3 \
+    --multi_persona --agent_models "gpt-4.1,o3-mini,DeepSeek-V3.2,claude-sonnet-4-6" \
+    --data_size 100 --out_dir ./out --verbose
+```
+
+**Data**
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--data` | *(required)* | `gsm8k`, `arc`, `hellaswag`, `truthfulqa`, `winogrande`, `pro_medicine`, `formal_logic` |
+| `--data_size` | `0` | Number of questions; `0` means all |
+| `--split` | `train` | Dataset split |
+| `--data_dir` | `./data/` | Where benchmark caches live |
+| `--out_dir` | `out/` | Where results are written |
+| `--seed` | `42` | RNG seed |
+| `--comment` | `""` | Free-text label recorded in the summary row |
+
+**Agents and personas**
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--num_agents` | `5` | Team size |
+| `--multi_persona` | off | Give each agent a distinct persona (the heterogeneous condition) |
+| `--persona_prompt` | off | Append the NVIDIA persona blocks. Only GSM8K personas define them |
+| `--baseline_a` | off | Length-matched neutral padding instead of personas |
+| `--baseline_b` | off | One shared persona for all agents |
+| `--chosen_agents` | off | Use an explicit persona list rather than the per-dataset set |
+| `--chosen_personas` | `none` | Comma-separated persona names, used with `--chosen_agents` |
+
+`--multi_persona` is mutually exclusive with both baselines, and the two
+baselines are mutually exclusive with each other.
+
+**Models and backends**
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--model` | `llama3.1` | Single model for a homogeneous run |
+| `--agent_models` | `""` | Comma-separated per-agent models for a heterogeneous run |
+| `--use_vllm` | off | Route through vLLM |
+| `--vllm_base_urls` | `$VLLM_BASE_URLS` | Comma-separated; agent *i* uses URL *i*, so order must match `--agent_models` |
+| `--vllm_base_url` | `$VLLM_BASE_URL` | Single-server fallback |
+| `--azure_endpoint` / `--azure_api_key_env` / `--azure_api_version` | env | Azure OpenAI |
+| `--openai_api_key` / `--openai_base_url` | env | OpenAI-compatible endpoints |
+| `--load_in_4bit` / `--load_in_8bit` | off | bitsandbytes quantisation, local HuggingFace models only |
+
+**Generation**
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--max_new_tokens` | `512` | Response length cap |
+| `--temperature` | `1.0` | Overridden per agent by persona config |
+| `--top_p` | `0.9` | Overridden per agent by persona config |
+| `--thinking_token_budget` | `1024` | Reasoning budget; sent as `extra_body`, so endpoints that do not accept it will reject the request |
+
+**Solver and topology**
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--solver` | `vote` | `vote` or `debate` |
+| `--debate_rounds` | `5` | Refinement rounds after round 0 |
+| `--sparse` | off | Each agent sees only its two neighbours |
+| `--centralized` | off | Agent 0 is the hub, and only its answer is scored |
+| `--bae` | off | Looser answer parsing, no braces required |
+| `--cot` | off | Append a chain-of-thought instruction |
+| `--verbose` | off | Print per-agent assignments and sampling configs |
+
+### `src/tag_questions.py` — orchestration stage 1
+
+Labels each benchmark question with short topic tags using an LLM. Async, with
+one request per question. Writes
+`{out_dir}/<datasets>_<split>_<size>_tags.jsonl`.
+
+```bash
+python src/tag_questions.py \
+    --data gsm8k arc hellaswag truthfulqa winogrande pro_medicine formal_logic \
+    --split test --data_size 100 \
+    --use_vllm --vllm_base_url http://127.0.0.1:8001/v1
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--data` | all supported | Space-separated dataset list |
+| `--split` | `test` | Dataset split |
+| `--data_size` | `0` | Questions per dataset; `0` means all |
+| `--out_dir` | `out/question_tags` | Output directory |
+| `--output_file` | derived | Override the generated filename |
+| `--model` | `Qwen/Qwen3.6-35B-A3B` | Tagging model |
+| `--max_new_tokens` | `512` | |
+| `--temperature` | `0.0` | Deliberately deterministic for tagging |
+| `--top_p` | `0.9` | |
+| `--thinking_token_budget` | `1024` | |
+| `--use_vllm`, `--vllm_base_url`, `--azure_*`, `--openai_*` | env | Backend selection, as in `main.py` |
+
+### `src/tag_dataset.py` — orchestration stage 2
+
+Unifies tag synonyms through a fixed mapping, drops rare tags, and saves a
+HuggingFace dataset. This is the orchestrator's input and the only pipeline
+output that is version-controlled.
+
+```bash
+python src/tag_dataset.py
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--tags_file` | the 7-dataset, 100-per-dataset run | Tag JSONL from stage 1 |
+| `--out_dir` | `data/tagged_dataset` | Where to `save_to_disk` |
+| `--min_tag_count` | `5` | Drop tags appearing fewer times than this |
+
+### `src/train_orchestrator.py` — orchestration stage 3
+
+Each iteration samples a tag, asks the orchestrator to pick a team for the
+questions carrying it, scores that team, and rewrites the per-tag scoreboard
+that is fed back on the next iteration.
+
+```bash
+python src/train_orchestrator.py \
+    --dataset_path data/tagged_dataset \
+    --model_name <served-model> \
+    --api_base_url http://localhost:8001/v1 \
+    --iterations 10 --solver vote
+```
+
+**Loop and data**
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--dataset_path` | `data/tagged_dataset` | Tagged dataset from stage 2 |
+| `--iterations` | `10` | Team-selection rounds |
+| `--num_samples` | `5` | Questions sampled per round |
+| `--solver` | `vote` | **Currently ignored — the team is always majority-voted** |
+| `--md_file` | `out/agent_performance_by_tag.md` | The scoreboard |
+| `--output_path` | `out/orchestrator_results.json` | **Currently never written** |
+| `--debug` | off | Print the orchestrator prompt, its response, and every agent answer |
+
+**Endpoint**
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--api_base_url` | `http://localhost:8001/v1` | Orchestrator endpoint. **The selected agents ignore this and always use port 8001** |
+| `--api_key` | `none` | |
+| `--model_name` | `Qwen/Qwen3.6-35B-A3B` | Used for the orchestrator, the summariser and the agents |
+
+**Generation**
+
+| Flag | Default | Applies to |
+|---|---|---|
+| `--max_new_tokens` / `--temperature` / `--top_p` | `512` / `1.0` / `0.9` | The agents in the selected team |
+| `--orchestrator_max_tokens` / `--orchestrator_temperature` / `--orchestrator_top_p` | `4096` / `0.1` / `0.5` | The team-selection call |
+| `--summariser_max_tokens` / `--summariser_temperature` | `8192` / `0.5` | The scoreboard rewrite |
+| `--summariser_max_attempts` | `3` | Retries before the run fails and the scoreboard is left unchanged |
+| `--thinking_token_budget` | `1024` | All three |
+
+### `src/orchestrator_pool_sweep.py` — agent-pool selection probe
+
+Asks a model to pick a team from a shuffled pool, repeatedly, per task, at three
+levels of agent description. Writes
+`results/agent-selection/{model}-agents={n}-{detail}-chosen-agents.json` and a
+matching `-responses.json`. Needs `AZURE_OPENAI_ENDPOINT` and
+`AZURE_OPENAI_API_KEY_ENV`.
+
+```bash
+python src/orchestrator_pool_sweep.py --model_name gpt-4.1 --num_agents 4 \
+    --agent_detail name --repeats 10
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--model_name` | `gpt-4.1` | Selecting model |
+| `--num_agents` | `4` | Team size to request |
+| `--agent_detail` | *(required)* | `name`, `single` or `full` — how much the pool description says about each agent |
+| `--repeats` | `10` | Selections sampled per task |
+| `--max_completion_tokens` | `1024` | |
+| `--temperature` / `--top_p` | `1.0` / `0.9` | |
+
+### `src/agent_selection_sweep.py` — replay selected teams
+
+Reads a chosen-agents file from the sweep above and launches one `src/main.py`
+run per selected team, in parallel.
+
+```bash
+python src/agent_selection_sweep.py --agent_type chosen --choose_type name \
+    --agent_models ministral-3b --max_workers 10
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--agent_type` | `default` | `chosen` passes the selected personas through to `main.py`; `default` runs the standard per-dataset set |
+| `--choose_type` | `name` | Which agent-description variant's selections to replay |
+| `--selection_model` | `gpt-4.1` | Whose chosen-agents file to read |
+| `--agent_models` | `ministral-3b` | Model the agents run on |
+| `--num_agents` / `--data_size` / `--max_new_tokens` | `4` / `100` / `512` | Passed to each run |
+| `--solver` / `--debate_rounds` | `vote` / `0` | Passed to each run |
+| `--max_workers` | `10` | Concurrent `main.py` processes |
+
+### `src/analysis/k_star/analysis.py` — K\* effective diversity
+
+Embeds recorded agent responses and computes N\* = exp(H) over the normalised
+eigenvalue spectrum. Reads the `history/*.jsonl` written by `main.py`.
+
+```bash
+python src/analysis/k_star/analysis.py out/history \
+    --mode round_agent_avg --out-dir results/k_star
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `jsonl_path` | *(positional)* | A `.jsonl` file or a directory of them |
+| `--mode` | `round_agent_avg` | Also `per_question_agent`, `round_cum_text` |
+| `--model` | `nvidia/NV-Embed-v2` | SentenceTransformer id |
+| `--device` | auto | `cuda` or `cpu` |
+| `--batch-size` | auto | 16 on CUDA, 4 on CPU |
+| `--max-seq-length` | `32768` | |
+| `--out-dir` | beside the input | Where metrics are written |
+| `--cache-folder` / `--cache-dir-name` | `cache` | Embedding cache |
+| `--agg-mode` / `--agg-sep` | `concat` | How rounds are combined |
+| `--no-eos` / `--no-normalize` / `--no-progress` / `--no-intersection` | off | Encoding switches |
+
+Requires `sentence-transformers` and a GPU; not installed by default.
+
+### `src/analysis/k_star/analysis_improved.py` — extended diversity metrics
+
+Adds N\*_conditioned, N\*_weighted and Delta-N\* on top of the same inputs.
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `jsonl_path` | *(positional)* | A `.jsonl` file or a directory |
+| `--out-dir` | beside the input | Output directory |
+| `--cache-dir-name` | `cache` | Embedding cache subdirectory |
+
+### `src/analysis/k_star/exp2_embedding_robustness.py` — cross-embedding check
+
+Repeats the diversity measurement under a different embedding model to test
+whether the ranking is an artefact of the encoder.
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--model` | `gte-qwen2` | Embedding model to validate against |
+| `--gpu` | `0` | Single GPU id |
+| `--multi_gpu` | `None` | Comma-separated GPU ids |
+| `--sample` | `None` | Subsample size |
+| `--batch_size` | `64` | |
+
+Requires `scipy` and `sentence-transformers`.
+
+### `src/analysis/overlap_viz.py` — agent-selection overlap plots
+
+Compares the teams a model selected against the canonical set in
+`configs/personas.json`, writing CSVs to `results/overlap/csv/` and figures to
+`results/overlap/viz/` and `results/overlap/png/`.
+
+```bash
+python src/analysis/overlap_viz.py --model_name gpt-4.1 --agent_desc single
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--model_name` | `gpt-4.1` | Whose chosen-agents file to read |
+| `--agent_desc` | `single` | `name`, `single` or `full` |
+| `--num_agents` | `4` | Which team size's file to read |
+
+### Shell runners — `scripts/`
+
+These hold their configuration as variables at the top of the file: dataset,
+model list, agent counts, vLLM ports and GPU pool. Edit those rather than
+passing arguments.
+
+| Script | What it runs |
+|---|---|
+| `scripts/add*.sh` | Heterogeneous multi-agent sweeps across agent counts 2–16, both solvers |
+| `scripts/add*_noperspn.sh` | The same sweeps with personas disabled — the control condition |
+| `scripts/ablation*.sh` | Homogeneous runs per model, with and without personas |
+| `scripts/k_star/analysis.sh` | Batch K\* analysis across a hard-coded list of experiment directories, round-robin over GPUs |
+| `scripts/k_star/analysis_improved.sh` | The same for the extended metrics |
+
+`scripts/add.sh` references `MAX_PARALLEL_JOBS` and `GPU_LIST` whose definitions
+are commented out; restore them before running it unqualified.
 
 ## Project Structure
 
@@ -131,72 +424,6 @@ Three rules keep the tree predictable:
 │   └── tagged_dataset/                 # Tagged questions, the orchestrator's input
 ├── notebooks/                          # Exploratory analysis
 └── results/                            # Generated output (git-ignored)
-```
-
-## Installation
-
-### Requirements
-
-- Python >= 3.9
-- CUDA-compatible GPU(s)
-
-### Dependencies
-
-```bash
-pip install torch transformers accelerate peft
-pip install sentence-transformers datasets
-pip install openai numpy pandas scipy tqdm
-```
-
-## Quick Start
-
-### 1. Homogeneous Multi-Agent Voting
-
-```bash
-python src/main.py \
-    --data gsm8k \
-    --num_agents 5 \
-    --model qwen2.5-7b \
-    --solver vote \
-    --debate_rounds 0
-```
-
-### 2. Heterogeneous Multi-Agent Debate with Personas
-
-```bash
-python src/main.py \
-    --data formal_logic \
-    --num_agents 4 \
-    --agent_models "llama3.1-8b,qwen2.5-7b,mistral-7b,qwen3-8b" \
-    --multi_persona \
-    --solver debate \
-    --debate_rounds 3 \
-    --use_vllm \
-    --vllm_base_urls "http://127.0.0.1:8001/v1,http://127.0.0.1:8002/v1,http://127.0.0.1:8003/v1,http://127.0.0.1:8004/v1"
-```
-
-### 3. Using Azure OpenAI Models
-
-```bash
-export AZURE_OPENAI_ENDPOINT="https://your-endpoint.openai.azure.com/"
-export AZURE_OPENAI_API_KEY_ENV="your-api-key"
-
-python src/main.py \
-    --data gsm8k \
-    --num_agents 4 \
-    --agent_models "gpt-4o,gpt-4o-mini,o3-mini,gpt-4.1" \
-    --multi_persona \
-    --solver debate \
-    --debate_rounds 3
-```
-
-### 4. Run K\* Analysis
-
-```bash
-python src/analysis/k_star/analysis.py \
-    --jsonl_dir out/history/ \
-    --mode round_agent_avg \
-    --output_dir analysis/results/
 ```
 
 ## Key Concepts
@@ -260,43 +487,6 @@ Extended metrics include:
 | Mathematical Reasoning | GSM8K |
 | Multiple Choice QA | ARC, HellaSwag, TruthfulQA, WinoGrande |
 | Domain-Specific | MMLU-Pro Medicine, MMLU Formal Logic |
-
-## Running Large-Scale Experiments
-
-The `scripts/` directory contains bash scripts for running experiment sweeps:
-
-```bash
-# Heterogeneous agents across multiple agent counts
-bash scripts/add.sh
-
-# Same experiment without personas (control)
-bash scripts/add_noperspn.sh
-
-# Ablation: persona vs. no-persona across models
-bash scripts/ablation.sh
-```
-
-These scripts manage multi-GPU scheduling and run experiments across varying agent counts (2, 4, 8, 12, 16) with both debate and voting solvers.
-
-## Key Arguments
-
-| Argument | Description | Default |
-|---|---|---|
-| `--data` | Dataset name | (required) |
-| `--num_agents` | Number of agents | 5 |
-| `--agent_models` | Comma-separated model list (heterogeneous) | `""` |
-| `--multi_persona` | Enable diverse personas per agent | `False` |
-| `--baseline_a` | Baseline A: neutral padding | `False` |
-| `--baseline_b` | Baseline B: shared persona | `False` |
-| `--solver` | Aggregation method: `vote` or `debate` | `vote` |
-| `--debate_rounds` | Number of debate rounds | 4 |
-| `--sparse` | Sparse communication topology | `False` |
-| `--centralized` | Centralized communication topology | `False` |
-| `--use_vllm` | Use vLLM backend | `False` |
-| `--temperature` | Sampling temperature | 0 |
-| `--top_p` | Nucleus sampling threshold | 0.9 |
-| `--load_in_4bit` | 4-bit quantization (bitsandbytes) | `False` |
-| `--load_in_8bit` | 8-bit quantization (bitsandbytes) | `False` |
 
 ## License
 

@@ -1203,11 +1203,7 @@ You must respond with Python code only.""",
     When revising, maintain your answer unless you find a decisive contradiction you previously missed or a clearly more plausible interpretation that changes the outcome.""",
                 "temperature": 0.0, "top_p": 0.85, "style": "sanity_stable"
             },
-        }
 
-
-    elif args.data in ['truthfulqa']:
-        personas = {
             "Consensus_Fact_Checker": {
                 "prompt": """You select the option most consistent with well-established consensus knowledge.
     Approach:
@@ -1312,45 +1308,6 @@ Your approach:
         }
 
 
-    elif args.data in ['piqa']:
-        personas = {
-            "Action_Sequence_Simulator": {
-                "prompt": """You choose the more sensible solution by mentally simulating the action sequence in the real world. Feasibility comes first, and the solution should work under normal conditions without needing perfect luck.
-    Break the goal into concrete steps a person would do and simulate each option step by step. Choose the option whose sequence is workable end-to-end.
-    When revising, keep your choice unless you notice a specific step that is physically not doable or a missing requirement that makes your chosen option fail.""",
-                "temperature": 0.0, "top_p": 0.86, "style": "sequence_stable"
-            },
-
-            "Mechanics_Stability_Analyst": {
-                "prompt": """You choose by analyzing mechanics: forces, leverage, balance, and stability. Prioritize whether the setup is stable and controllable, and penalize options that likely slip, tip, spill, or require extreme precision.
-    Consider gravity, support points, torque, frictional contact, and how forces are applied. Choose the option that is mechanically more stable for accomplishing the goal.
-    When revising, change your choice only if you identify a concrete stability/force issue that would make your chosen option fail in practice.""",
-                "temperature": 0.0, "top_p": 0.86, "style": "mechanics_stable"
-            },
-
-            "Material_Interaction_Reasoner": {
-                "prompt": """You choose by reasoning about material properties and interactions. Judge whether the materials naturally enable the intended effect, and avoid bias toward “typical use” if the physical interaction clearly works.
-    Consider friction, rigidity, softness, absorbency, stickiness, brittleness, and heat/water effects. Prefer the option whose material interactions directly support the goal.
-    When revising, keep your choice unless you find a material mismatch that prevents the key interaction (e.g., no grip, no absorption, breaks, melts, leaks).""",
-                "temperature": 0.0, "top_p": 0.86, "style": "materials_stable"
-            },
-
-            "Human_Factors_Controller": {
-                "prompt": """You choose by considering human control and ergonomics. Prefer options a person can execute with normal dexterity and two hands; treat awkwardness as secondary unless it makes control unreliable.
-    Evaluate grip, reach, coordination, required strength, and whether the action can be controlled smoothly. Penalize options needing unrealistic coordination or an extra hand.
-    When revising, do not flip due to minor awkwardness; flip only if the option becomes practically uncontrollable or unreliable for a typical person.""",
-                "temperature": 0.0, "top_p": 0.86, "style": "human_factors_stable"
-            },
-
-            "Robustness_Comparator": {
-                "prompt": """You choose the option that is more robust to everyday variation. Prefer methods that still work with small errors in angle, force, or positioning, and do not confuse “more elegant” with “more reliable.”
-    Imagine slight variations in how a person performs the action and how the environment differs. Prefer the option that still succeeds without precise conditions.
-    When revising, keep your choice unless you realize your chosen option is fragile and the alternative is clearly more robust under typical variability.""",
-                "temperature": 0.0, "top_p": 0.86, "style": "robustness_stable"
-            },
-        }
-
-
     elif args.data in ['winogrande']:
         personas = {
             "Coreference_Formalist": {
@@ -1401,7 +1358,7 @@ Your approach:
                 "top_p": 0.86,
                 "style": "bias_resistant"
             },
-            "Elimination_Specialist": {
+            "Elimination_Based_Solver": {
                 "prompt": """You are an elimination-based solver for pronoun resolution.
     Your approach:
     - For each candidate, list what must be true for it to be the pronoun referent

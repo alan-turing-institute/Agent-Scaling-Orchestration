@@ -3,12 +3,6 @@ import os
 import tempfile
 from pathlib import Path
 
-from defaults import (
-    SUMMARISER_MAX_ATTEMPTS,
-    SUMMARISER_MAX_TOKENS,
-    SUMMARISER_TEMPERATURE,
-    THINKING_TOKEN_BUDGET,
-)
 
 
 
@@ -58,13 +52,25 @@ def summariser_prompt(existing_md, summary_items):
 
     return messages
 
-def save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path="out/agent_performance_by_tag.md"):
+def save_evaluation_summary_with_llm(orchestrator, evaluations,
+                                     out_md_path="out/agent_performance_by_tag.md",
+                                     max_tokens=None, temperature=None,
+                                     max_attempts=None, thinking_token_budget=None):
     """Use the orchestrator's LLM client to synthesize or update a markdown
     summary of which agents performed well on which tags, then write it
     atomically to the specified path. If a markdown file already exists,
     include its current content and ask the LLM to update it rather than
     always creating a fresh file.
     """
+    if max_tokens is None:
+        max_tokens = orchestrator.max_tokens
+    if temperature is None:
+        temperature = orchestrator.temperature
+    if max_attempts is None:
+        max_attempts = 1
+    if thinking_token_budget is None:
+        thinking_token_budget = orchestrator.thinking_token_budget
+
     summary_items = []
     for ev in evaluations:
         item = {
@@ -90,14 +96,14 @@ def save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path="out
 
     md_content = None
     last_error = None
-    for attempt in range(1, SUMMARISER_MAX_ATTEMPTS + 1):
+    for attempt in range(1, max_attempts + 1):
         try:
             response = orchestrator.client.chat.completions.create(
                 model=orchestrator.model_name,
                 messages=messages,
-                max_tokens=SUMMARISER_MAX_TOKENS,
-                extra_body={"thinking_token_budget": THINKING_TOKEN_BUDGET},
-                temperature=SUMMARISER_TEMPERATURE,
+                max_tokens=max_tokens,
+                extra_body={"thinking_token_budget": thinking_token_budget},
+                temperature=temperature,
             )
             content = response.choices[0].message.content
             if isinstance(content, str) and content.strip():
@@ -107,14 +113,14 @@ def save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path="out
         except Exception as e:
             last_error = e
         print(
-            f"Summariser attempt {attempt}/{SUMMARISER_MAX_ATTEMPTS} failed: {last_error}"
+            f"Summariser attempt {attempt}/{max_attempts} failed: {last_error}"
         )
 
     # The scoreboard is the loop's only memory. Leave the previous version in
     # place rather than replacing it with a failed generation.
     if md_content is None:
         raise RuntimeError(
-            f"Summariser failed after {SUMMARISER_MAX_ATTEMPTS} attempts; "
+            f"Summariser failed after {max_attempts} attempts; "
             f"{out_path} left unchanged. Last error: {last_error}"
         )
 

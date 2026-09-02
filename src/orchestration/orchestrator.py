@@ -3,24 +3,20 @@ import random
 
 from openai import OpenAI
 
-from defaults import (
-    ORCHESTRATOR_MAX_TOKENS,
-    ORCHESTRATOR_TEMPERATURE,
-    ORCHESTRATOR_TOP_P,
-    THINKING_TOKEN_BUDGET,
-)
 from model.model_utils import engine
 from model.openai_compat import OpenAICompatChatWrapper
 
 
 class OrchestratorAgent:
-    def __init__(self, model_name, agent_pool, max_tokens=ORCHESTRATOR_MAX_TOKENS,
-                 api_key="none", base_url="http://localhost:8001/v1",
-                 thinking_token_budget=THINKING_TOKEN_BUDGET, debug=False):
+    def __init__(self, model_name, agent_pool, max_tokens, temperature, top_p,
+                 thinking_token_budget, api_key="none",
+                 base_url="http://localhost:8001/v1", debug=False):
         """Initialize the orchestrator agent with an OpenAI-compatible model wrapper."""
         self.model_name = model_name
         self.agent_pool = agent_pool
         self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_p = top_p
         self.thinking_token_budget = thinking_token_budget
         self.conversation_history = []
 
@@ -79,8 +75,8 @@ Output ONLY a JSON object with this exact structure (no markdown, no extra text)
             model=self.model_name,
             messages=self.conversation_history,
             max_tokens=self.max_tokens,
-            temperature=ORCHESTRATOR_TEMPERATURE,
-            top_p=ORCHESTRATOR_TOP_P,
+            temperature=self.temperature,
+            top_p=self.top_p,
             extra_body={"thinking_token_budget": self.thinking_token_budget},
         )
 

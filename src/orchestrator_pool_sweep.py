@@ -5,6 +5,13 @@ import json
 from collections import Counter
 from openai import OpenAI
 
+from defaults import (
+    POOL_SWEEP_MAX_COMPLETION_TOKENS,
+    POOL_SWEEP_REPEATS,
+    TEMPERATURE,
+    TOP_P,
+)
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SELECTIONS_DIR = os.path.join(REPO_ROOT, "results", "agent-selection")
 
@@ -559,6 +566,12 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", type=str, default="gpt-4.1")
     parser.add_argument("--num_agents", type=int, default=4)
     parser.add_argument("--agent_detail", choices=["name", "single", "full"])
+    parser.add_argument("--repeats", type=int, default=POOL_SWEEP_REPEATS,
+                        help="Selections to sample per task")
+    parser.add_argument("--max_completion_tokens", type=int,
+                        default=POOL_SWEEP_MAX_COMPLETION_TOKENS)
+    parser.add_argument("--temperature", type=float, default=TEMPERATURE)
+    parser.add_argument("--top_p", type=float, default=TOP_P)
 
     args = parser.parse_args()
 
@@ -574,7 +587,7 @@ if __name__ == "__main__":
     output_fname = os.path.join(SELECTIONS_DIR, f"{model_name}-agents={num_agents}-{agent_detail}")
 
     for task_name in tasks.keys():
-        for _ in range(10):
+        for _ in range(args.repeats):
             agents = list(agent_list.keys())
             random.shuffle(agents)
 
@@ -595,7 +608,9 @@ if __name__ == "__main__":
                         agent_list=agent_descs
                     )}
                 ],
-                max_completion_tokens=1024
+                max_completion_tokens=args.max_completion_tokens,
+                temperature=args.temperature,
+                top_p=args.top_p,
             )
         
             responses[task_name].append(response.model_dump())
