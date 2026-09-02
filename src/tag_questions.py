@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from defaults import MAX_NEW_TOKENS, THINKING_TOKEN_BUDGET, TOP_P
 from data.data_utils import load_data
 from model.model_utils import get_agents
 
@@ -43,9 +44,11 @@ def parse_args():
 
     parser.add_argument('--model', type=str, default='Qwen/Qwen3.6-35B-A3B')
     parser.add_argument('--agent_models', type=str, default='')
-    parser.add_argument('--max_new_tokens', type=int, default=512)
+    parser.add_argument('--max_new_tokens', type=int, default=MAX_NEW_TOKENS)
+    parser.add_argument('--thinking_token_budget', type=int, default=THINKING_TOKEN_BUDGET,
+                        help='Reasoning budget for API models that accept it')
     parser.add_argument('--temperature', type=float, default=0.0)
-    parser.add_argument('--top_p', type=float, default=0.9)
+    parser.add_argument('--top_p', type=float, default=TOP_P)
 
     parser.add_argument('--use_vllm', action='store_true')
     parser.add_argument('--vllm_base_url', type=str, default=os.getenv('VLLM_BASE_URL', 'http://127.0.0.1:8001/v1'))

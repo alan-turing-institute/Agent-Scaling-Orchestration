@@ -7,6 +7,20 @@ import tempfile
 
 from datasets import load_from_disk
 
+from defaults import (
+    MAX_NEW_TOKENS,
+    ORCHESTRATOR_ITERATIONS,
+    ORCHESTRATOR_MAX_TOKENS,
+    ORCHESTRATOR_TEMPERATURE,
+    ORCHESTRATOR_TOP_P,
+    SUMMARISER_MAX_ATTEMPTS,
+    SUMMARISER_MAX_TOKENS,
+    SUMMARISER_TEMPERATURE,
+    TEMPERATURE,
+    THINKING_TOKEN_BUDGET,
+    TOP_P,
+)
+
 from orchestration.orchestrator import OrchestratorAgent, team_selection
 from team_evaluation import run_team_evaluation
 from summariser import save_evaluation_summary_with_llm
@@ -49,6 +63,27 @@ def parse_args():
     parser.add_argument("--num_samples", type=int, default=5, help="Number of questions to sample for team selection")
     parser.add_argument("--solver", choices=["vote", "debate"], default="vote", help="How to aggregate the selected team answers")
     parser.add_argument("--output_path", default="out/orchestrator_results.json", help="Where to save the evaluation report")
+    parser.add_argument("--iterations", type=int, default=ORCHESTRATOR_ITERATIONS,
+                        help="Number of team-selection rounds to run")
+    parser.add_argument("--thinking_token_budget", type=int, default=THINKING_TOKEN_BUDGET,
+                        help="Reasoning budget for API models that accept it")
+
+    # Agents in the selected team
+    parser.add_argument("--max_new_tokens", type=int, default=MAX_NEW_TOKENS)
+    parser.add_argument("--temperature", type=float, default=TEMPERATURE)
+    parser.add_argument("--top_p", type=float, default=TOP_P)
+
+    # The orchestrator's own selection call
+    parser.add_argument("--orchestrator_max_tokens", type=int, default=ORCHESTRATOR_MAX_TOKENS)
+    parser.add_argument("--orchestrator_temperature", type=float, default=ORCHESTRATOR_TEMPERATURE)
+    parser.add_argument("--orchestrator_top_p", type=float, default=ORCHESTRATOR_TOP_P)
+
+    # The scoreboard rewrite
+    parser.add_argument("--summariser_max_tokens", type=int, default=SUMMARISER_MAX_TOKENS)
+    parser.add_argument("--summariser_temperature", type=float, default=SUMMARISER_TEMPERATURE)
+    parser.add_argument("--summariser_max_attempts", type=int, default=SUMMARISER_MAX_ATTEMPTS,
+                        help="Retries before the run fails and the scoreboard is left unchanged")
+
     parser.add_argument("--debug", action="store_true", help="Enable debug mode for verbose output")
     parser.add_argument("--md_file", default="out/agent_performance_by_tag.md", help="Path to the markdown summary file")
     return parser.parse_args()
@@ -109,12 +144,16 @@ if __name__ == "__main__":
         AGENT_POOL,
         api_key=args.api_key,
         base_url=args.api_base_url,
+        max_tokens=args.orchestrator_max_tokens,
+        temperature=args.orchestrator_temperature,
+        top_p=args.orchestrator_top_p,
+        thinking_token_budget=args.thinking_token_budget,
         debug=args.debug,
     )
 
     evaluations = []
 
-    for i in range(10):
+    for i in range(args.iterations):
         # Read existing performance markdown (if any) so the orchestrator can use it
         md_path = Path(args.md_file)
         prior_md = md_path.read_text(encoding="utf-8") if md_path.exists() else None
@@ -159,11 +198,19 @@ if __name__ == "__main__":
             evaluations.append({
                 "chosen_tag": result.get("chosen_tag"),
                 "batch_size": result.get("batch_size"),
-                "tag_profile": result.get("tag_profile"),
+                "tag_profile": result.get("tag_frequencies"),
                 "selected_team": selected_team,
                 "report": report,
             })
 
             # After each epoch/evaluation, update the markdown summary so the next
             # epoch can read and use it when selecting teams.
-            save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path=args.md_file)
+            save_evaluation_summary_with_llm(
+                orchestrator,
+                evaluations,
+                out_md_path=args.md_file,
+                max_tokens=args.summariser_max_tokens,
+                temperature=args.summariser_temperature,
+                max_attempts=args.summariser_max_attempts,
+                thinking_token_budget=args.thinking_token_budget,
+            )

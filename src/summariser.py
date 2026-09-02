@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 
+
 def summariser_prompt(existing_md, summary_items):
     if existing_md:
         system_prompt = (
@@ -51,13 +52,25 @@ def summariser_prompt(existing_md, summary_items):
 
     return messages
 
-def save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path="out/agent_performance_by_tag.md"):
+def save_evaluation_summary_with_llm(orchestrator, evaluations,
+                                     out_md_path="out/agent_performance_by_tag.md",
+                                     max_tokens=None, temperature=None,
+                                     max_attempts=None, thinking_token_budget=None):
     """Use the orchestrator's LLM client to synthesize or update a markdown
     summary of which agents performed well on which tags, then write it
     atomically to the specified path. If a markdown file already exists,
     include its current content and ask the LLM to update it rather than
     always creating a fresh file.
     """
+    if max_tokens is None:
+        max_tokens = orchestrator.max_tokens
+    if temperature is None:
+        temperature = orchestrator.temperature
+    if max_attempts is None:
+        max_attempts = 1
+    if thinking_token_budget is None:
+        thinking_token_budget = orchestrator.thinking_token_budget
+
     summary_items = []
     for ev in evaluations:
         item = {
@@ -81,42 +94,43 @@ def save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path="out
             existing_md = None
     messages = summariser_prompt(existing_md, summary_items)
 
-    print(f"\n--- SUMMARISER MESSAGES ---\n")
-    for msg in messages:
-        print(f"{msg['role']}: {msg['content']}")
-
     md_content = None
-    try:
-        response = orchestrator.client.chat.completions.create(
-            model=orchestrator.model_name,
-            messages=messages,
-            max_tokens=4096,
-            temperature=0.5,
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = orchestrator.client.chat.completions.create(
+                model=orchestrator.model_name,
+                messages=messages,
+                max_tokens=max_tokens,
+                extra_body={"thinking_token_budget": thinking_token_budget},
+                temperature=temperature,
+            )
+            content = response.choices[0].message.content
+            if isinstance(content, str) and content.strip():
+                md_content = content
+                break
+            last_error = "empty response"
+        except Exception as e:
+            last_error = e
+        print(
+            f"Summariser attempt {attempt}/{max_attempts} failed: {last_error}"
         )
 
-        md_content = response.choices[0].message.content
-    except Exception:
-        # If LLM call fails, fall back to appending a simple programmatic section
-        fallback = []
-        fallback.append("# Agent performance summary (auto-generated fallback)")
-        if existing_md:
-            fallback.append(existing_md)
-        fallback.append("\n## Recent evaluation additions\n")
-        fallback.append("```json\n" + json.dumps(summary_items, indent=2, default=str) + "\n```")
-        md_content = "\n\n".join(fallback)
+    # The scoreboard is the loop's only memory. Leave the previous version in
+    # place rather than replacing it with a failed generation.
+    if md_content is None:
+        raise RuntimeError(
+            f"Summariser failed after {max_attempts} attempts; "
+            f"{out_path} left unchanged. Last error: {last_error}"
+        )
 
-    if not isinstance(md_content, str):
-        md_content = str(md_content)
-
-    # Atomic write: write to a temp file then replace
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".md", dir=str(out_path.parent))
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
             fh.write(md_content)
         os.replace(tmp_path, str(out_path))
     except Exception:
-        # Best-effort fallback write
-        with out_path.open("w", encoding="utf-8") as fh:
-            fh.write(md_content)
+        os.unlink(tmp_path)
+        raise
 
     print(f"Saved agent performance summary to {out_path}")

@@ -8,11 +8,16 @@ from model.openai_compat import OpenAICompatChatWrapper
 
 
 class OrchestratorAgent:
-    def __init__(self, model_name, agent_pool, max_tokens=4096, api_key="none", base_url="http://localhost:8001/v1", debug=False):
+    def __init__(self, model_name, agent_pool, max_tokens, temperature, top_p,
+                 thinking_token_budget, api_key="none",
+                 base_url="http://localhost:8001/v1", debug=False):
         """Initialize the orchestrator agent with an OpenAI-compatible model wrapper."""
         self.model_name = model_name
         self.agent_pool = agent_pool
         self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.thinking_token_budget = thinking_token_budget
         self.conversation_history = []
 
         self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -70,8 +75,9 @@ Output ONLY a JSON object with this exact structure (no markdown, no extra text)
             model=self.model_name,
             messages=self.conversation_history,
             max_tokens=self.max_tokens,
-            temperature=0.1,
-            top_p=0.5,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            extra_body={"thinking_token_budget": self.thinking_token_budget},
         )
 
         return self._parse_team_response(response)

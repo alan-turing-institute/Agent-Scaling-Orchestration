@@ -1,3 +1,4 @@
+import argparse
 import json
 from collections import Counter
 from datasets import Dataset
@@ -5,6 +6,11 @@ import pandas as pd
 
 from collections import Counter
 import matplotlib.pyplot as plt
+
+DEFAULT_TAGS_FILE = ("out/question_tags/gsm8k_arc_hellaswag_truthfulqa_winogrande"
+                     "_pro_medicine_formal_logic_test_100_tags.jsonl")
+DEFAULT_OUT_DIR = "data/tagged_dataset"
+DEFAULT_MIN_TAG_COUNT = 5
 
 
 def plot_tag_frequencies(
@@ -166,84 +172,95 @@ def clean_tags(tags, threshold=5):
     return valid_tags
 
 
-# Load data
-jsonl_file_path = "out/question_tags/gsm8k_arc_hellaswag_truthfulqa_winogrande_pro_medicine_formal_logic_test_100_tags.jsonl"
-data = read_jsonl(jsonl_file_path)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Unify tags from a tagging run and save a HuggingFace dataset")
+    parser.add_argument("--tags_file", default=DEFAULT_TAGS_FILE,
+                        help="Tag JSONL produced by src/tag_questions.py")
+    parser.add_argument("--out_dir", default=DEFAULT_OUT_DIR,
+                        help="Where to save_to_disk the tagged dataset")
+    parser.add_argument("--min_tag_count", type=int, default=DEFAULT_MIN_TAG_COUNT,
+                        help="Drop tags appearing fewer than this many times")
+    args = parser.parse_args()
 
-# Create pandas DataFrame
-df = pd.DataFrame(data)
-df["answer"] = df["answer"].astype(str)
+    # Load data
+    jsonl_file_path = args.tags_file
+    data = read_jsonl(jsonl_file_path)
 
-# Step 1: Map raw tags to unified categories & remove duplicates within rows
-df["tags"] = df["tags"].apply(standardize_tags)
+    # Create pandas DataFrame
+    df = pd.DataFrame(data)
+    df["answer"] = df["answer"].astype(str)
 
-# Step 2: Filter tags by threshold frequency
-valid_tags = clean_tags(df["tags"], threshold=5)
-df["tags"] = df["tags"].apply(
-    lambda tag_list: [tag for tag in tag_list if tag in valid_tags]
-)
+    # Step 1: Map raw tags to unified categories & remove duplicates within rows
+    df["tags"] = df["tags"].apply(standardize_tags)
 
-# Select only needed columns
-df_clean = df[["dataset", "question", "answer", "tags"]].copy()
+    # Step 2: Filter tags by threshold frequency
+    valid_tags = clean_tags(df["tags"], threshold=args.min_tag_count)
+    df["tags"] = df["tags"].apply(
+        lambda tag_list: [tag for tag in tag_list if tag in valid_tags]
+    )
 
-# Create datasets.Dataset from dataframe
-dataset = Dataset.from_pandas(df_clean)
+    # Select only needed columns
+    df_clean = df[["dataset", "question", "answer", "tags"]].copy()
 
-# Save locally
-local_save_path = "data/tagged_dataset"
-dataset.save_to_disk(local_save_path)
-print(f"✓ Dataset saved locally to: {local_save_path}")
+    # Create datasets.Dataset from dataframe
+    dataset = Dataset.from_pandas(df_clean)
 
-# ==================== Dataset Statistics ====================
+    # Save locally
+    local_save_path = args.out_dir
+    dataset.save_to_disk(local_save_path)
+    print(f"✓ Dataset saved locally to: {local_save_path}")
 
-print("\n" + "=" * 60)
-print("DATASET DESCRIPTION")
-print("=" * 60)
+    # ==================== Dataset Statistics ====================
 
-num_questions = len(dataset)
-print(f"\nTotal number of questions: {num_questions}")
+    print("\n" + "=" * 60)
+    print("DATASET DESCRIPTION")
+    print("=" * 60)
 
-all_tags = []
-for tags_list in dataset["tags"]:
-    all_tags.extend(tags_list)
+    num_questions = len(dataset)
+    print(f"\nTotal number of questions: {num_questions}")
 
-unique_tags = list(set(all_tags))
-unique_tags.sort()
-num_unique_tags = len(unique_tags)
+    all_tags = []
+    for tags_list in dataset["tags"]:
+        all_tags.extend(tags_list)
 
-print(f"Unique tags: {num_unique_tags}")
-print(f"\nTag list:\n{unique_tags}")
+    unique_tags = list(set(all_tags))
+    unique_tags.sort()
+    num_unique_tags = len(unique_tags)
 
-# Tag frequency
-tag_frequency = Counter(all_tags)
+    print(f"Unique tags: {num_unique_tags}")
+    print(f"\nTag list:\n{unique_tags}")
 
-print("\nTag frequency:")
-for tag, count in tag_frequency.most_common():
-    print(f"  - {tag}: {count}")
+    # Tag frequency
+    tag_frequency = Counter(all_tags)
 
-print(f"\nDatasets included: {set(dataset['dataset'])}")
-print("Questions per dataset:")
-for ds_name in set(dataset["dataset"]):
-    count = dataset["dataset"].count(ds_name)
-    print(f"  - {ds_name}: {count}")
+    print("\nTag frequency:")
+    for tag, count in tag_frequency.most_common():
+        print(f"  - {tag}: {count}")
 
-print("\nAnswer type distribution:")
-print(
-    f"  - Numeric answers: {sum(isinstance(x, (int, float)) for x in dataset['answer'])}"
-)
-print(
-    f"  - String answers: {sum(isinstance(x, str) for x in dataset['answer'])}"
-)
+    print(f"\nDatasets included: {set(dataset['dataset'])}")
+    print("Questions per dataset:")
+    for ds_name in set(dataset["dataset"]):
+        count = dataset["dataset"].count(ds_name)
+        print(f"  - {ds_name}: {count}")
 
-print("\n" + "=" * 60)
-print("Dataset Info:")
-print("=" * 60)
-print(dataset)
-print("\n")
+    print("\nAnswer type distribution:")
+    print(
+        f"  - Numeric answers: {sum(isinstance(x, (int, float)) for x in dataset['answer'])}"
+    )
+    print(
+        f"  - String answers: {sum(isinstance(x, str) for x in dataset['answer'])}"
+    )
 
-plot_tag_frequencies(
-    df["tags"],
-    top_n=25,
-    title="Dataset Tag Distribution",
-    save_path="data/tag_frequencies.png",
-)
+    print("\n" + "=" * 60)
+    print("Dataset Info:")
+    print("=" * 60)
+    print(dataset)
+    print("\n")
+
+    plot_tag_frequencies(
+        df["tags"],
+        top_n=25,
+        title="Dataset Tag Distribution",
+        save_path="data/tag_frequencies.png",
+    )

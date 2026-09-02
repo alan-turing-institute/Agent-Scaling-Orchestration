@@ -1,0 +1,56 @@
+{
+    "gsm8k": [
+        "Conservative_Verifier",
+        "Creative_Explorer",
+        "Intuitive_Estimator",
+        "Rigorous_Formalist",
+        "Systematic_Decomposer"
+    ],
+    "pro_medicine": [
+        "Cautious_Diagnostician",
+        "Evidence_Based_Analyst",
+        "Holistic_Clinician",
+        "Pattern_Recognition_Expert",
+        "Systematic_Reviewer"
+    ],
+    "formal_logic": [
+        "Analogical_Thinker",
+        "Commonsense_Reasoner",
+        "Critical_Analyzer",
+        "Eliminative_Reasoner",
+        "Logical_Formalist"
+    ],
+    "humaneval": [
+        "Defensive_Coder",
+        "Elegant_Minimalist",
+        "Algorithm_Optimizer",
+        "Test_Driven_Developer",
+        "Creative_Problem_Solver"
+    ],
+    "truthfulqa": [
+        "Causal_Mechanism_Reasoner",
+        "Causality_and_Mechanism_Auditor",
+        "Consensus_Fact_Checker",
+        "Contradiction_Sanity_Checker",
+        "Core_Claim_MinAssumption",
+        "Decomposition_Planner",
+        "Imitative_Falsehood_Spotter",
+        "Rhetoric_and_Absolutes_Filter",
+        "Scope_Quantifier_Reader",
+        "Time_Place_Category_Checker"
+    ],
+    "arc": [
+        "Science_Exam_Solver",
+        "Concept_to_Option_Matcher",
+        "Elimination_Specialist",
+        "Diagramless_Physicist",
+        "Careful_Reader"
+    ],
+    "winogrande": [
+        "Bias_Resistance_Checker",
+        "Contrastive_Tester",
+        "Coreference_Formalist",
+        "Elimination_Based_Solver",
+        "Scenario_Simulator"
+    ]
+}
