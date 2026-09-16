@@ -1,9 +1,19 @@
 # Plan: an agent-modelling partner for the orchestrator
 
-A design note, not yet implemented. It proposes adapting the architecture of
+A design note, not yet implemented. It proposes adapting the *architecture* of
 *ToM-SWE: User Mental Modeling for Software Engineering Agents*
-(Zhou, Chen, Wang, Neubig, Sap and Wang, arXiv:2510.21903) to the orchestrator
-in this repository, and sets out how to test whether it is worth the cost.
+(Zhou, Chen, Wang, Neubig, Sap and Wang, arXiv:2510.21903) to the orchestrator in
+this repository, and sets out how to test whether it is worth the cost.
+
+The paper's setting is software engineering. Ours is not. This orchestrator
+selects teams for batches of questions drawn from seven benchmarks — grade-school
+maths, science, commonsense completion, truthfulness, coreference, professional
+medicine and formal logic — and nothing in the plan below assumes code, a
+repository, a test suite, or an execution trace. What is borrowed is a shape:
+split the acting agent from the agent that maintains a model of the thing being
+reasoned about, give the modelling half its own memory, and let it answer
+questions rather than hand over its raw record. That shape is domain-independent,
+and Section 2.1 records which parts of the paper's setting do *not* come with it.
 
 ---
 
@@ -64,6 +74,39 @@ errors, so the right team is not the four highest-scoring personas — it is a s
 that is individually strong and jointly diverse. Per-agent accuracy cannot express
 that. A model of the agents can.
 
+### 2.1 What does not transfer
+
+Four differences between their setting and ours change the design, and each one
+is a reason the plan below is not simply ToM-SWE with the nouns swapped.
+
+**There is no user.** Their ToM target is a human with genuinely hidden
+preferences, revealed slowly over many sessions. Our loop has no human in it at
+all: a tag profile arrives, a team answers, the answers are scored. The
+first-order target of the paper's mechanism does not exist here, which is exactly
+why the interesting target is the one they left alone — the agents.
+
+**The feedback is far sparser.** They observe user replies, follow-up questions,
+expressed dissatisfaction and a satisfaction rating, and their agent can run tests
+and read error output. We observe one bit per agent per question: right or wrong.
+Everything a profile claims has to be built from that bit plus the text of the
+answer itself. This is the binding constraint on how rich a persona model can
+honestly get, and it is why Section 3.3 insists on citing counts.
+
+**Episodes are short and interchangeable.** A coding session is long, stateful and
+about one task; our iteration is five independent questions and then it is over.
+So "sleep time" means the iteration boundary rather than the end of a session, and
+the cadence should follow `--summary_every`, which already controls when the loop's
+memory is refreshed. That also makes this plan compose with experiment 1 rather
+than cut across it.
+
+**The domain is plural, and will change.** Their capability space is one
+professional activity. Ours is seven benchmarks today and whatever gets added
+next. So profiles must be keyed on *tags* — the capability vocabulary built by
+`canonicalise_tags.py` — and never on dataset names. A persona that is good at
+`propositional logic` should stay good at it when a new logic benchmark arrives,
+and a profile that has learned "good at formal_logic" has learned the wrong thing.
+Nothing in the memory schema below refers to a dataset.
+
 ## 3. Design
 
 ### 3.1 The agent-model partner
@@ -78,9 +121,8 @@ justification, the evidence behind it, a confidence in 0–1, and a note on whic
 candidates complement or duplicate each other. The orchestrator is free to ignore
 it and records what it chose either way.
 
-**Sleep time (after an iteration, or after a block of them).** The partner reads
-the new raw records, writes a per-episode analysis, and folds that into the
-per-persona profiles.
+**Sleep time (at the iteration boundary).** The partner reads the new raw records,
+writes a per-episode analysis, and folds that into the per-persona profiles.
 
 ### 3.2 Memory, in three tiers
 
@@ -173,20 +215,26 @@ move it; selection stability over training; the confabulation rate from the
 validator; and wall-clock and token overhead per iteration, to see whether the
 paper's 16% figure survives contact with a smaller model.
 
+Because profiles are keyed on tags rather than datasets, one further check is cheap
+and worth doing: hold out an entire benchmark rather than a random 20%, and see
+whether a profile learned on the other six transfers to it. That is the claim this
+whole line of work rests on — that the orchestrator is learning about capabilities
+rather than about datasets — and nothing in experiment 1 tests it.
+
 ## 6. Risks
 
 - **It reinvents the LLM summariser.** The strongest argument against this plan is
   that we deleted something adjacent a week ago. Section 3.3 is the answer, and the
   confabulation rate is the number that tells us whether the answer held.
 - **Not enough evidence to model.** A hundred and fifty training questions over
-  ninety-six tags and fifty personas is thin. Profiles may be confident noise. If
-  stage 0 shows most pairwise cells empty, the honest move is to widen training
-  before adding a layer that interprets them.
+  ninety-six tags and fifty personas is thin, and one bit of feedback per agent per
+  question is a narrow channel to build a persona model from. Profiles may be
+  confident noise. If stage 0 shows most pairwise cells empty, the honest move is to
+  widen training before adding a layer that interprets them.
 - **Cost.** A consult per selection plus an analysis per iteration on one shared
   server, when an iteration already takes over two minutes. Stage 0 costs nothing
   and should be measured before committing to stages 1 and 2.
-- **The analogy is not exact.** The paper's ToM agent models a human who has
-  genuine hidden preferences. Ours models agents whose behaviour is, in principle,
-  fully observable from their outputs. The claim is only that a distilled,
-  maintained model of them beats a flat table re-read under selection pressure —
-  and that is precisely what arms B and C are for.
+- **The analogy is not exact.** Section 2.1 lists where it breaks. The claim being
+  made is narrow: that a distilled, maintained model of the candidate agents beats a
+  flat table re-read under selection pressure. Arms B and C are what test it, and a
+  null result there is a real answer rather than a failed implementation.
