@@ -9,6 +9,14 @@ This repository provides the codebase for studying **how scaling the number of h
 ├── src/                          # Core source code
 │   ├── main.py                   # Main orchestration: debate/voting loop
 │   ├── evaluator.py              # Answer extraction & scoring (math, MCQ)
+│   ├── tag_questions.py          # Stage 1: LLM tags each question with capabilities
+│   ├── canonicalise_tags.py      # Stage 2: collapses near-duplicate tags into categories
+│   ├── tag_dataset.py            # Stage 3: applies the mapping, saves the tagged dataset
+│   ├── train_orchestrator.py     # Orchestrator loop: select team, score, summarise, repeat
+│   ├── team_evaluation.py        # Runs a selected team, scores per agent and per tag
+│   ├── summariser.py             # Rewrites the per-tag performance scoreboard
+│   ├── orchestration/            # Orchestrator agent and team selection
+│   │   └── orchestrator.py       # OrchestratorAgent, tag sampling, team selection prompt
 │   ├── data/                     # Dataset loaders
 │   │   ├── data_utils.py         # Central data router
 │   │   ├── gsm8k.py              # Grade School Math 8K
@@ -34,6 +42,7 @@ This repository provides the codebase for studying **how scaling the number of h
 │   ├── exp2_embedding_robustness.py  # Cross-embedding-model robustness validation
 │   ├── analysis.sh               # Runner for analysis.py
 │   └── analysis_improved.sh      # Runner for analysis_improved.py
+├── data-claude/                  # Orchestrator-track data (tags, mapping, tagged dataset)
 └── .gitignore
 ```
 
@@ -51,6 +60,12 @@ pip install torch transformers accelerate peft
 pip install sentence-transformers datasets
 pip install openai numpy pandas scipy tqdm
 ```
+
+`requirements.txt` is a full pinned freeze of an x86 environment. On aarch64
+(DGX Spark) the pinned `torch==2.11.0` has no wheel; install `torch` unpinned and
+let pip resolve the CUDA build for the platform. The orchestration pipeline below
+needs only `openai`, `datasets`, `pandas`, `numpy`, `matplotlib` and `torch`, since
+generation happens in a vLLM server rather than in-process.
 
 ## Quick Start
 
@@ -102,6 +117,169 @@ python K_star_analysis/analysis.py \
     --mode round_agent_avg \
     --output_dir analysis/results/
 ```
+
+## Orchestration Data Pipeline
+
+The orchestrator selects a team of agents per task, so it needs questions labelled
+with the capabilities they demand. Three stages produce that labelled dataset. All
+orchestrator-track output goes under `data-claude/`, keeping it separate from the
+paper's `data/` and `out/`.
+
+### 0. Serve a model
+
+Every stage talks to an OpenAI-compatible endpoint. The sibling `vllm/` repo serves
+one; `HOST_PORT` publishes it on the port this repo defaults to:
+
+```bash
+NUM_SPEC_TOKENS=3 MAX_NUM_SEQS=64 HOST_PORT=8001 sh ../vllm/qwen3.6/run_docker_nvfp4.sh
+docker logs -f qwen3.6-vllm            # wait for engine init, about 5 minutes
+curl -s localhost:8001/v1/models       # confirm the served model id
+```
+
+`MAX_NUM_SEQS=64` matches the 64-way semaphore in `tag_questions.py`. The model id
+passed as `--model` must be the served HuggingFace handle, not a local model key.
+
+### 1. Tag the questions — `src/tag_questions.py`
+
+Asks the model, for each question, which capabilities or reasoning styles would help
+an agent answer it. Runs all datasets concurrently through one semaphore.
+
+```bash
+python src/tag_questions.py \
+    --data gsm8k arc hellaswag truthfulqa winogrande pro_medicine formal_logic \
+    --split test --data_size 100 \
+    --data_dir data-claude/benchmarks/ --out_dir data-claude/question_tags \
+    --use_vllm --vllm_base_url http://127.0.0.1:8001/v1 \
+    --model nvidia/Qwen3.6-35B-A3B-NVFP4
+```
+
+Writes `{out_dir}/{datasets}_{split}_{data_size}_tags.jsonl`, one record per question
+with its raw tags and the raw model response.
+
+| Argument | Default | Description |
+|---|---|---|
+| `--data` | all seven | Datasets to tag, space-separated |
+| `--split` / `--data_size` | `test` / `0` | Split and per-dataset question cap (`0` means all) |
+| `--data_dir` | `./data/` | HuggingFace cache for the benchmark downloads |
+| `--out_dir` / `--output_file` | `out/question_tags` / derived | Where the tags JSONL is written |
+| `--model` | `Qwen/Qwen3.6-35B-A3B` | Model doing the tagging |
+| `--use_vllm` / `--vllm_base_url` | off / `http://127.0.0.1:8001/v1` | Endpoint serving that model |
+| `--max_new_tokens` / `--temperature` / `--top_p` | `512` / `0.0` / `0.9` | Generation settings |
+
+### 2. Canonicalise the tag vocabulary — `src/canonicalise_tags.py`
+
+Free-text tagging produces many surface variants of one capability
+(`step-by-step reasoning`, `step by step reasoning`, `sequential reasoning`). This
+stage derives the mapping from the data rather than relying on a hand-maintained
+dictionary, in two passes:
+
+1. **Lexical.** Merges tags differing only in case, punctuation, separators, simple
+   plurals or `-ing` endings, filler words, or word order.
+2. **Semantic.** The model groups what remains, in alphabetically-sorted batches, then
+   re-clusters the canonical labels those batches produced so synonyms split across
+   batches still meet. Repeats until a round merges nothing. A tag the model drops or
+   renames keeps its own name, so the vocabulary never silently loses one.
+
+```bash
+python src/canonicalise_tags.py \
+    --tags_file data-claude/question_tags/<name>_tags.jsonl \
+    --out_file data-claude/tag_mapping.json \
+    --api_base_url http://127.0.0.1:8001/v1 \
+    --model nvidia/Qwen3.6-35B-A3B-NVFP4
+```
+
+Writes a JSON file holding the `{raw tag: canonical tag}` mapping and the resulting
+canonical tag counts.
+
+| Argument | Default | Description |
+|---|---|---|
+| `--tags_file` | the 700-question default path | JSONL from stage 1 |
+| `--out_file` | `data-claude/tag_mapping.json` | Where the mapping is written |
+| `--model` | `nvidia/Qwen3.6-35B-A3B-NVFP4` | Model doing the grouping |
+| `--api_base_url` / `--api_key` | `http://127.0.0.1:8001/v1` / `EMPTY` | Endpoint serving it |
+| `--batch_size` | `120` | Tags per grouping call |
+| `--max_rounds` | `4` | Cap on re-clustering rounds |
+| `--max_tokens` / `--temperature` / `--top_p` | `8192` / `0.0` / `0.9` | Generation settings |
+| `--no_llm` | off | Lexical normalisation only, no model calls |
+
+### 3. Build the tagged dataset — `src/tag_dataset.py`
+
+Applies the mapping from stage 2, then the hand-written `TAG_MAPPING` in the module
+(which still catches any synonym pair the canonicaliser left apart), drops tags below
+the frequency threshold, and saves a HuggingFace dataset of
+`dataset, question, answer, tags`.
+
+```bash
+python src/tag_dataset.py \
+    --tags_file data-claude/question_tags/<name>_tags.jsonl \
+    --tag_mapping data-claude/tag_mapping.json \
+    --out_dir data-claude/tagged_dataset
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--tags_file` | the 700-question default path | JSONL from stage 1 |
+| `--tag_mapping` | `data-claude/tag_mapping.json` | Mapping from stage 2; empty string uses only the built-in `TAG_MAPPING`, and a missing file warns rather than failing |
+| `--out_dir` | `data-claude/tagged_dataset` | Where `save_to_disk` writes |
+| `--threshold` | `5` | Drop tags occurring fewer than this many times |
+| `--plot_path` | `data-claude/tag_frequencies.png` | Tag frequency chart; empty string skips it |
+
+### 4. Run the orchestrator loop — `src/train_orchestrator.py`
+
+```bash
+python src/train_orchestrator.py \
+    --dataset_path data-claude/tagged_dataset \
+    --model_name nvidia/Qwen3.6-35B-A3B-NVFP4 \
+    --api_base_url http://127.0.0.1:8001/v1 \
+    --iterations 3 --num_samples 5 --team_size 4 --seed 0
+```
+
+Each iteration samples a tag, shows the orchestrator the tag profile of the batch
+and the scoreboard so far, asks it for a team, evaluates that team on the sampled
+questions, and folds the counts back into the scoreboard.
+
+**Candidate agents.** The pool is every persona in `chosen_persona_bank()` — the
+union of the paper's per-dataset persona sets plus the default set, 50 in total —
+built by `build_agent_pool()` rather than listed by hand, so a persona added to the
+bank becomes selectable without a second edit. Names the model invents are rejected
+against the pool and the selection is retried once with the rejected names quoted
+back; a name that survives that would otherwise reach `_build_chosen_personas` as a
+`KeyError`.
+
+**Outputs** (all under `--out_dir`, default `data-claude/orchestrator/`):
+
+| File | Contents |
+|---|---|
+| `agent_performance_by_tag.md` | The scoreboard, and the loop's entire memory: agent totals, accuracy per tag with `correct/seen` counts, recent team selections, and which pool agents are still untried |
+| `agent_performance_state.json` | The counts the scoreboard is rendered from |
+| `run_records.jsonl` | One machine-readable record per iteration: tag, team, rejected names, full evaluation report |
+| `team_selection_results.csv` | Selection log with the orchestrator's reasoning and reasoning trace |
+
+Delete the scoreboard and the state file to reset the loop; stale ones contaminate a
+new experiment.
+
+| Argument | Default | Description |
+|---|---|---|
+| `--dataset_path` | `data-claude/tagged_dataset` | Tagged dataset from stage 3 |
+| `--model_name` | `Qwen/Qwen3.6-35B-A3B` | Model for the orchestrator and, through `team_evaluation`, the agents |
+| `--api_base_url` / `--api_key` | `http://localhost:8001/v1` / `none` | Endpoint serving it |
+| `--iterations` | `10` | Select-evaluate-summarise cycles |
+| `--num_samples` | `5` | Questions sampled per iteration |
+| `--team_size` | `4` | Agents the orchestrator must select |
+| `--seed` | unset | Seeds tag and question sampling |
+| `--summariser` | `counts` | `counts` renders the scoreboard from recorded counts; `llm` has the model rewrite the markdown each iteration (the original behaviour) |
+| `--out_dir` | `data-claude/orchestrator` | Directory for all four outputs above |
+| `--md_file` / `--state_file` / `--output_path` / `--selection_csv` | derived from `--out_dir` | Override individual paths |
+| `--solver` | `vote` | Only `vote` is implemented; `debate` warns and scores by vote |
+| `--debug` | off | Print the full orchestrator prompt and raw response |
+
+**Why `counts` is the default summariser.** In the original loop the model rewrote
+the markdown from scratch each iteration, so the loop's only memory was whatever
+survived a rewrite — a dropped tag or a rounded number changed the record with
+nothing to check it against. The `counts` summariser keeps the counts in
+`agent_performance_state.json` and renders the markdown from them, so accuracies
+always carry the `correct/seen` they are computed from and the record is
+reproducible. The model reads the scoreboard; it no longer writes it.
 
 ## Key Concepts
 

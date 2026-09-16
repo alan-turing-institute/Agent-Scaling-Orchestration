@@ -93,13 +93,21 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Di
     args.num_agents = n_agents
     args.agent_models = ",".join([getattr(args, 'model', getattr(args, 'model_name', ''))] * n_agents)
     args.use_vllm = True
-    args.vllm_base_url = "http://127.0.0.1:8001/v1"
+    # The selected team runs on the same endpoint the orchestrator was pointed at,
+    # unless the caller set an agent-specific one.
+    args.vllm_base_url = (
+        getattr(args, 'vllm_base_url', '')
+        or getattr(args, 'api_base_url', '')
+        or "http://127.0.0.1:8001/v1"
+    )
 
     agents, personas = get_agents(args)
 
-    # Decide evaluation type and suffix
+    # Decide evaluation type and suffix. get_instruction_suffix keys off dataset
+    # names, and its fallback branch asks for a numeric answer, so an MCQ batch
+    # must borrow an MCQ dataset name or the agents are told the wrong format.
     data_type = _infer_data_type(sampled_questions)
-    args.data = data_type
+    args.data = 'gsm8k' if data_type == 'gsm8k' else 'arc'
     SUFFIX = get_instruction_suffix(args)
 
     # Build per-agent counters
@@ -126,6 +134,15 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Di
         total += 1
         question = sample.get('question') if isinstance(sample, dict) else sample['question']
         answer = sample.get('answer') if isinstance(sample, dict) else sample['answer']
+        # The tagged dataset stores answers as strings; the gsm8k evaluator rounds
+        # them with numpy, which raises on a string.
+        if data_type == 'gsm8k':
+            try:
+                answer = float(answer)
+            except (TypeError, ValueError):
+                print(f"[warn] skipping sample with non-numeric answer: {answer!r}")
+                total -= 1
+                continue
         sample_tags = sample.get('tags') if isinstance(sample, dict) else sample['tags']
         if sample_tags is None:
             sample_tags = []
@@ -159,13 +176,21 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Di
                     return _response_text(res[0])
                 return _response_text(res)
 
+            # Results are placed by index, not by completion order: agent_names is
+            # zipped against this list, so a response landing in the wrong slot
+            # would credit one agent's answer to another.
+            response_texts = [""] * n_agents
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(32, n_agents)) as ex:
-                futures = [ex.submit(_call_one, i, msg, cfg) for i, (msg, cfg) in enumerate(zip(messages, persona_configs))]
+                futures = {
+                    ex.submit(_call_one, i, msg, cfg): i
+                    for i, (msg, cfg) in enumerate(zip(messages, persona_configs))
+                }
                 for fut in concurrent.futures.as_completed(futures):
+                    idx = futures[fut]
                     try:
-                        response_texts.append(fut.result())
+                        response_texts[idx] = fut.result()
                     except Exception:
-                        response_texts.append("")
+                        response_texts[idx] = ""
         else:
             # Fallback: call engine in batch mode (synchronous)
             responses = engine(messages, agents, n_agents, persona_configs=persona_configs)
@@ -231,4 +256,11 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Di
         "per_agent_accuracy": per_agent_accuracy,
         "per_agent_accuracy_by_tag": per_agent_accuracy_by_tag,
         "n_samples": total,
+        # Raw counts, so results from several iterations can be summed rather than
+        # averaged over batches of different sizes.
+        "team_correct": team_correct,
+        "per_agent_correct": dict(per_agent_correct),
+        "per_agent_correct_by_tag": {t: dict(v) for t, v in per_agent_correct_by_tag.items()},
+        "per_tag_counts": dict(per_tag_counts),
+        "data_type": data_type,
     }
