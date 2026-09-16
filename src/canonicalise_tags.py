@@ -18,6 +18,7 @@ applies before the frequency filter.
 """
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -35,13 +36,14 @@ SYSTEM_PROMPT = (
 
 CLUSTER_PROMPT = """Below is a list of tags with the number of questions carrying each one.
 
-Group tags that name the same capability into one category. Two tags belong together only when an agent good at one is good at the other by definition - a wording variant, a synonym, or the same skill at a different level of detail.
+Group tags that name the same capability. Two tags belong together only when an agent good at one is good at the other by definition - a wording variant, a synonym, or the same skill at a different level of detail.
 
 Rules:
+- Output ONLY groups of two or more tags. A tag you do not list stays as its own category, so most tags will not appear at all.
 - Keep genuinely different capabilities apart, even when they are related. "arithmetic" and "algebra" are different. "commonsense reasoning" and "physical reasoning" are different.
 - Prefer the highest-count tag in a group as the canonical name, unless a lower-count tag names the capability more plainly.
 - Use lowercase and the wording already present. Do not invent new vocabulary.
-- Every tag in the input must appear in exactly one group, including tags that group alone.
+- Never put a tag in two groups.
 
 Tags:
 {tag_block}
@@ -49,6 +51,7 @@ Tags:
 Return only valid JSON, no markdown fences, no commentary, in this shape:
 {{"groups": [{{"canonical": "...", "members": ["...", "..."]}}]}}
 """
+
 
 # Words that carry no distinguishing meaning in a capability tag.
 FILLER_WORDS = {"general", "basic", "simple", "task", "tasks", "based", "skills", "ability"}
@@ -84,10 +87,16 @@ def parse_args():
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=120,
+        default=60,
         help="Tags per grouping call; batches are re-clustered afterwards",
     )
     parser.add_argument("--max_rounds", type=int, default=4)
+    parser.add_argument(
+        "--max_workers",
+        type=int,
+        default=8,
+        help="Grouping calls in flight at once",
+    )
     parser.add_argument("--max_tokens", type=int, default=8192)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=0.9)
@@ -171,6 +180,26 @@ def parse_groups(raw_text):
     groups = parsed.get("groups") if isinstance(parsed, dict) else parsed
     if not isinstance(groups, list):
         return []
+    return _clean_groups(groups)
+
+
+def salvage_groups(raw_text):
+    """Recover the complete group objects from a response cut off mid-JSON."""
+    groups = []
+    pattern = re.compile(
+        r'\{\s*"canonical"\s*:\s*"(?P<canonical>[^"]*)"\s*,\s*"members"\s*:\s*\[(?P<members>[^\]]*)\]\s*\}',
+        re.DOTALL,
+    )
+    for match in pattern.finditer(raw_text or ""):
+        try:
+            members = json.loads("[" + match.group("members") + "]")
+        except json.JSONDecodeError:
+            continue
+        groups.append({"canonical": match.group("canonical"), "members": members})
+    return _clean_groups(groups)
+
+
+def _clean_groups(groups):
 
     cleaned = []
     for group in groups:
@@ -201,21 +230,26 @@ def cluster_batch(client, args, batch):
         top_p=args.top_p,
     )
     raw_text = response.choices[0].message.content or ""
+    truncated = response.choices[0].finish_reason == "length"
     groups = parse_groups(raw_text)
+    if not groups and truncated:
+        # A response cut off mid-JSON still carries usable groups before the cut.
+        groups = salvage_groups(raw_text)
+        if groups:
+            print(f"  [warn] response truncated; kept {len(groups)} complete group(s)")
+    elif truncated:
+        print("  [warn] response truncated")
 
     known = {tag for tag, _ in batch}
-    mapping = {}
+    # Every tag keeps its own name unless a group moves it: the model is asked for
+    # merges only, so an unlisted tag is a decision, not a loss.
+    mapping = {tag: tag for tag in known}
     for canonical, members in groups:
+        members = [m for m in members if m in known]
+        if len(members) < 2:
+            continue
         for member in members:
-            if member in known and member not in mapping:
-                mapping[member] = canonical
-    # A tag the model dropped, renamed or hallucinated keeps its own name rather
-    # than disappearing from the vocabulary.
-    missing = sorted(known - set(mapping))
-    for tag in missing:
-        mapping[tag] = tag
-    if missing:
-        print(f"  [warn] {len(missing)} tag(s) not returned by the model, kept as-is")
+            mapping[member] = canonical
     return mapping
 
 
@@ -229,9 +263,16 @@ def cluster_round(client, args, counts):
         for i in range(0, len(ordered), args.batch_size)
     ]
     mapping = {}
-    for index, batch in enumerate(batches, start=1):
-        print(f"  batch {index}/{len(batches)} ({len(batch)} tags)")
-        mapping.update(cluster_batch(client, args, batch))
+    workers = max(1, min(args.max_workers, len(batches)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(cluster_batch, client, args, batch): index
+            for index, batch in enumerate(batches, start=1)
+        }
+        for future in concurrent.futures.as_completed(futures):
+            index = futures[future]
+            print(f"  batch {index}/{len(batches)} done")
+            mapping.update(future.result())
     return mapping
 
 

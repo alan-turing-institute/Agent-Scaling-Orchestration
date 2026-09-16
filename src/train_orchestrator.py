@@ -42,6 +42,12 @@ def parse_args():
     parser.add_argument("--state_file", default=None, help="Scoreboard counts JSON (default: {out_dir}/agent_performance_state.json)")
     parser.add_argument("--selection_csv", default=None, help="Team selection log (default: {out_dir}/team_selection_results.csv)")
     parser.add_argument(
+        "--summary_every",
+        type=int,
+        default=1,
+        help="Rewrite the scoreboard every N evaluated iterations (1 = after every task). Pending results are always flushed at the end of the run",
+    )
+    parser.add_argument(
         "--summariser",
         choices=["counts", "llm"],
         default="counts",
@@ -118,6 +124,19 @@ def write_run_record(path, record):
         fh.write(json.dumps(record, default=str) + "\n")
 
 
+def flush_summary(args, orchestrator, evaluations, pending, pool_names):
+    """Write the scoreboard from whatever results are waiting."""
+    if args.summariser == "llm":
+        save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path=args.md_file)
+    else:
+        save_evaluation_summary(
+            pending,
+            out_md_path=args.md_file,
+            state_path=args.state_file,
+            pool_names=pool_names,
+        )
+
+
 def main():
     args = parse_args()
 
@@ -143,6 +162,7 @@ def main():
 
     pool_names = [agent["name"] for agent in AGENT_POOL]
     evaluations = []
+    pending = []
 
     for iteration in range(1, args.iterations + 1):
         print("\n" + "#" * 60)
@@ -235,16 +255,18 @@ def main():
             **evaluation,
         })
 
-        # Rewrite the scoreboard so the next iteration selects with this result in view.
-        if args.summariser == "llm":
-            save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path=args.md_file)
-        else:
-            save_evaluation_summary(
-                evaluation,
-                out_md_path=args.md_file,
-                state_path=args.state_file,
-                pool_names=pool_names,
-            )
+        # Rewrite the scoreboard so later iterations select with this result in
+        # view. With --summary_every > 1 the results wait in `pending`, so the
+        # orchestrator keeps choosing against an older scoreboard until the batch
+        # is flushed.
+        pending.append(evaluation)
+        is_last = iteration == args.iterations
+        if len(pending) >= args.summary_every or is_last:
+            flush_summary(args, orchestrator, evaluations, pending, pool_names)
+            pending = []
+
+    if pending:
+        flush_summary(args, orchestrator, evaluations, pending, pool_names)
 
     print(f"\nRun records: {args.output_path}")
     print(f"Scoreboard:  {args.md_file}")

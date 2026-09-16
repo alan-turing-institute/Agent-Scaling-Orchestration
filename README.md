@@ -267,11 +267,27 @@ new experiment.
 | `--num_samples` | `5` | Questions sampled per iteration |
 | `--team_size` | `4` | Agents the orchestrator must select |
 | `--seed` | unset | Seeds tag and question sampling |
+| `--summary_every` | `1` | Rewrite the scoreboard every N evaluated iterations; `1` updates after every task, higher values hold results back so the orchestrator keeps choosing against an older scoreboard. Pending results are always flushed at the end of the run |
 | `--summariser` | `counts` | `counts` renders the scoreboard from recorded counts; `llm` has the model rewrite the markdown each iteration (the original behaviour) |
 | `--out_dir` | `data-claude/orchestrator` | Directory for all four outputs above |
 | `--md_file` / `--state_file` / `--output_path` / `--selection_csv` | derived from `--out_dir` | Override individual paths |
 | `--solver` | `vote` | Only `vote` is implemented; `debate` warns and scores by vote |
 | `--debug` | off | Print the full orchestrator prompt and raw response |
+
+**Comparing update schedules.** `--summary_every` is what separates a loop that
+learns after every task from one that learns in batches. Give each schedule its own
+`--out_dir` so their scoreboards, state files and run records stay separate — a
+shared directory would let one run's memory inform the other:
+
+```bash
+python src/train_orchestrator.py --out_dir data-claude/orchestrator/continual \
+    --summary_every 1 --iterations 12 --seed 0 ...
+python src/train_orchestrator.py --out_dir data-claude/orchestrator/batched \
+    --summary_every 4 --iterations 12 --seed 0 ...
+```
+
+The same `--seed` gives both runs the same tags and questions in the same order, so
+what differs between them is when the orchestrator learned, not what it was asked.
 
 **Why `counts` is the default summariser.** In the original loop the model rewrote
 the markdown from scratch each iteration, so the loop's only memory was whatever

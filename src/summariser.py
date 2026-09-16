@@ -297,10 +297,18 @@ def render_scoreboard(state, pool_names=None, recent=8, min_questions=1):
     return "\n".join(lines)
 
 
-def save_evaluation_summary(evaluation, out_md_path, state_path, pool_names=None, recent=8):
-    """Fold one evaluation into the scoreboard and rewrite the markdown from counts."""
+def save_evaluation_summary(evaluations, out_md_path, state_path, pool_names=None, recent=8):
+    """Fold one or more evaluations into the scoreboard and rewrite the markdown.
+
+    Takes a list when the loop batches its updates, so several iterations are
+    folded in order under one rewrite.
+    """
+    if isinstance(evaluations, dict):
+        evaluations = [evaluations]
+
     state = load_state(state_path)
-    state = update_state(state, evaluation)
+    for evaluation in evaluations:
+        state = update_state(state, evaluation)
 
     _atomic_write(state_path, json.dumps(state, indent=2))
     markdown = render_scoreboard(state, pool_names=pool_names, recent=recent)
