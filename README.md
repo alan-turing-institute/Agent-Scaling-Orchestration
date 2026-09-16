@@ -268,11 +268,29 @@ new experiment.
 | `--team_size` | `4` | Agents the orchestrator must select |
 | `--seed` | unset | Seeds tag and question sampling |
 | `--summary_every` | `1` | Rewrite the scoreboard every N evaluated iterations; `1` updates after every task, higher values hold results back so the orchestrator keeps choosing against an older scoreboard. Pending results are always flushed at the end of the run |
+| `--test_fraction` | `0.0` | Fraction held out before training for the final evaluation; `0` trains on everything and skips it |
+| `--split_seed` | `0` | Seeds the train/test split and the held-out batching — keep it equal across runs being compared |
+| `--test_batch_size` | `--num_samples` | Questions per held-out batch |
+| `--random_baseline` | off | Also score a randomly drawn team on every held-out batch, as a reference line |
+| `--eval_workers` | `5` | Questions evaluated concurrently within a batch (agents within a question are always concurrent) |
 | `--summariser` | `counts` | `counts` renders the scoreboard from recorded counts; `llm` has the model rewrite the markdown each iteration (the original behaviour) |
 | `--out_dir` | `data-claude/orchestrator` | Directory for all four outputs above |
 | `--md_file` / `--state_file` / `--output_path` / `--selection_csv` | derived from `--out_dir` | Override individual paths |
 | `--solver` | `vote` | Only `vote` is implemented; `debate` warns and scores by vote |
 | `--debug` | off | Print the full orchestrator prompt and raw response |
+
+**Held-out evaluation.** With `--test_fraction`, a test split is taken *before*
+any learning and the training loop samples only from the remainder. When the loop
+finishes, the scoreboard is frozen and every held-out question is evaluated
+exactly once: the test split is shuffled and chunked into batches, each batch's
+tag profile goes to the orchestrator, and the team it picks answers that batch.
+Results land in `holdout_records.jsonl` (one record per batch) and
+`holdout_summary.json` (team accuracy over the split, plus per-agent and per-tag
+counts). Nothing learned during the evaluation feeds back into the scoreboard.
+
+Questions are scored by their own answer type rather than the batch's, because a
+tag such as `step-by-step reasoning` pulls gsm8k and multiple-choice questions
+into the same batch.
 
 **Comparing update schedules.** `--summary_every` is what separates a loop that
 learns after every task from one that learns in batches. Give each schedule its own

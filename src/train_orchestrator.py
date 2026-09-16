@@ -16,6 +16,7 @@ from datasets import load_from_disk
 
 from model.model_utils import build_agent_pool
 from orchestration.orchestrator import OrchestratorAgent, team_selection
+from holdout_evaluation import evaluate_holdout
 from team_evaluation import run_team_evaluation
 from summariser import save_evaluation_summary, save_evaluation_summary_with_llm
 
@@ -33,8 +34,13 @@ def parse_args():
     parser.add_argument("--dataset_path", default="data-claude/tagged_dataset", help="Path to the Hugging Face dataset on disk")
     parser.add_argument("--iterations", type=int, default=10, help="Number of select-evaluate-summarise cycles")
     parser.add_argument("--num_samples", type=int, default=5, help="Number of questions to sample for team selection")
+    parser.add_argument("--eval_workers", type=int, default=5, help="Questions evaluated concurrently within one batch")
     parser.add_argument("--team_size", type=int, default=4, help="Number of agents the orchestrator must select")
     parser.add_argument("--seed", type=int, default=None, help="Seed for tag and question sampling")
+    parser.add_argument("--test_fraction", type=float, default=0.0, help="Fraction of the dataset held out for the final evaluation; 0 trains on everything and skips it")
+    parser.add_argument("--split_seed", type=int, default=0, help="Seed for the train/test split and the held-out batching; keep it equal across runs being compared")
+    parser.add_argument("--test_batch_size", type=int, default=None, help="Questions per held-out batch (default: --num_samples)")
+    parser.add_argument("--random_baseline", action="store_true", help="Also score a randomly chosen team on every held-out batch")
     parser.add_argument("--solver", choices=["vote", "debate"], default="vote", help="How to aggregate the selected team answers (only vote is implemented)")
     parser.add_argument("--out_dir", default="data-claude/orchestrator", help="Directory for the run's outputs")
     parser.add_argument("--output_path", default=None, help="Run record JSONL (default: {out_dir}/run_records.jsonl)")
@@ -150,6 +156,15 @@ def main():
     dataset_path = resolve_dataset_path(args.dataset_path)
     dataset = load_from_disk(str(dataset_path))
     print(f"✓ Dataset loaded: {len(dataset)} questions")
+
+    # Hold out a test split before any learning, so the final numbers come from
+    # questions no iteration could have trained on. Same split_seed in two runs
+    # means the same split, evaluated in the same batches.
+    test_dataset = None
+    if args.test_fraction and args.test_fraction > 0:
+        split = dataset.train_test_split(test_size=args.test_fraction, seed=args.split_seed)
+        dataset, test_dataset = split["train"], split["test"]
+        print(f"✓ Train/test split: {len(dataset)} train, {len(test_dataset)} held out")
     print(f"✓ Agent pool: {len(AGENT_POOL)} candidate personas")
 
     orchestrator = OrchestratorAgent(
@@ -270,6 +285,21 @@ def main():
 
     print(f"\nRun records: {args.output_path}")
     print(f"Scoreboard:  {args.md_file}")
+
+    if test_dataset is not None:
+        # Read the finished scoreboard once: it stays frozen for every held-out
+        # batch, so the evaluation measures what the loop learned, not what it
+        # would keep learning.
+        md_path = Path(args.md_file)
+        scoreboard_md = md_path.read_text(encoding="utf-8") if md_path.exists() else None
+        evaluate_holdout(
+            orchestrator,
+            test_dataset,
+            args,
+            pool_names,
+            scoreboard_md=scoreboard_md,
+            random_baseline=args.random_baseline,
+        )
 
 
 if __name__ == "__main__":
