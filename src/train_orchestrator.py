@@ -54,6 +54,12 @@ def parse_args():
         help="Rewrite the scoreboard every N evaluated iterations (1 = after every task). Pending results are always flushed at the end of the run",
     )
     parser.add_argument(
+        "--memory",
+        choices=["scoreboard", "none"],
+        default="scoreboard",
+        help="scoreboard: the orchestrator selects with the running scoreboard in view. none: it never sees one, so every selection is made from the tag profile and the agent pool alone. The scoreboard is still written either way, so a no-memory run can be analysed like any other",
+    )
+    parser.add_argument(
         "--summariser",
         choices=["counts", "llm"],
         default="counts",
@@ -185,8 +191,12 @@ def main():
         print("#" * 60)
 
         # The scoreboard is the loop's memory: read it back before every choice.
-        md_path = Path(args.md_file)
-        prior_md = md_path.read_text(encoding="utf-8") if md_path.exists() else None
+        # With --memory none it is written but never read, which is the baseline
+        # for asking what the memory is worth.
+        prior_md = None
+        if args.memory == "scoreboard":
+            md_path = Path(args.md_file)
+            prior_md = md_path.read_text(encoding="utf-8") if md_path.exists() else None
 
         result = team_selection(
             orchestrator,
@@ -290,8 +300,10 @@ def main():
         # Read the finished scoreboard once: it stays frozen for every held-out
         # batch, so the evaluation measures what the loop learned, not what it
         # would keep learning.
-        md_path = Path(args.md_file)
-        scoreboard_md = md_path.read_text(encoding="utf-8") if md_path.exists() else None
+        scoreboard_md = None
+        if args.memory == "scoreboard":
+            md_path = Path(args.md_file)
+            scoreboard_md = md_path.read_text(encoding="utf-8") if md_path.exists() else None
         evaluate_holdout(
             orchestrator,
             test_dataset,

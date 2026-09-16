@@ -267,6 +267,7 @@ new experiment.
 | `--num_samples` | `5` | Questions sampled per iteration |
 | `--team_size` | `4` | Agents the orchestrator must select |
 | `--seed` | unset | Seeds tag and question sampling |
+| `--memory` | `scoreboard` | `scoreboard` lets the orchestrator select with the running scoreboard in view; `none` withholds it entirely, so every team is chosen from the tag profile and the agent pool alone. The scoreboard is still written under `none`, so the run can be analysed like any other — it is simply never read back |
 | `--summary_every` | `1` | Rewrite the scoreboard every N evaluated iterations; `1` updates after every task, higher values hold results back so the orchestrator keeps choosing against an older scoreboard. Pending results are always flushed at the end of the run |
 | `--test_fraction` | `0.0` | Fraction held out before training for the final evaluation; `0` trains on everything and skips it |
 | `--split_seed` | `0` | Seeds the train/test split and the held-out batching — keep it equal across runs being compared |
@@ -306,6 +307,23 @@ python src/train_orchestrator.py --out_dir data-claude/orchestrator/batched \
 
 The same `--seed` gives both runs the same tags and questions in the same order, so
 what differs between them is when the orchestrator learned, not what it was asked.
+
+**The no-memory baseline.** Neither schedule answers the prior question of whether
+the memory is worth anything, because both have one. `--memory none` runs the same
+loop with the scoreboard withheld: the orchestrator sees the tag profile and the
+fifty candidate personas, and nothing about how any of them has done before. Run it
+with the same seeds and the same split as the schedules being compared, and its
+held-out accuracy is the line they have to beat:
+
+```bash
+python src/train_orchestrator.py --out_dir data-claude/orchestrator/no_memory \
+    --memory none --iterations 12 --seed 0 --split_seed 0 ...
+```
+
+This is a different question from `--random_baseline`, which draws a team at random
+and so measures whether *choosing* beats not choosing. `--memory none` keeps the
+choosing and removes only the evidence, which measures what the accumulated record
+adds to an orchestrator that is already reasoning about personas and tags.
 
 **Why `counts` is the default summariser.** In the original loop the model rewrote
 the markdown from scratch each iteration, so the loop's only memory was whatever

@@ -148,7 +148,8 @@ four minutes to 2m16s.
 whether that memory is refreshed after every task, or in large batches? Continual
 updating gives the orchestrator the freshest possible record; batched updating means
 it keeps selecting against an older record, seeing several tasks' worth of results at
-once.
+once. A third run withholds the scoreboard altogether, so the two schedules are
+compared against the case where there is nothing to schedule.
 
 **Design.** Two runs identical in every respect except `--summary_every`. The test
 split is taken before training, the training loop samples only from the remainder,
@@ -169,6 +170,7 @@ state file or records.
 | Held-out evaluation | 140 questions in 28 batches of 5, scoreboard frozen |
 | Run A `continual` | `--summary_every 1` → `data-claude/orchestrator/continual/` |
 | Run B `batched` | `--summary_every 10` → `data-claude/orchestrator/batched/` |
+| Run C `no_memory` | `--memory none` → `data-claude/orchestrator/no_memory/` |
 
 ```bash
 COMMON="--dataset_path data-claude/tagged_dataset \
@@ -181,22 +183,39 @@ python src/train_orchestrator.py $COMMON --summary_every 1 \
     --out_dir data-claude/orchestrator/continual
 python src/train_orchestrator.py $COMMON --summary_every 10 \
     --out_dir data-claude/orchestrator/batched
+python src/train_orchestrator.py $COMMON --memory none --summary_every 1 \
+    --out_dir data-claude/orchestrator/no_memory
 ```
 
-Both runs launched 2026-09-16, running concurrently against the one server.
+Runs A and B launched 2026-09-16; run C was added the same day, once `--memory`
+existed, and started while the other two were a few iterations in. All three run
+concurrently against the one server. At five questions per iteration and four
+agents per question each run holds about twenty requests in flight, so three of
+them together sit just under the server's `MAX_NUM_SEQS=64`.
+
+**Run C, the no-memory baseline.** `--memory none` writes the scoreboard but never
+reads it back, either during training or in the held-out evaluation, so every team
+is chosen from the tag profile and the pool of fifty alone. It is the line runs A
+and B have to beat for the scoreboard to be worth keeping. It is a different
+question from `--random_baseline`, which removes the choosing rather than the
+evidence: run C still reasons about which personas suit which tags, it just has no
+record of how any of them has actually done.
 
 ### Results
 
-_Running. To be filled in: held-out team accuracy per run, per-tag breakdown, which
-agents each run converged on, how many of the 50 candidates each tried, and whether
-selections changed over the course of training._
+_Running. To be filled in: held-out team accuracy for each of the three runs,
+per-tag breakdown, which agents each run converged on, how many of the 50 candidates
+each tried, and whether selections changed over the course of training. The
+comparison that matters first is A and B against C: if neither beats the run with no
+memory at all, the update schedule is not the interesting variable._
 
 ### Caveats to remember when reading these numbers
 
-- No random-team baseline was run, so held-out accuracy says how well a selected team
-  does, not how much the selecting is worth. `--random_baseline` scores a randomly
-  drawn team on the same batches and should be run before drawing conclusions about
-  the orchestrator's value.
+- No random-team baseline was run. Run C isolates the value of the *memory*, but not
+  the value of the *selecting*: a random team drawn from the same pool might do as
+  well as one the orchestrator reasoned its way to. `--random_baseline` scores a
+  randomly drawn team on the same held-out batches and should be run before claiming
+  the orchestrator is worth anything at all.
 - 30 iterations × 5 questions means the scoreboard is built from 150 answered
   questions spread over 96 tags, so most per-tag cells are thin. Differences between
   the two runs may be noise at this scale.
