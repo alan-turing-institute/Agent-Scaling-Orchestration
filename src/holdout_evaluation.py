@@ -75,10 +75,10 @@ def _select_team(orchestrator, tag_frequencies, batch_size, scoreboard_md, team_
         )
         if len(team_result.get("agents", [])) >= team_size:
             break
-        invalid = team_result.get("invalid_agents") or []
-        if not invalid or attempt == max_attempts:
+        if attempt == max_attempts:
             break
-        invalid_feedback = ", ".join(invalid)
+        invalid = team_result.get("invalid_agents") or []
+        invalid_feedback = ", ".join(invalid) if invalid else None
 
     return team_result
 

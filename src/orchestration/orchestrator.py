@@ -141,8 +141,17 @@ Output only valid JSON with no additional text."""
             print(f"\n [DEBUG] --- Orchestrator Response ---\n{response}\n---------------------------\n")
         
         try:
-            # Try to extract JSON from the response
-            response_text = response.choices[0].message.content.strip()
+            # A reasoning model that spends its budget thinking returns content
+            # None, so coerce before parsing rather than raising on it.
+            response_text = (response.choices[0].message.content or "").strip()
+            if not response_text:
+                print("⚠️  Warning: empty response content; no team selected")
+                return {
+                    "agents": [],
+                    "invalid_agents": [],
+                    "reasoning": "Empty response - no team selected",
+                    "reasoning trace": getattr(response.choices[0].message, "reasoning", "No reasoning available"),
+                }
             
             # If the response is wrapped in markdown code blocks, remove them
             if response_text.startswith("```"):
@@ -261,11 +270,11 @@ def team_selection(orchestrator: OrchestratorAgent, dataset, num_samples=5, prio
         )
         if len(team_result.get("agents", [])) >= team_size:
             break
-        invalid = team_result.get("invalid_agents") or []
-        if not invalid or attempt == max_attempts:
+        if attempt == max_attempts:
             break
+        invalid = team_result.get("invalid_agents") or []
         print(f"Retrying team selection (attempt {attempt + 1}/{max_attempts})")
-        invalid_feedback = ", ".join(invalid)
+        invalid_feedback = ", ".join(invalid) if invalid else None
 
     return {
         "chosen_tag": chosen_tag,
