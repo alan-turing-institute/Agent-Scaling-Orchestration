@@ -24,7 +24,7 @@ class OpenAICompatChatWrapper:
         base_url: str,
         model_name: str,
         api_key: str = "EMPTY",
-        timeout: Optional[float] = 900.0,
+        timeout: Optional[float] = 300.0,
         max_retries: int = 4,
     ):
         self.base_url = base_url.rstrip("/")

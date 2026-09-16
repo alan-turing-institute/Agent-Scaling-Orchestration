@@ -17,7 +17,7 @@ class OrchestratorAgent:
 
         # A long run is worth more than a fast failure: wait a while for a
         # loaded server, and retry rather than lose the run to one bad call.
-        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=900.0, max_retries=4)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=300.0, max_retries=4)
 
         self.debug = debug
 

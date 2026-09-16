@@ -189,14 +189,11 @@ python src/train_orchestrator.py $COMMON --memory none --summary_every 1 \
     --out_dir data-claude/orchestrator/no_memory
 ```
 
-Runs A and B launched 2026-09-16; run C was added the same day, once `--memory`
-existed, and started while the other two were a few iterations in. All three run
-concurrently against the one server. At five questions per iteration and four
-agents per question each run holds about twenty requests in flight, so three of
-them together sit just under the server's `MAX_NUM_SEQS=64`.
+All three arms launched 2026-09-16 and run one after another, in the order
+`no_memory`, `continual`, `batched`, against the one server.
 
-**Aborted first attempt.** The first launch of runs A and B died to a server
-fault, not a code fault. At 16:30 UTC, four iterations in, the vLLM engine stopped
+**Aborted attempts, and why the arms now run one after another.** The first two
+launches both died to the same server fault, not a code fault. At 16:30 UTC, four iterations in, the vLLM engine stopped
 making progress: generation throughput fell to zero with fourteen requests still
 marked running, and stayed there. The API server kept answering `/v1/models`, so
 the container looked healthy from outside, but no completion returned again. Run B
@@ -208,12 +205,29 @@ iteration. Partial outputs are kept under
 Two changes came out of it, and both are in the code the relaunched runs use.
 
 - **The server no longer speculates.** The engine was running MTP speculative
-  decoding (`NUM_SPEC_TOKENS=3`) when it wedged. It is restarted with `NO_SPEC=1`,
-  keeping `MAX_NUM_SEQS=64`. Speculative decoding buys most at low concurrency, and
-  these runs keep twenty or more requests in flight, so the throughput given up is
-  small against a hang that costs the whole run.
+  decoding (`NUM_SPEC_TOKENS=3`) when it first wedged. It is restarted with
+  `NO_SPEC=1`, keeping `MAX_NUM_SEQS=64`. This did not fix it — see below — but
+  speculative decoding buys most at low concurrency and these runs keep twenty or
+  more requests in flight, so nothing is lost by leaving it off.
+
+The second attempt, with all three arms concurrent and no speculative decoding,
+wedged the same way about fifteen minutes in: engine core spinning at 99% CPU and
+96% GPU utilisation, no completion returned for ninety minutes, all three runs
+blocked in their selection call. So speculative decoding was not the cause. What
+both attempts share is sustained concurrent load from three processes — roughly
+sixty requests in flight — against a server whose published figures come from
+short benchmark bursts (631 tok/s at 64 concurrent, `vllm/qwen3.6/README.md`), not
+from hours of long prompts and long generations.
+
+**The arms therefore run sequentially**, driven by `scripts/experiment1_schedules.sh`.
+One run keeps about twenty requests in flight. This costs wall-clock — roughly six
+hours for three arms rather than two and a half — and buys a server that is inside
+its measured envelope. Partial outputs from the second attempt are under
+`data-claude/aborted-2026-09-16-engine-hang-2/`. A watchdog probes the server each
+minute during a run and restarts the container after three consecutive failures,
+so a further wedge costs an iteration rather than the run.
 - **A failed call costs an iteration, not a run.** The orchestrator client and the
-  agent wrapper now use a 900-second timeout with four retries, and both the
+  agent wrapper now use a 300-second timeout with four retries, and both the
   training loop and the held-out evaluation catch a failure per iteration or per
   batch, record it, and continue. The first attempt lost four completed iterations
   because there was nothing between one timed-out request and the end of the
@@ -245,7 +259,7 @@ memory at all, the update schedule is not the interesting variable._
 - 30 iterations × 5 questions means the scoreboard is built from 150 answered
   questions spread over 96 tags, so most per-tag cells are thin. Differences between
   the two runs may be noise at this scale.
-- Both runs share one server, so they interleave; this affects wall-clock timings
-  only, not results.
+- The arms run sequentially on one server, so their wall-clock timings are
+  comparable to each other but were measured across different hours of the day.
 - `--solver debate` is accepted but not implemented; everything here is majority vote
   with no debate rounds.
