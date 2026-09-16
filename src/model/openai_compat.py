@@ -24,12 +24,14 @@ class OpenAICompatChatWrapper:
         base_url: str,
         model_name: str,
         api_key: str = "EMPTY",
-        timeout: Optional[float] = None,
+        timeout: Optional[float] = 900.0,
+        max_retries: int = 4,
     ):
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name
         self.api_key = api_key
         self.timeout = timeout
+        self.max_retries = max_retries
 
         try:
             # openai>=1.0 provides OpenAI client
@@ -45,6 +47,7 @@ class OpenAICompatChatWrapper:
             base_url=self.base_url,
             api_key=self.api_key,
             timeout=self.timeout,
+            max_retries=self.max_retries,
         )
 
     def complete(

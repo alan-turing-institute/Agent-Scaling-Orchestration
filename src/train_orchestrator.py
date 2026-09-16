@@ -198,13 +198,25 @@ def main():
             md_path = Path(args.md_file)
             prior_md = md_path.read_text(encoding="utf-8") if md_path.exists() else None
 
-        result = team_selection(
-            orchestrator,
-            dataset,
-            num_samples=args.num_samples,
-            prior_md=prior_md,
-            team_size=args.team_size,
-        )
+        # A run is thirty iterations long against a server it does not control,
+        # so a failed call costs the iteration rather than the run.
+        try:
+            result = team_selection(
+                orchestrator,
+                dataset,
+                num_samples=args.num_samples,
+                prior_md=prior_md,
+                team_size=args.team_size,
+            )
+        except Exception as error:
+            print(f"[warn] selection failed: {error!r}; skipping this iteration")
+            write_run_record(args.output_path, {
+                "iteration": iteration,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "status": "selection_error",
+                "error": repr(error),
+            })
+            continue
         if not result:
             continue
 
@@ -242,7 +254,19 @@ def main():
             print(f"[warn] team has {len(selected_team)} agents, expected {args.team_size}; evaluating anyway")
 
         sampled_questions = result["sampled_questions"]
-        report = run_team_evaluation(selected_team, sampled_questions, args)
+        try:
+            report = run_team_evaluation(selected_team, sampled_questions, args)
+        except Exception as error:
+            print(f"[warn] evaluation failed: {error!r}; skipping this iteration")
+            write_run_record(args.output_path, {
+                "iteration": iteration,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "chosen_tag": result.get("chosen_tag"),
+                "selected_team": selected_team,
+                "status": "evaluation_error",
+                "error": repr(error),
+            })
+            continue
 
         print("\n" + "=" * 60)
         print("TEAM EVALUATION")

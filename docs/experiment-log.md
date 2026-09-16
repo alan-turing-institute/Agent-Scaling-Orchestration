@@ -19,12 +19,14 @@ of how they have done on questions carrying each tag.
 | Machine | DGX Spark, one GB10 (SM121), 121 GB unified memory, ~273 GB/s |
 | Server | vLLM in Docker, container `qwen3.6-vllm`, host port 8001 |
 | Model | `nvidia/Qwen3.6-35B-A3B-NVFP4` (NVFP4 weights, FP8 KV cache) |
-| Serve command | `NUM_SPEC_TOKENS=3 MAX_NUM_SEQS=64 HOST_PORT=8001 sh vllm/qwen3.6/run_docker_nvfp4.sh` |
+| Serve command | `NO_SPEC=1 MAX_NUM_SEQS=64 HOST_PORT=8001 sh vllm/qwen3.6/run_docker_nvfp4.sh` |
 | Python | local venv at `env/`, torch 2.14.0+cu130, datasets 5.0.1, openai 3.14.1 |
 
 `MAX_NUM_SEQS=64` is the throughput configuration from `vllm/qwen3.6/README.md`
 (631 tok/s aggregate at 64 concurrent), chosen to match the 64-way semaphore in
-`tag_questions.py`. `HOST_PORT` was added to the serve script for this work: the
+`tag_questions.py`. The tagging stages below ran with MTP speculative decoding
+(`NUM_SPEC_TOKENS=3`); the orchestrator runs do not, for the reason recorded under
+experiment 1. `HOST_PORT` was added to the serve script for this work: the
 container always listens on 8000, while this repository defaults to 8001 and
 `team_evaluation.py` hard-codes it.
 
@@ -192,6 +194,30 @@ existed, and started while the other two were a few iterations in. All three run
 concurrently against the one server. At five questions per iteration and four
 agents per question each run holds about twenty requests in flight, so three of
 them together sit just under the server's `MAX_NUM_SEQS=64`.
+
+**Aborted first attempt.** The first launch of runs A and B died to a server
+fault, not a code fault. At 16:30 UTC, four iterations in, the vLLM engine stopped
+making progress: generation throughput fell to zero with fourteen requests still
+marked running, and stayed there. The API server kept answering `/v1/models`, so
+the container looked healthy from outside, but no completion returned again. Run B
+raised `openai.APITimeoutError` and died; run A hung in the same call for another
+hour and twenty minutes; run C, launched into the wedged server, never completed an
+iteration. Partial outputs are kept under
+`data-claude/aborted-2026-09-16-engine-hang/`.
+
+Two changes came out of it, and both are in the code the relaunched runs use.
+
+- **The server no longer speculates.** The engine was running MTP speculative
+  decoding (`NUM_SPEC_TOKENS=3`) when it wedged. It is restarted with `NO_SPEC=1`,
+  keeping `MAX_NUM_SEQS=64`. Speculative decoding buys most at low concurrency, and
+  these runs keep twenty or more requests in flight, so the throughput given up is
+  small against a hang that costs the whole run.
+- **A failed call costs an iteration, not a run.** The orchestrator client and the
+  agent wrapper now use a 900-second timeout with four retries, and both the
+  training loop and the held-out evaluation catch a failure per iteration or per
+  batch, record it, and continue. The first attempt lost four completed iterations
+  because there was nothing between one timed-out request and the end of the
+  process.
 
 **Run C, the no-memory baseline.** `--memory none` writes the scoreboard but never
 reads it back, either during training or in the held-out evaluation, so every team

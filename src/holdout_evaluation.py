@@ -108,13 +108,18 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
         print("\n" + "-" * 60)
         print(f"HELD-OUT BATCH {batch_index}/{len(batches)} ({len(indices)} questions)")
 
-        team_result = _select_team(
-            orchestrator,
-            tag_frequencies,
-            len(indices),
-            scoreboard_md,
-            args.team_size,
-        )
+        try:
+            team_result = _select_team(
+                orchestrator,
+                tag_frequencies,
+                len(indices),
+                scoreboard_md,
+                args.team_size,
+            )
+        except Exception as error:
+            # One failed call should cost this batch, not the whole evaluation.
+            print(f"[warn] selection failed: {error!r}; skipping this batch")
+            team_result = {"agents": [], "invalid_agents": [], "reasoning": f"selection failed: {error!r}"}
         team = team_result.get("agents", [])
         print(f"Selected team: {team}")
 
@@ -129,10 +134,17 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
         }
 
         if team:
-            report = run_team_evaluation(team, batch, args)
-            _accumulate(totals, team, report)
-            record["report"] = report
-            print(f"Team accuracy: {report['team_accuracy']:.2%}")
+            try:
+                report = run_team_evaluation(team, batch, args)
+            except Exception as error:
+                print(f"[warn] evaluation failed: {error!r}; skipping this batch")
+                report = None
+                record["status"] = "evaluation_error"
+                record["error"] = repr(error)
+            if report is not None:
+                _accumulate(totals, team, report)
+                record["report"] = report
+                print(f"Team accuracy: {report['team_accuracy']:.2%}")
         else:
             record["status"] = "no_valid_team"
             print("[warn] no valid team selected for this batch")
