@@ -9,10 +9,12 @@ import argparse
 import csv
 import json
 import random
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from datasets import load_from_disk
+from openai import APIConnectionError, APITimeoutError
 
 from model.model_utils import build_agent_pool
 from orchestration.orchestrator import OrchestratorAgent, team_selection
@@ -36,6 +38,7 @@ def parse_args():
     parser.add_argument("--num_samples", type=int, default=5, help="Number of questions to sample for team selection")
     parser.add_argument("--eval_workers", type=int, default=5, help="Questions evaluated concurrently within one batch")
     parser.add_argument("--team_size", type=int, default=4, help="Number of agents the orchestrator must select")
+    parser.add_argument("--orchestrator_max_tokens", type=int, default=8192, help="Token budget for one selection. A reasoning model spends most of it thinking, and a long scoreboard leaves less room for the answer")
     parser.add_argument("--seed", type=int, default=None, help="Seed for tag and question sampling")
     parser.add_argument("--test_fraction", type=float, default=0.0, help="Fraction of the dataset held out for the final evaluation; 0 trains on everything and skips it")
     parser.add_argument("--split_seed", type=int, default=0, help="Seed for the train/test split and the held-out batching; keep it equal across runs being compared")
@@ -136,6 +139,25 @@ def write_run_record(path, record):
         fh.write(json.dumps(record, default=str) + "\n")
 
 
+def with_server_retry(call, what, attempts=4, wait_seconds=180):
+    """Run `call`, waiting out a server that is restarting rather than giving up.
+
+    The engine has wedged more than once on this box, and the watchdog that
+    restarts it needs several minutes to reload weights. Without this, every
+    iteration in that window fails and the run is lost.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except (APIConnectionError, APITimeoutError) as error:
+            if attempt == attempts:
+                raise
+            print(f"[warn] {what} could not reach the server ({error!r}); "
+                  f"waiting {wait_seconds}s, attempt {attempt + 1}/{attempts}")
+            time.sleep(wait_seconds)
+    return None
+
+
 def flush_summary(args, orchestrator, evaluations, pending, pool_names):
     """Write the scoreboard from whatever results are waiting."""
     if args.summariser == "llm":
@@ -176,6 +198,7 @@ def main():
     orchestrator = OrchestratorAgent(
         args.model_name,
         AGENT_POOL,
+        max_tokens=args.orchestrator_max_tokens,
         api_key=args.api_key,
         base_url=args.api_base_url,
         debug=args.debug,
@@ -201,12 +224,15 @@ def main():
         # A run is thirty iterations long against a server it does not control,
         # so a failed call costs the iteration rather than the run.
         try:
-            result = team_selection(
-                orchestrator,
-                dataset,
-                num_samples=args.num_samples,
-                prior_md=prior_md,
-                team_size=args.team_size,
+            result = with_server_retry(
+                lambda: team_selection(
+                    orchestrator,
+                    dataset,
+                    num_samples=args.num_samples,
+                    prior_md=prior_md,
+                    team_size=args.team_size,
+                ),
+                "selection",
             )
         except Exception as error:
             print(f"[warn] selection failed: {error!r}; skipping this iteration")
@@ -255,7 +281,10 @@ def main():
 
         sampled_questions = result["sampled_questions"]
         try:
-            report = run_team_evaluation(selected_team, sampled_questions, args)
+            report = with_server_retry(
+                lambda: run_team_evaluation(selected_team, sampled_questions, args),
+                "evaluation",
+            )
         except Exception as error:
             print(f"[warn] evaluation failed: {error!r}; skipping this iteration")
             write_run_record(args.output_path, {

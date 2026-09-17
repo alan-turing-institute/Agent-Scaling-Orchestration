@@ -12,9 +12,12 @@ on exactly the same questions in the same order.
 
 import json
 import random
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+
+from openai import APIConnectionError, APITimeoutError
 
 from team_evaluation import run_team_evaluation
 
@@ -56,6 +59,20 @@ def _accumulate(totals, team, report):
 
 def _empty_totals():
     return {"questions": 0, "team_correct": 0, "batches": 0, "agents": {}, "tags": {}}
+
+
+def with_server_retry(call, what, attempts=4, wait_seconds=180):
+    """Wait out a restarting server rather than losing the batch to it."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except (APIConnectionError, APITimeoutError) as error:
+            if attempt == attempts:
+                raise
+            print(f"[warn] {what} could not reach the server ({error!r}); "
+                  f"waiting {wait_seconds}s, attempt {attempt + 1}/{attempts}")
+            time.sleep(wait_seconds)
+    return None
 
 
 def _select_team(orchestrator, tag_frequencies, batch_size, scoreboard_md, team_size, max_attempts=2):
@@ -109,13 +126,13 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
         print(f"HELD-OUT BATCH {batch_index}/{len(batches)} ({len(indices)} questions)")
 
         try:
-            team_result = _select_team(
+            team_result = with_server_retry(lambda: _select_team(
                 orchestrator,
                 tag_frequencies,
                 len(indices),
                 scoreboard_md,
                 args.team_size,
-            )
+            ), "selection")
         except Exception as error:
             # One failed call should cost this batch, not the whole evaluation.
             print(f"[warn] selection failed: {error!r}; skipping this batch")
@@ -135,7 +152,8 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
 
         if team:
             try:
-                report = run_team_evaluation(team, batch, args)
+                report = with_server_retry(
+                    lambda: run_team_evaluation(team, batch, args), "evaluation")
             except Exception as error:
                 print(f"[warn] evaluation failed: {error!r}; skipping this batch")
                 report = None
