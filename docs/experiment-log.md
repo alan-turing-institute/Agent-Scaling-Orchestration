@@ -174,6 +174,7 @@ state file or records.
 | Run B `batched` | `--summary_every 10` → `data-claude/orchestrator/batched/` |
 | Run C `no_memory` | `--memory none` → `data-claude/orchestrator/no_memory/` |
 | Run D `random` | `--selection random` → `data-claude/orchestrator/random/` |
+| Run E `bare_model` | `scripts/bare_model_baseline.py` → `data-claude/orchestrator/bare_model/` |
 
 ```bash
 COMMON="--dataset_path data-claude/tagged_dataset \
@@ -190,6 +191,7 @@ python src/train_orchestrator.py $COMMON --memory none --summary_every 1 \
     --out_dir data-claude/orchestrator/no_memory
 python src/train_orchestrator.py $COMMON --selection random --memory none --summary_every 1 \
     --out_dir data-claude/orchestrator/random
+python scripts/bare_model_baseline.py --out_dir data-claude/orchestrator/bare_model
 ```
 
 `scripts/experiment1_schedules.sh` runs these in sequence, and takes an `ARMS`
@@ -258,14 +260,70 @@ paying for the calls it costs. Its RNG is seeded from `--split_seed`, so the arm
 reproduces. It was added after the first three had run rather than alongside them,
 which means it is scored on the same frozen split but not in the same round.
 
+**Run E, the bare model.** Runs D and C strip away the memory and then the
+choosing, but all of them still pay for four persona-prompted agents per question
+and a majority vote. Run E answers the same 140 held-out questions with one call
+each: no persona prefix, no team, no vote. `scripts/bare_model_baseline.py` shares
+the dataset, the split seed and fraction, the batching, the per-question answer-type
+inference and the evaluator parsers with the orchestrator runs, so the only things
+that differ are the prompt and the number of respondents, and it writes its results
+in the shape `scripts/report_run.py` reads. It costs 140 calls against an arm's 560
+plus selections.
+
+Read the arms outwards from it. Run E says what the model can do alone; run D says
+what four random agents and a vote add to that; run C says what choosing them adds;
+runs A and B say what remembering adds to the choosing.
+
+**A held-out split scored 0.00%, and the cause was a swallowed exception.** The first
+`random` run finished training at 130/150 and then scored 0/140 on the held-out
+split, across all 28 batches, with nothing logged. `run_team_evaluation` calls each
+agent in a thread pool and caught every exception from the future, substituting an
+empty response; an empty response parses as an empty answer, which scores as
+incorrect. The engine had wedged at 14:57 UTC and the watchdog restarted it at
+15:02:19, seven seconds before the evaluation began, so every call for the next five
+minutes hit a container reloading weights. Nothing was raised for `with_server_retry`
+to catch. Connection and timeout errors now propagate; other per-agent failures are
+still absorbed but logged with the agent name. The void run is archived at
+`data-claude/void-2026-09-17-random-holdout-zeroed/` and run D was restarted.
+
+Runs A to C were checked for the same signature afterwards: no held-out batch and no
+training iteration in `no_memory`, `continual` or `batched` has every agent at zero,
+so their numbers stand.
+
 ### Results
 
 _Running. To be filled in: held-out team accuracy for each of the four runs,
 per-tag breakdown, which agents each run converged on, how many of the 50 candidates
 each tried, and whether selections changed over the course of training. The
 comparison that matters first is A and B against C: if neither beats the run with no
-memory at all, the update schedule is not the interesting variable. The one that
-matters before any of those is every arm against D._
+memory at all, the update schedule is not the interesting variable. The ones that
+matter before any of those are every arm against D, and every arm against E._
+
+Runs A to C completed 2026-09-17 between 03:08 and 13:41 UTC, 30/30 training
+iterations and 28/28 held-out batches each, no errors:
+
+| | `no_memory` | `continual` | `batched` |
+|---|---|---|---|
+| Training | 142/148 = 95.9% | 135/150 = 90.0% | 136/150 = 90.7% |
+| **Held out, 140 questions** | **126/140 = 90.0%** | **131/140 = 93.6%** | **130/140 = 92.9%** |
+| matched: best agent in batch | 94.3% | 94.3% | 95.7% |
+| matched: mean agent in batch | 88.8% | 91.8% | 92.5% |
+| matched: worst agent in batch | 83.6% | 87.1% | 89.3% |
+| vote minus best agent | −4.3 | −0.7 | −2.9 |
+| Distinct agents in training | 21 of 50 | 18 of 50 | 23 of 50 |
+| Most-picked agent | — | `Conservative_Verifier` ×23 | `Conservative_Verifier` ×19 |
+
+Both memory arms beat the no-memory arm, by 3.6 and 2.9 points. The two schedules
+differ by one question, which is nothing. The consistent pattern is that memory
+lifts the floor — the worst agent on a batch climbs 83.6 → 87.1 → 89.3 — while the
+best agent barely moves, and the team vote sits below the best available agent in
+every arm. `batched` had the highest mean and worst agent of the three and still
+finished behind `continual` on the vote, which points at the aggregation rather than
+the selection.
+
+Runs D and E are pending. The watchdog restarted the engine four times during the
+A-to-C round, roughly every three to four hours; no iteration was lost, but the
+server is not stable at this duty cycle.
 
 ### Caveats to remember when reading these numbers
 
