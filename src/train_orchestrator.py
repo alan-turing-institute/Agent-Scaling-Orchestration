@@ -17,7 +17,7 @@ from datasets import load_from_disk
 from openai import APIConnectionError, APITimeoutError
 
 from model.model_utils import build_agent_pool
-from orchestration.orchestrator import OrchestratorAgent, team_selection
+from orchestration.orchestrator import OrchestratorAgent, RandomSelector, team_selection
 from holdout_evaluation import evaluate_holdout
 from team_evaluation import run_team_evaluation
 from summariser import save_evaluation_summary, save_evaluation_summary_with_llm
@@ -55,6 +55,12 @@ def parse_args():
         type=int,
         default=1,
         help="Rewrite the scoreboard every N evaluated iterations (1 = after every task). Pending results are always flushed at the end of the run",
+    )
+    parser.add_argument(
+        "--selection",
+        choices=["orchestrator", "random"],
+        default="orchestrator",
+        help="orchestrator: the model chooses the team. random: teams are drawn uniformly from the pool and the model is never asked, which is the reference point for whether choosing is worth anything at all",
     )
     parser.add_argument(
         "--memory",
@@ -195,14 +201,20 @@ def main():
         print(f"✓ Train/test split: {len(dataset)} train, {len(test_dataset)} held out")
     print(f"✓ Agent pool: {len(AGENT_POOL)} candidate personas")
 
-    orchestrator = OrchestratorAgent(
-        args.model_name,
-        AGENT_POOL,
-        max_tokens=args.orchestrator_max_tokens,
-        api_key=args.api_key,
-        base_url=args.api_base_url,
-        debug=args.debug,
-    )
+    # The random arm uses the same loop end to end - same split, same batches,
+    # same scoreboard bookkeeping - and only swaps out who names the team.
+    if args.selection == "random":
+        print("✓ Selection: random teams; the orchestrator model is not called")
+        orchestrator = RandomSelector(AGENT_POOL, seed=args.split_seed)
+    else:
+        orchestrator = OrchestratorAgent(
+            args.model_name,
+            AGENT_POOL,
+            max_tokens=args.orchestrator_max_tokens,
+            api_key=args.api_key,
+            base_url=args.api_base_url,
+            debug=args.debug,
+        )
 
     pool_names = [agent["name"] for agent in AGENT_POOL]
     evaluations = []

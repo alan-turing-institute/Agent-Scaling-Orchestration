@@ -290,3 +290,29 @@ def team_selection(orchestrator: OrchestratorAgent, dataset, num_samples=5, prio
     }
 
     
+
+class RandomSelector:
+    """Stands in for the orchestrator and picks a team uniformly at random.
+
+    It has the same `select_team` signature, so both the training loop and the
+    held-out evaluation use it without knowing the difference. This is the
+    reference point for the whole experiment: the memory arms measure what the
+    scoreboard is worth given that a team is being chosen, and this arm measures
+    what choosing is worth at all. Its own RNG is seeded, so the arm is
+    reproducible and independent of the global random state the samplers use.
+    """
+
+    def __init__(self, agent_pool, seed=0):
+        self.agent_pool = agent_pool
+        self.pool_names = [agent["name"] for agent in agent_pool]
+        self.rng = random.Random(seed)
+
+    def select_team(self, tag_profile, tag_frequencies, batch_size=5, prior_md=None,
+                    team_size=4, invalid_feedback=None):
+        team = self.rng.sample(self.pool_names, min(team_size, len(self.pool_names)))
+        return {
+            "agents": team,
+            "invalid_agents": [],
+            "reasoning": "Random selection: team drawn uniformly from the pool, ignoring the tag profile",
+            "reasoning trace": "",
+        }

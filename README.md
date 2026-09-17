@@ -267,6 +267,7 @@ new experiment.
 | `--num_samples` | `5` | Questions sampled per iteration |
 | `--team_size` | `4` | Agents the orchestrator must select |
 | `--seed` | unset | Seeds tag and question sampling |
+| `--selection` | `orchestrator` | `orchestrator` asks the model to name the team; `random` draws it uniformly from the pool and never calls the model, which is the floor the selecting arms have to clear |
 | `--memory` | `scoreboard` | `scoreboard` lets the orchestrator select with the running scoreboard in view; `none` withholds it entirely, so every team is chosen from the tag profile and the agent pool alone. The scoreboard is still written under `none`, so the run can be analysed like any other — it is simply never read back |
 | `--summary_every` | `1` | Rewrite the scoreboard every N evaluated iterations; `1` updates after every task, higher values hold results back so the orchestrator keeps choosing against an older scoreboard. Pending results are always flushed at the end of the run |
 | `--test_fraction` | `0.0` | Fraction held out before training for the final evaluation; `0` trains on everything and skips it |
@@ -320,10 +321,28 @@ python src/train_orchestrator.py --out_dir data-claude/orchestrator/no_memory \
     --memory none --iterations 12 --seed 0 --split_seed 0 ...
 ```
 
-This is a different question from `--random_baseline`, which draws a team at random
-and so measures whether *choosing* beats not choosing. `--memory none` keeps the
+This is a different question from choosing at random. `--memory none` keeps the
 choosing and removes only the evidence, which measures what the accumulated record
 adds to an orchestrator that is already reasoning about personas and tags.
+
+**The random-selection baseline.** `--selection random` removes the choosing as well:
+teams are drawn uniformly from the pool, the orchestrator model is never called, and
+the rest of the loop is unchanged — the same split, the same batches, the same
+scoreboard bookkeeping, so the run is read by `scripts/report_run.py` like any other.
+
+```bash
+python src/train_orchestrator.py --out_dir data-claude/orchestrator/random \
+    --selection random --memory none --iterations 30 --seed 0 --split_seed 0 ...
+```
+
+Its held-out accuracy is the floor for the whole experiment. A difference between
+memory schedules only means something once the arm that does no reasoning at all has
+been cleared. It is cheaper than the other arms, since only the answering agents are
+called, and its own RNG is seeded from `--split_seed` so the arm is reproducible.
+
+There is also `--random_baseline`, which is narrower: it scores a random team
+*alongside* the selected one on each held-out batch, for reference within a single
+run, rather than running the random policy through training as its own arm.
 
 **Why `counts` is the default summariser.** In the original loop the model rewrote
 the markdown from scratch each iteration, so the loop's only memory was whatever

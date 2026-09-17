@@ -173,6 +173,7 @@ state file or records.
 | Run A `continual` | `--summary_every 1` → `data-claude/orchestrator/continual/` |
 | Run B `batched` | `--summary_every 10` → `data-claude/orchestrator/batched/` |
 | Run C `no_memory` | `--memory none` → `data-claude/orchestrator/no_memory/` |
+| Run D `random` | `--selection random` → `data-claude/orchestrator/random/` |
 
 ```bash
 COMMON="--dataset_path data-claude/tagged_dataset \
@@ -187,10 +188,17 @@ python src/train_orchestrator.py $COMMON --summary_every 10 \
     --out_dir data-claude/orchestrator/batched
 python src/train_orchestrator.py $COMMON --memory none --summary_every 1 \
     --out_dir data-claude/orchestrator/no_memory
+python src/train_orchestrator.py $COMMON --selection random --memory none --summary_every 1 \
+    --out_dir data-claude/orchestrator/random
 ```
 
-All three arms launched 2026-09-16 and run one after another, in the order
-`no_memory`, `continual`, `batched`, against the one server.
+`scripts/experiment1_schedules.sh` runs these in sequence, and takes an `ARMS`
+override so a single arm can be added to a finished round:
+`ARMS=random ./scripts/experiment1_schedules.sh`.
+
+Runs A to C launched 2026-09-16 and ran one after another, in the order
+`no_memory`, `continual`, `batched`, against the one server. Run D was added on
+2026-09-17 and queued behind them on the same server and the same split.
 
 **Aborted attempts, and why the arms now run one after another.** The first two
 launches both died to the same server fault, not a code fault. At 16:30 UTC, four iterations in, the vLLM engine stopped
@@ -237,25 +245,33 @@ so a further wedge costs an iteration rather than the run.
 reads it back, either during training or in the held-out evaluation, so every team
 is chosen from the tag profile and the pool of fifty alone. It is the line runs A
 and B have to beat for the scoreboard to be worth keeping. It is a different
-question from `--random_baseline`, which removes the choosing rather than the
-evidence: run C still reasons about which personas suit which tags, it just has no
-record of how any of them has actually done.
+question from run D, which removes the choosing rather than the evidence: run C
+still reasons about which personas suit which tags, it just has no record of how any
+of them has actually done.
+
+**Run D, the random-selection baseline.** `--selection random` draws the team
+uniformly from the same pool of fifty and never calls the orchestrator model, in
+training and in the held-out evaluation alike. Everything else is held constant, so
+its held-out accuracy is the floor: if runs A to C do not clear it, the question of
+which memory schedule is better does not arise, because the selecting itself is not
+paying for the calls it costs. Its RNG is seeded from `--split_seed`, so the arm
+reproduces. It was added after the first three had run rather than alongside them,
+which means it is scored on the same frozen split but not in the same round.
 
 ### Results
 
-_Running. To be filled in: held-out team accuracy for each of the three runs,
+_Running. To be filled in: held-out team accuracy for each of the four runs,
 per-tag breakdown, which agents each run converged on, how many of the 50 candidates
 each tried, and whether selections changed over the course of training. The
 comparison that matters first is A and B against C: if neither beats the run with no
-memory at all, the update schedule is not the interesting variable._
+memory at all, the update schedule is not the interesting variable. The one that
+matters before any of those is every arm against D._
 
 ### Caveats to remember when reading these numbers
 
-- No random-team baseline was run. Run C isolates the value of the *memory*, but not
-  the value of the *selecting*: a random team drawn from the same pool might do as
-  well as one the orchestrator reasoned its way to. `--random_baseline` scores a
-  randomly drawn team on the same held-out batches and should be run before claiming
-  the orchestrator is worth anything at all.
+- Run D, the random-selection baseline, was added after runs A to C had finished and
+  is scored on the same frozen split, but not in the same round. Anything the server
+  drifted on between rounds lands on that comparison.
 - 30 iterations × 5 questions means the scoreboard is built from 150 answered
   questions spread over 96 tags, so most per-tag cells are thin. Differences between
   the two runs may be noise at this scale.
