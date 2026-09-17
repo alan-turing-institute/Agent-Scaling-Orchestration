@@ -13,6 +13,8 @@ from typing import List, Dict
 
 import numpy as np
 
+from openai import APIConnectionError, APITimeoutError
+
 from model.model_utils import get_agents, engine, get_persona_config
 import concurrent.futures
 from evaluator import get_instruction_suffix, evaluate_gsm8k, evaluate_mcq, base_evaluate_gsm8k, base_evaluate_mcq
@@ -170,7 +172,15 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Di
                     idx = futures[fut]
                     try:
                         response_texts[idx] = fut.result()
-                    except Exception:
+                    except (APIConnectionError, APITimeoutError):
+                        # A server that is down is not a wrong answer. Swallowing
+                        # this scored a whole held-out split at 0% once, silently:
+                        # every agent returned "", every answer parsed as empty,
+                        # and nothing above ever saw an exception to retry on.
+                        # Let it reach the caller's retry instead.
+                        raise
+                    except Exception as error:
+                        print(f"[warn] agent {agent_names[idx]} failed on one question: {error!r}")
                         response_texts[idx] = ""
         else:
             # Fallback: call engine in batch mode (synchronous)
