@@ -125,6 +125,10 @@ with the capabilities they demand. Three stages produce that labelled dataset. A
 orchestrator-track output goes under `data-claude/`, keeping it separate from the
 paper's `data/` and `out/`.
 
+Each stage is documented on its own below. For the runnable version of the whole
+thing — setup, the commands in order, the experiment arms and how to read them —
+see [Running the orchestrator experiments](#running-the-orchestrator-experiments).
+
 ### 0. Serve a model
 
 Every stage talks to an OpenAI-compatible endpoint. The sibling `vllm/` repo serves
@@ -255,6 +259,9 @@ back; a name that survives that would otherwise reach `_build_chosen_personas` a
 | `run_records.jsonl` | One machine-readable record per iteration: tag, team, rejected names, full evaluation report |
 | `team_selection_results.csv` | Selection log with the orchestrator's reasoning and reasoning trace |
 
+Plus `holdout_records.jsonl` and `holdout_summary.json` when a test split is held
+out. `scripts/report_run.py` reads a directory of these and prints the summary.
+
 Delete the scoreboard and the state file to reset the loop; stale ones contaminate a
 new experiment.
 
@@ -351,6 +358,179 @@ nothing to check it against. The `counts` summariser keeps the counts in
 `agent_performance_state.json` and renders the markdown from them, so accuracies
 always carry the `correct/seen` they are computed from and the record is
 reproducible. The model reads the scoreboard; it no longer writes it.
+
+## Running the orchestrator experiments
+
+Stages 0 to 4 above describe each program on its own. This section is the whole
+process end to end: what to install, what to run in what order, how the experiment
+arms differ, and how to read what comes out.
+
+### Setup
+
+The orchestration track needs an OpenAI-compatible endpoint and a small set of
+Python packages; it never loads weights in process. A virtual environment in the
+repo root keeps it separate from the system Python that the vLLM container does not
+use anyway:
+
+```bash
+python3 -m venv env
+./env/bin/pip install openai datasets pandas numpy matplotlib torch
+```
+
+Every command below is written as `./env/bin/python`. Pass `-u` for anything long
+running: without it Python buffers stdout and a redirected log stays empty for
+hours, which is indistinguishable from a hung run.
+
+Serve the model before anything else. `HOST_PORT=8001` publishes it on the port this
+repo defaults to, and `MAX_NUM_SEQS=64` matches the concurrency the tagging stage
+asks for:
+
+```bash
+NO_SPEC=1 MAX_NUM_SEQS=64 HOST_PORT=8001 sh ../vllm/qwen3.6/run_docker_nvfp4.sh
+docker logs -f qwen3.6-vllm            # engine init takes about five minutes
+curl -s localhost:8001/v1/models       # the id printed here is what --model_name wants
+```
+
+### The whole process
+
+```bash
+# 1. Tag every question with the capabilities it demands (about an hour for 700).
+./env/bin/python -u src/tag_questions.py \
+    --data gsm8k arc hellaswag truthfulqa winogrande pro_medicine formal_logic \
+    --split test --data_size 100 \
+    --data_dir data-claude/benchmarks/ --out_dir data-claude/question_tags \
+    --use_vllm --vllm_base_url http://127.0.0.1:8001/v1 \
+    --model nvidia/Qwen3.6-35B-A3B-NVFP4
+
+# 2. Collapse the free-text tags into a canonical vocabulary.
+./env/bin/python -u src/canonicalise_tags.py \
+    --tags_file data-claude/question_tags/<name>_tags.jsonl \
+    --out_file data-claude/tag_mapping.json \
+    --api_base_url http://127.0.0.1:8001/v1 \
+    --model nvidia/Qwen3.6-35B-A3B-NVFP4
+
+# 3. Apply the mapping and save the dataset the orchestrator samples from.
+./env/bin/python src/tag_dataset.py \
+    --tags_file data-claude/question_tags/<name>_tags.jsonl \
+    --tag_mapping data-claude/tag_mapping.json \
+    --out_dir data-claude/tagged_dataset
+
+# 4. Run the experiment arms, one after another.
+./scripts/experiment1_schedules.sh
+
+# 5. Read each arm.
+./env/bin/python scripts/report_run.py data-claude/orchestrator/continual
+```
+
+Stages 1 to 3 are done once and reused. Everything after them reads
+`data-claude/tagged_dataset` and is cheap to repeat. Stage 3 also writes a tag
+frequency chart, which is the quickest check that the vocabulary came out sane: a
+long tail of near-duplicate tags means stage 2 needs another round.
+
+### What an arm is
+
+One arm is one complete run of `train_orchestrator.py`: it holds out a test split,
+trains for `--iterations` select-evaluate-summarise cycles on the rest, then freezes
+the scoreboard and answers every held-out question once. Arms differ only in what
+the orchestrator is allowed to know or do, so the held-out accuracies are
+comparable:
+
+| Arm | Flags | The question it answers |
+|---|---|---|
+| `continual` | `--summary_every 1` | Does a scoreboard updated after every task help? |
+| `batched` | `--summary_every 10` | Does it matter *when* the scoreboard updates? |
+| `no_memory` | `--memory none` | Is the accumulated record worth anything, or is reasoning about personas and tags enough on its own? |
+| `random` | `--selection random --memory none` | Is the *choosing* worth anything? Teams are drawn uniformly and the orchestrator model is never called |
+
+They have to be read in the opposite order to that table. `random` is the floor: if
+the arms that reason do not clear it, which memory schedule is better is not yet a
+question. `no_memory` is the next line up, and only above that does the difference
+between `continual` and `batched` mean anything.
+
+All four share `--seed`, `--split_seed`, `--test_fraction` and the dataset, so they
+see the same held-out questions in the same batches.
+
+### Running a round
+
+`scripts/experiment1_schedules.sh` runs the arms in sequence with one shared flag
+block, each into its own `--out_dir` and its own log:
+
+```bash
+./scripts/experiment1_schedules.sh                      # all four arms
+ARMS=random ./scripts/experiment1_schedules.sh          # add one arm to a finished round
+ARMS="no_memory continual" ITERATIONS=10 ./scripts/experiment1_schedules.sh
+```
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ARMS` | all four | Which arms to run, space-separated, in order |
+| `ITERATIONS` | `30` | Training cycles per arm |
+| `BATCH_EVERY` | `10` | `--summary_every` for the `batched` arm |
+| `OUT_ROOT` | `data-claude/orchestrator` | Parent of the per-arm output directories |
+| `LOG_DIR` | `data-claude/logs` | Where `orch_<arm>.log` is written |
+| `PYTHON` | `./env/bin/python` | Interpreter |
+
+**Arms run one after another, not together.** Two early attempts ran them
+concurrently and the vLLM engine wedged both times about ten minutes in: generation
+throughput at zero with requests still marked running, while the API server went on
+answering `/v1/models`, so the container looked healthy from outside. One arm keeps
+roughly twenty requests in flight, well inside what this server has been benchmarked
+at. A round of four arms takes most of a day.
+
+The loop is built to survive the server rather than assume it. Both the orchestrator
+client and the agent wrapper use a 300-second timeout with four retries; on top of
+that, `with_server_retry` waits three minutes and tries again up to four times when a
+call cannot reach the server at all, which covers the five minutes a restarted
+container spends reloading weights. A call that still fails costs its iteration or
+batch, which is recorded as `selection_error` or `evaluation_error` and skipped,
+rather than the run.
+
+### Watching a run
+
+```bash
+grep "^ITERATION" data-claude/logs/orch_continual.log | tail -1   # training progress
+grep -c "HELD-OUT BATCH" data-claude/logs/orch_continual.log      # held-out progress
+grep "\[warn\]" data-claude/logs/orch_continual.log               # server trouble
+wc -l data-claude/orchestrator/continual/run_records.jsonl        # iterations banked
+```
+
+`run_records.jsonl` is written as the run goes, so an arm is readable while it is
+still running and a killed arm keeps everything it had finished.
+
+### Reading the results
+
+```bash
+./env/bin/python scripts/report_run.py data-claude/orchestrator/continual
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `run_dir` | required | An arm's `--out_dir` |
+| `--top` | `12` | Agents to list at each end of the accuracy table |
+| `--min_questions` | `5` | Ignore agents the run saw fewer times than this, whose accuracies are noise |
+
+It prints held-out team accuracy, a per-agent table of `correct/seen` with pick
+counts, the spread between the best and worst agent the run used, how many of the 50
+candidates it tried, which it converged on during training, and a matched
+within-batch block.
+
+**The matched block is the comparison that matters.** Agents answer different
+questions across a run, so their raw accuracies are not comparable to each other or
+to the team's. Within one batch they all answer the same five questions, so the
+block averages, over batches, the team's vote against the best, mean and worst
+single agent *in that same batch*. `vote over best agent` is the honest measure of
+whether the team is worth its cost: a negative number means a single well-chosen
+agent would have scored higher than the four of them voting.
+
+### Resetting
+
+`agent_performance_by_tag.md` and `agent_performance_state.json` are the loop's
+memory, and a stale pair silently contaminates a new experiment — the orchestrator
+would start iteration 1 reading a previous run's record. Give every arm its own
+`--out_dir`, or delete both files before reusing one.
+
+Results are not committed: `.gitignore` excludes `*.json`, `*.jsonl`, `*.csv` and
+`*.log`, so the local output directories are the only copy of a round.
 
 ## Key Concepts
 
