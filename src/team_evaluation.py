@@ -54,13 +54,20 @@ def _infer_answer_type(answer) -> str:
         return "mcq"
 
 
-def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Dict:
+def run_team_evaluation(selected_team: List[str], sampled_questions, args,
+                        personas_override=None) -> Dict:
     """Run the selected team on the sampled questions and return accuracies.
 
     Args:
         selected_team: list of persona names (strings)
         sampled_questions: a HuggingFace Dataset or list-like with dicts containing at least `question` and `answer`
         args: namespace with runtime options (model_name, api keys, etc.)
+        personas_override: use these persona definitions instead of the ones
+            `get_agents` builds from the shared bank. The paper's per-dataset sets
+            are not a subset of that bank: `Elimination_Specialist` names a
+            science-MCQ solver under `arc` and a pronoun-resolution solver under
+            `winogrande`, and the bank kept one of them. A caller reproducing those
+            sets has to supply the definitions it means.
 
     Returns:
         dict with keys: `team_accuracy` (float), `per_agent_accuracy` (dict mapping persona->accuracy)
@@ -86,6 +93,10 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args) -> Di
     )
 
     agents, personas = get_agents(args)
+    if personas_override is not None:
+        # The wrappers from get_agents are model clients and carry no persona
+        # state, so only the definitions need replacing.
+        personas = personas_override
 
     # get_instruction_suffix keys off dataset names, and its fallback branch asks
     # for a numeric answer, so MCQ questions borrow an MCQ dataset name or the
