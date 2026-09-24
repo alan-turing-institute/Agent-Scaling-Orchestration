@@ -19,6 +19,7 @@ from openai import APIConnectionError, APITimeoutError
 from model.model_utils import build_agent_pool
 from orchestration.orchestrator import OrchestratorAgent, RandomSelector, team_selection
 from holdout_evaluation import evaluate_holdout
+from splits import add_split_args, make_split, split_label
 from team_evaluation import run_team_evaluation
 from summariser import save_evaluation_summary, save_evaluation_summary_with_llm
 
@@ -40,10 +41,10 @@ def parse_args():
     parser.add_argument("--team_size", type=int, default=4, help="Number of agents the orchestrator must select")
     parser.add_argument("--orchestrator_max_tokens", type=int, default=8192, help="Token budget for one selection. A reasoning model spends most of it thinking, and a long scoreboard leaves less room for the answer")
     parser.add_argument("--seed", type=int, default=None, help="Seed for tag and question sampling")
-    parser.add_argument("--test_fraction", type=float, default=0.0, help="Fraction of the dataset held out for the final evaluation; 0 trains on everything and skips it")
-    parser.add_argument("--split_seed", type=int, default=0, help="Seed for the train/test split and the held-out batching; keep it equal across runs being compared")
     parser.add_argument("--test_batch_size", type=int, default=None, help="Questions per held-out batch (default: --num_samples)")
     parser.add_argument("--random_baseline", action="store_true", help="Also score a randomly chosen team on every held-out batch")
+    add_split_args(parser)
+    parser.set_defaults(test_fraction=0.0)
     parser.add_argument("--solver", choices=["vote", "debate"], default="vote", help="How to aggregate the selected team answers (only vote is implemented)")
     parser.add_argument("--out_dir", default="data-claude/orchestrator", help="Directory for the run's outputs")
     parser.add_argument("--output_path", default=None, help="Run record JSONL (default: {out_dir}/run_records.jsonl)")
@@ -195,10 +196,10 @@ def main():
     # questions no iteration could have trained on. Same split_seed in two runs
     # means the same split, evaluated in the same batches.
     test_dataset = None
-    if args.test_fraction and args.test_fraction > 0:
-        split = dataset.train_test_split(test_size=args.test_fraction, seed=args.split_seed)
-        dataset, test_dataset = split["train"], split["test"]
-        print(f"✓ Train/test split: {len(dataset)} train, {len(test_dataset)} held out")
+    if args.n_folds or (args.test_fraction and args.test_fraction > 0):
+        dataset, test_dataset = make_split(dataset, args)
+        print(f"✓ Train/test split: {len(dataset)} train, {len(test_dataset)} held out "
+              f"[{split_label(args)}]")
     print(f"✓ Agent pool: {len(AGENT_POOL)} candidate personas")
 
     # The random arm uses the same loop end to end - same split, same batches,

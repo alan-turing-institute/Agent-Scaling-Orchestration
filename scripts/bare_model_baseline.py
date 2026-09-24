@@ -30,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
 from datasets import load_from_disk
 
+from splits import add_split_args, make_split, split_label
+
 from evaluator import evaluate_gsm8k, evaluate_mcq, get_instruction_suffix
 from holdout_evaluation import _batch_indices
 from model.openai_compat import OpenAICompatChatWrapper
@@ -45,10 +47,7 @@ def parse_args():
     parser.add_argument("--model_name", default="nvidia/Qwen3.6-35B-A3B-NVFP4")
     parser.add_argument("--api_base_url", default="http://127.0.0.1:8001/v1")
     parser.add_argument("--api_key", default="EMPTY")
-    parser.add_argument("--test_fraction", type=float, default=0.2,
-                        help="Must match the orchestrator runs being compared against")
-    parser.add_argument("--split_seed", type=int, default=0,
-                        help="Must match the orchestrator runs; this is what makes the split identical")
+    add_split_args(parser)
     parser.add_argument("--test_batch_size", type=int, default=5,
                         help="Only groups the records; one model answering alone is unaffected by batching")
     parser.add_argument("--workers", type=int, default=5,
@@ -105,11 +104,10 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     dataset = load_from_disk(args.dataset_path)
-    split = dataset.train_test_split(test_size=args.test_fraction, seed=args.split_seed)
-    test_dataset = split["test"]
+    _, test_dataset = make_split(dataset, args)
     if args.limit:
         test_dataset = test_dataset.select(range(min(args.limit, len(test_dataset))))
-    print(f"✓ Held out: {len(test_dataset)} questions (split_seed {args.split_seed})")
+    print(f"✓ Held out: {len(test_dataset)} questions [{split_label(args)}]")
 
     agent = OpenAICompatChatWrapper(
         base_url=args.api_base_url,
