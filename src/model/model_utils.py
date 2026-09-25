@@ -1,5 +1,13 @@
 # model_utils.py - enhanced version
 
+from model.openai_compat import DEFAULT_MAX_TOKENS
+
+# The generation budget every fallback resolves to. It used to be 512 here and
+# a hardcoded 4096 inside OpenAICompatChatWrapper.complete, which overwrote it,
+# so 4096 is what every vLLM run has actually been using. Keeping that as the
+# default makes the flag real without moving any existing result.
+DEFAULT_MAX_NEW_TOKENS = DEFAULT_MAX_TOKENS
+
 model_dirs = {
     'llama3.1-8b': 'meta-llama/Meta-Llama-3.1-8B-Instruct',
     'qwen2.5-7b': 'Qwen/Qwen2.5-7B-Instruct',
@@ -34,7 +42,7 @@ def engine(messages, agent, num_agents=1, stop_sequences=None, persona_configs=N
         # Get generation parameters: prefer config, fall back to agent defaults
         temperature = config.get('temperature', getattr(current_agent, 'temperature', 1.0)) if config else getattr(current_agent, 'temperature', 1.0)
         top_p = config.get('top_p', getattr(current_agent, 'top_p', 0.9)) if config else getattr(current_agent, 'top_p', 0.9)
-        max_new_tokens = config.get('max_new_tokens', getattr(current_agent, 'max_new_tokens', 512)) if config else getattr(current_agent, 'max_new_tokens', 512)
+        max_new_tokens = config.get('max_new_tokens', getattr(current_agent, 'max_new_tokens', DEFAULT_MAX_NEW_TOKENS)) if config else getattr(current_agent, 'max_new_tokens', DEFAULT_MAX_NEW_TOKENS)
 
         # API-like chat agents (Azure OpenAI or local OpenAI-compatible servers like vLLM)
         if getattr(current_agent, 'kind', None) in {'azure_openai', 'openai_compat'}:
@@ -108,7 +116,7 @@ def engine(messages, agent, num_agents=1, stop_sequences=None, persona_configs=N
         input_ids,
         attention_mask=attention_mask,
         pad_token_id=agent.tokenizer.eos_token_id,
-        max_new_tokens=getattr(agent, 'max_new_tokens', 512),
+        max_new_tokens=getattr(agent, 'max_new_tokens', DEFAULT_MAX_NEW_TOKENS),
         return_dict_in_generate=True,
         output_scores=True,
         do_sample=True,
@@ -204,7 +212,7 @@ def get_agents(args, peft_path=None):
     if not getattr(args, 'agent_models', ''):
         print(vllm_urls)
         agent = _make_agent(args.model, vllm_base_url=vllm_urls[0])
-        agent.max_new_tokens = getattr(args, 'max_new_tokens', 512)
+        agent.max_new_tokens = getattr(args, 'max_new_tokens', DEFAULT_MAX_NEW_TOKENS)
         agent.temperature = getattr(args, 'temperature', 0)
         agent.top_p = getattr(args, 'top_p', 0.9)
 
@@ -218,7 +226,7 @@ def get_agents(args, peft_path=None):
     agents = []
     for idx, mk in enumerate(agent_model_keys):
         a = _make_agent(mk, vllm_base_url=vllm_urls[idx % len(vllm_urls)])
-        a.max_new_tokens = getattr(args, 'max_new_tokens', 512)
+        a.max_new_tokens = getattr(args, 'max_new_tokens', DEFAULT_MAX_NEW_TOKENS)
         a.temperature = getattr(args, 'temperature', 0)
         a.top_p = getattr(args, 'top_p', 0.9)
         if hasattr(a, 'tokenizer') and hasattr(a, 'huggingface_model'):
@@ -1526,6 +1534,6 @@ def get_persona_config(persona_name: str, personas: dict) -> dict:
         return {
             "temperature": p.get("temperature", 0),
             "top_p": p.get("top_p", 0.9),
-            "max_new_tokens": p.get("max_new_tokens", 512)
+            "max_new_tokens": p.get("max_new_tokens", DEFAULT_MAX_NEW_TOKENS)
         }
-    return {"temperature": 1.0, "top_p": 0.9, "max_new_tokens": 512}
+    return {"temperature": 1.0, "top_p": 0.9, "max_new_tokens": DEFAULT_MAX_NEW_TOKENS}

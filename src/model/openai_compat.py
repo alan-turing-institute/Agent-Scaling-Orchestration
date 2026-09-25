@@ -3,6 +3,13 @@ from __future__ import annotations
 import os
 from typing import Dict, List, Optional
 
+# One place that decides how long a generation may be. `complete()` used to
+# overwrite whatever the caller asked for with a hardcoded 4096, so
+# --max_new_tokens and every persona's max_new_tokens were inert on every
+# vLLM run. The constant keeps the old effective value as the *default* while
+# letting a caller that passes a budget actually get it.
+DEFAULT_MAX_TOKENS = 4096
+
 
 def thinking_budget_extra_body() -> Dict[str, int]:
     """Request fields that cap a reasoning model's thinking, from the environment.
@@ -30,6 +37,10 @@ class OpenAICompatChatWrapper:
       - kind = "openai_compat"
       - model_name: str
       - complete(messages, ...) -> str
+
+    The last response's token usage is kept on `last_usage` so a caller can
+    record what a run cost; the OpenAI SDK object itself is not returned,
+    because every caller here wants the text.
     """
 
     kind = "openai_compat"
@@ -47,6 +58,7 @@ class OpenAICompatChatWrapper:
         self.api_key = api_key
         self.timeout = timeout
         self.max_retries = max_retries
+        self.last_usage = None
 
         try:
             # openai>=1.0 provides OpenAI client
@@ -73,7 +85,8 @@ class OpenAICompatChatWrapper:
         top_p: Optional[float] = None,
         **kwargs,
     ) -> str:
-        max_tokens = 4096
+        if max_tokens is None:
+            max_tokens = DEFAULT_MAX_TOKENS
         extra_body = {**thinking_budget_extra_body(), **kwargs.pop("extra_body", {})}
         resp = self._client.chat.completions.create(
             model=self.model_name,
@@ -84,4 +97,17 @@ class OpenAICompatChatWrapper:
             extra_body=extra_body or None,
             **kwargs,
         )
-        return resp.choices[0].message.content or ""
+        self.last_usage = getattr(resp, "usage", None)
+
+        message = resp.choices[0].message
+        content = getattr(message, "content", None) or ""
+        if content.strip():
+            return content
+        # A reasoning model that spends its whole budget thinking returns an
+        # empty `content` with the text under `reasoning_content`. Scoring that
+        # as an empty answer is indistinguishable from a wrong one.
+        for attribute in ("reasoning_content", "reasoning"):
+            fallback = getattr(message, attribute, None) or ""
+            if fallback.strip():
+                return fallback
+        return content
