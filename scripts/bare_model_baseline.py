@@ -33,6 +33,7 @@ from splits import add_split_args, make_split, split_label
 import benchmarks
 from benchmarks import score_responses
 from holdout_evaluation import _batch_indices
+from predictions import write_predictions
 from model.openai_compat import OpenAICompatChatWrapper
 from team_evaluation import answer_type_of
 
@@ -55,6 +56,8 @@ def parse_args():
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--max_tokens", type=int, default=4096)
     parser.add_argument("--limit", type=int, default=0, help="Answer only the first N held-out questions; 0 means all")
+    parser.add_argument("--response_chars", type=int, default=0,
+                        help="Clip stored responses to this many characters; 0 keeps them whole")
     parser.add_argument("--out_dir", default="data-claude/orchestrator/bare_model")
     return parser.parse_args()
 
@@ -93,6 +96,8 @@ def answer_one(agent, sample, scorers, args):
         "prediction": str(prediction.legacy),
         "gold": str(result.gold),
         "question": question,
+        "response": text,
+        "dataset": sample.get("dataset"),
     }
 
 
@@ -123,6 +128,8 @@ def main():
     batches = _batch_indices(len(test_dataset), args.test_batch_size, args.split_seed)
     records_path = out_dir / "holdout_records.jsonl"
     records_path.unlink(missing_ok=True)
+    predictions_path = out_dir / "holdout_predictions.jsonl"
+    predictions_path.unlink(missing_ok=True)
 
     total = correct = 0
     tag_counts, tag_correct = Counter(), Counter()
@@ -170,6 +177,29 @@ def main():
         with records_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, default=str) + "\n")
 
+        # Same per-question detail the team arms write, so the arms can be
+        # compared question by question rather than only in aggregate.
+        write_predictions(predictions_path, [{
+            "arm": "bare_model",
+            "batch": batch_index,
+            "question_index": indices[position],
+            "dataset": r.get("dataset"),
+            "answer_type": r["answer_type"],
+            "tags": r["tags"],
+            "question": r.get("question"),
+            "gold": r.get("gold"),
+            "team": [AGENT_NAME],
+            "team_answer": r["prediction"],
+            "team_correct": r["correct"],
+            "agents": {AGENT_NAME: {
+                "prediction": r["prediction"],
+                "correct": r["correct"],
+                "parsed": r["parsed"],
+                "response": (r.get("response") or "")[:args.response_chars]
+                            if args.response_chars else r.get("response"),
+            }},
+        } for position, r in enumerate(results)])
+
     summary = {
         "run": str(out_dir),
         "selection": "none (bare model)",
@@ -187,7 +217,7 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"BARE MODEL: {correct}/{total} = {correct / total:.1%}" if total else "BARE MODEL: no questions")
-    print(f"Written to {summary_path} and {records_path}")
+    print(f"Written to {summary_path}, {records_path} and {predictions_path}")
 
 
 if __name__ == "__main__":
