@@ -7,7 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 from datetime import datetime
 import torch
-from model.model_utils import get_agents, engine, get_persona_config
+from model.model_utils import get_agents, engine, get_persona_config, DEFAULT_MAX_NEW_TOKENS
 from data.data_utils import load_data
 from evaluator import (
     get_instruction_suffix,
@@ -75,7 +75,8 @@ def get_args():
     parser.add_argument('--vllm_base_urls', type=str, default=os.getenv('VLLM_BASE_URLS', ''))
     parser.add_argument('--vllm_base_url', type=str, default=os.getenv('VLLM_BASE_URL', 'http://127.0.0.1:8000/v1'))
     parser.add_argument('--vllm_api_key', type=str, default=os.getenv('VLLM_API_KEY', 'EMPTY'))
-    parser.add_argument('--max_new_tokens', type=int, default=512)
+    parser.add_argument('--max_new_tokens', type=int, default=DEFAULT_MAX_NEW_TOKENS,
+                        help='Generation budget per agent turn. Was inert before: the OpenAI-compatible wrapper overwrote it with 4096')
     parser.add_argument('--temperature', type=float, default=1.0)
     parser.add_argument('--top_p', type=float, default=0.9)
 
@@ -368,7 +369,7 @@ def main(args):
                     persona_configs.append({
                         "temperature": persona_data.get("temperature", 0),
                         "top_p": persona_data.get("top_p", 0.9),
-                        "max_new_tokens": getattr(args, 'max_new_tokens', 512)
+                        "max_new_tokens": getattr(args, 'max_new_tokens', DEFAULT_MAX_NEW_TOKENS)
                     })
                 else:
                     combined_content = f"{persona_data}\n\n{x + SUFFIX}"

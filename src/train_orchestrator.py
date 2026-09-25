@@ -16,7 +16,7 @@ from pathlib import Path
 from datasets import load_from_disk
 from openai import APIConnectionError, APITimeoutError
 
-from model.model_utils import build_agent_pool
+from model.model_utils import build_agent_pool, DEFAULT_MAX_NEW_TOKENS
 from orchestration.orchestrator import OrchestratorAgent, RandomSelector, team_selection
 from holdout_evaluation import evaluate_holdout
 from splits import add_split_args, make_split, split_label
@@ -38,6 +38,8 @@ def parse_args():
     parser.add_argument("--iterations", type=int, default=10, help="Number of select-evaluate-summarise cycles")
     parser.add_argument("--num_samples", type=int, default=5, help="Number of questions to sample for team selection")
     parser.add_argument("--eval_workers", type=int, default=5, help="Questions evaluated concurrently within one batch")
+    parser.add_argument("--max_new_tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS,
+                        help="Generation budget per agent answer. Until now this could not be set from here at all, and the OpenAI-compatible wrapper pinned it to 4096 regardless")
     parser.add_argument("--team_size", type=int, default=4, help="Number of agents the orchestrator must select")
     parser.add_argument("--orchestrator_max_tokens", type=int, default=8192, help="Token budget for one selection. A reasoning model spends most of it thinking, and a long scoreboard leaves less room for the answer")
     parser.add_argument("--seed", type=int, default=None, help="Seed for tag and question sampling")
