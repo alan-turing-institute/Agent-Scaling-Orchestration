@@ -1,177 +1,68 @@
+"""Backwards-compatible face of `benchmarks.scorers`.
 
+The parsers themselves moved to `benchmarks/scorers.py`, where they are one
+object per answer shape rather than four near-duplicate functions. This module
+stays because `main.py`, `team_evaluation.py` and `scripts/bare_model_baseline.py`
+import these names, and because every result in `data-claude/` was produced
+through them: the shapes returned here are exactly what the saved histories and
+`K_star_analysis` expect.
 
-import argparse, sys, os, copy, time, random, json, pickle, re, collections
-from itertools import combinations
-import numpy as np
-import pandas as pd
-import torch
-from tqdm import tqdm
-from datetime import datetime
+New code should ask the registry for a scorer:
 
+    scorer = benchmarks.scorer_for("gsm8k")
+    result = benchmarks.score_responses(scorer, {name: text}, gold)
 
+which additionally reports whether each response could be parsed at all -
+something the tuple below cannot express, because it writes an unreadable
+response and a wrong one identically as "".
+"""
+
+from types import SimpleNamespace
+
+import benchmarks
+from benchmarks.scorers import extract_number, get_scorer, score_responses
+
+__all__ = [
+    "get_instruction_suffix",
+    "extract_number",
+    "evaluate_gsm8k",
+    "evaluate_mcq",
+    "base_evaluate_gsm8k",
+    "base_evaluate_mcq",
+]
 
 
 def get_instruction_suffix(args):
-    # Safely access attributes on args with defaults to avoid AttributeError
-    data = getattr(args, 'data', None)
-    bae = getattr(args, 'bae', False)
-    cot = getattr(args, 'cot', False)
+    """Required answer format for `args.data`, honouring `--cot` and `--bae`."""
+    data = getattr(args, "data", None)
+    bae = getattr(args, "bae", False)
+    style = "bae" if bae else ("cot" if getattr(args, "cot", False) else "plain")
 
-    if data in ['gsm8k']:
-        if bae:
-            return ' Make sure to state your answer at the end of the response.'
-        elif cot:
-            return " Make sure to state your final answer in curly brackets at the very end of your response, just like: '{final answer: 123}'. Let's think step by step."
-        else:
-            return ' Make sure to state your final answer in curly brackets at the very end of your response, just like: "{final answer: 123}".'
-    elif data in ['hellaswag','pro_medicine','formal_logic','arc','truthfulqa','winogrande']:
-        if bae:
-            return ' Put your final answer in the form (X) at the end of your response.'
-        elif cot:
-            return " Make sure to state your final answer choice in curly brackets at the very end of your response, just like: '{final answer: (A)}'. Let's think step by step."
-        else:
-            return ' Make sure to state your final answer choice in curly brackets at the very end of your response, just like: "{final answer: (A)}".'
-    else:
-        # Unknown or unspecified data type: return empty suffix (safe default)
-        return ' Make sure to state your final answer in curly brackets at the very end of your response, just like: "{final answer: 123}".'
+    try:
+        return benchmarks.get(data).scorer(bae=bae).instruction_suffix(style)
+    except KeyError:
+        # The old behaviour for an unregistered dataset was to ask for a number.
+        # Kept so an ad-hoc `--data something` still runs, but it is a guess:
+        # register the benchmark instead of relying on it.
+        return get_scorer("numeric", bae=bae).instruction_suffix(style)
 
 
-def extract_number(text):
-    if text:
-        matches = re.findall(r"-?\d+\.?\d*", text)
-        if not matches:
-            return ""
-        return float(matches[-1])
-    else:
-        return ""
+def _legacy(answer_type, responses, answer, bae=False):
+    scorer = get_scorer(answer_type, bae=bae)
+    return score_responses(scorer, responses, answer).legacy_tuple()
+
 
 def evaluate_gsm8k(responses, answer):
-    final_answers = []
-
-    for _, response in responses.items():
-        try:
-            pred = extract_number(response)
-            final_answers.append(np.round(pred, 1))
-        except:
-            final_answers.append("")
-
-    if len(set(final_answers)) == 1 and list(set(final_answers))[0] == "":
-        debate_answer = ""
-    else:
-        counter = collections.Counter([x for x in final_answers if x != ""])
-        max_count = max(counter.values())
-        most_common = [k for k, v in counter.items() if v == max_count]
-        debate_answer = random.choice(most_common)
-
-    return final_answers, debate_answer, debate_answer == np.round(answer, 1)
-
-
-def _evaluate_gsm8k(responses, answer):
-    # Returns True if correct, False if incorrect
-    final_answers = []
-    for _, response in responses.items():
-        try:
-            pred = re.findall(r"\{(.*?)\}", response)[-1]
-            pred = float(pred.replace("final answer:", "").strip())
-            final_answers.append(np.round(pred, 1))
-        except :
-            final_answers.append("")
-
-    if len(set(final_answers)) == 1 and list(set(final_answers))[0] == "":
-        final_answers = [""] * len(final_answers)
-        debate_answer = ""
-    else :
-        counter = collections.Counter([x for x in final_answers if x != ""])
-        max_count = max(counter.values())
-        most_common = [key for key, value in counter.items() if value == max_count]
-        debate_answer = random.choice(most_common)
-
-    return final_answers, debate_answer, debate_answer == np.round(answer, 1)
-
-
-def base_evaluate_gsm8k(responses, answer):
-    final_answers = []
-    for _, sentence in responses.items():
-        parts = sentence.split(" ")
-        for part in parts[::-1]:
-            try:
-                ans = float(part)
-                final_answers.append(ans)
-                break
-            except:
-                continue
-
-    counter = collections.Counter([x for x in final_answers if x != ""])
-    try:
-        max_count = max(counter.values())
-        most_common = [key for key, value in counter.items() if value == max_count]
-        debate_answer = random.choice(most_common)
-    except :
-        debate_answer = ""
-
-    return final_answers, debate_answer, debate_answer == np.round(answer, 1)
+    return _legacy("numeric", responses, answer)
 
 
 def evaluate_mcq(responses, answer):
-    # Returns True if corret, False if incorrect
-    final_answers = []
-    for _, response in responses.items():
-
-        try:
-            pred = re.findall(r"\{(.*?)\}", response)[-1]
-            pred = pred.replace("final answer:", "").strip()
-            if len(pred) == 0 :
-                final_answers.append("")
-            elif len(pred) < 3 :
-                pred = pred[0]
-                final_answers.append(f"({pred})")
-            else :
-                pred = pred[1]
-                final_answers.append(f"({pred})")
-        except :
-            final_answers.append("")
-    
-    if len(set(final_answers)) == 1 and list(set(final_answers))[0] == "":
-        final_answers = [""] * len(final_answers)
-        debate_answer = ""
-    else :
-        counter = collections.Counter([x for x in final_answers if x != ""])
-        max_count = max(counter.values())
-        most_common = [key for key, value in counter.items() if value == max_count]
-        debate_answer = random.choice(most_common) # if there is a tie, will choose randomly
-    return final_answers, debate_answer, debate_answer == answer
+    return _legacy("mcq", responses, answer)
 
 
-
-
-
-
+def base_evaluate_gsm8k(responses, answer):
+    return _legacy("numeric", responses, answer, bae=True)
 
 
 def base_evaluate_mcq(responses, answer):
-
-    final_answers = []
-    for _, input_str in responses.items():
-
-        pattern = r'\((\w)\)'
-        matches = re.findall(pattern, input_str)
-
-        solution = None
-        for match_str in matches[::-1]:
-            solution = match_str.upper()
-            if solution:
-                final_answers.append(f"({solution})")
-                break
-
-    counter = collections.Counter([x for x in final_answers if x != ""])
-    try :
-        max_count = max(counter.values())
-        most_common = [key for key, value in counter.items() if value == max_count]
-        debate_answer = random.choice(most_common) # if there is a tie, will choose randomly
-    except :
-        debate_answer = ""
-    return final_answers, debate_answer, debate_answer == answer
-
-
-
-
+    return _legacy("mcq", responses, answer, bae=True)

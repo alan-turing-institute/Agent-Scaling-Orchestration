@@ -1,4 +1,20 @@
-from data.base_ds import format_ds
+"""Questions where the plausible answer is often the false one.
+
+Declares what the registry needs to know about this benchmark; `load`
+is the loader that used to live in `src/data/`, unchanged.
+"""
+NAME = 'truthfulqa'
+ANSWER_TYPE = 'mcq'
+# The set this dataset was assigned in the paper. Names index into
+# model_utils.chosen_persona_bank().
+PERSONA_SET = [
+    'Decomposition_Planner',
+    'Causal_Mechanism_Reasoner',
+    'Time_Place_Category_Checker',
+    'Scope_Quantifier_Reader',
+    'Contradiction_Sanity_Checker',
+]
+
 from datasets import load_dataset
 import pandas as pd
 
@@ -51,3 +67,6 @@ def load_data(args, split='validation'):
         labels.append(label)
 
     return questions, labels
+
+
+load = load_data
