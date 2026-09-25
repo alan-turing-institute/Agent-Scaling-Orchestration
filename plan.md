@@ -488,3 +488,79 @@ Do not start this before section 3 lands. Sketched in dependency order.
 | 6 | §3.4 coding benchmark + sandbox | — |
 | 7 | §4.6–4.7 `main.py`/vLLM, token budget | needs a re-run |
 | 8 | §6 trajectory layer | — |
+
+---
+
+## Status — updated 2026-09-25
+
+Work is happening in the clone `../Agent-Scaling-Orchestration-refactor`, branch
+`refactor/benchmark-registry`, so the running fold-1 sweep is untouched. Nothing
+has been merged back.
+
+### Done
+
+| Commit | Covers |
+|---|---|
+| `Honour the generation budget...` | §1.4, §4.7 |
+| `Put benchmarks behind a registry...` | §3 (all), §4.6, §5.1, §5.2, §5.3, part of §2 |
+| `Write down what each agent answered...` | §4.4 |
+
+Verification, all offline — nothing in this branch has contacted the vLLM server:
+
+- Strict parsers reproduce the untouched `evaluator.py` over **3,198 response
+  combinations** at team sizes 1–3, and all 7 datasets × 3 prompt styles for the
+  instruction suffixes. Zero mismatches.
+- The registry's answer-type lookup agrees with the old `float()` sniffing on all
+  **699 rows** of `data-claude/tagged_dataset`.
+- `tests/test_scorers.py` — 7 tests, runs standalone (`PYTHONPATH=src python
+  tests/test_scorers.py`); there is no pytest in the pinned environment.
+- Predictions path exercised end to end against the real tagged dataset with the
+  network stubbed, on a batch mixing numeric and MCQ questions.
+
+**§5.3 is now confirmed, not suspected.** Run against the untouched
+`analysis.py`, a numeric history record yields `texts=0` and an empty ground
+truth. Every K\* number computed on a gsm8k run was computed on no embedded text
+at all. Fixed in the reader, so histories already on disk become readable.
+
+### Behaviour changes to be aware of
+
+- Everything defaults to the old behaviour. `--parse_mode` defaults to `strict`;
+  the token budget resolves to the 4096 that was already in force.
+- Local HuggingFace agents now generate up to 4096 tokens rather than 512, since
+  they read the same fallback. Nearly everything here goes over HTTP.
+- `answer_types` in a record now reads `numeric` rather than `gsm8k`. Nothing
+  reads that field — checked against both report scripts and the summariser.
+- `main.py` writes one history schema for all benchmarks, and gains
+  `final_answers_parsed`. The K\* reader accepts old and new.
+- `--bae` parsers now record one prediction per agent instead of dropping
+  failures. No sweep script uses `--bae`.
+
+### Next, in order
+
+1. **§4.1** — collapse `_build_enhanced_personas` onto the bank. The per-dataset
+   name lists are already extracted and live on each benchmark module as
+   `PERSONA_SET`; this is now just deleting ~650 lines and pointing
+   `scripts/paper_persona_baseline.py` at `benchmarks.persona_set(name)`. Note
+   `winogrande`'s `Elimination_Specialist` is the bank's
+   `Elimination_Based_Solver` — verified by comparing definitions, not by name.
+2. **§4.2** — `_add_nvidia_personas` raises on 45 of the 50 bank personas; make
+   the key optional and stop `chosen_agents`/`persona_prompt` defaulting to True.
+3. **§4.3** — one `with_server_retry`, currently defined identically in two files.
+4. **§2** — remaining dead code: the inert `main.py` flags, the dead second
+   `truthfulqa` branch (decide which set the paper baseline should use first).
+5. **§5** — re-score a finished arm under `--parse_mode lenient` from the new
+   predictions files and record the delta in `docs/experiment-log.md`. This is
+   now a re-read, not a re-run.
+6. **§3.4** — coding benchmark. The seam is in place: one module in
+   `src/benchmarks/` plus a `code_tests` scorer. The sandbox decision (subprocess
+   with timeout and no network, vs. Docker) is still open and should be settled
+   before the scorer is written, since it decides whether `Scorer.correct` can
+   stay synchronous.
+7. **§6** — trajectory layer for the agentic benchmarks.
+
+### Merging back
+
+The branch does not touch `data-claude/`. Merge once `data-claude/crossval/fold1/`
+is complete and `scripts/report_crossval.py` has read it. The first run afterwards
+should be a repeat of a finished arm under `--parse_mode strict`, to confirm the
+numbers land where they did before.
