@@ -8,15 +8,10 @@ from tqdm import tqdm
 from datetime import datetime
 import torch
 from model.model_utils import get_agents, engine, get_persona_config, DEFAULT_MAX_NEW_TOKENS
-from data.data_utils import load_data
-from evaluator import (
-    get_instruction_suffix,
-    evaluate_gsm8k,
-    evaluate_mcq,
-    extract_number,
-    base_evaluate_gsm8k,
-    base_evaluate_mcq,
-)
+import benchmarks
+from benchmarks import score_responses
+from evaluator import extract_number, get_instruction_suffix
+from responses import response_text as _response_text
 
 
 def convert_numpy(obj):
@@ -98,6 +93,11 @@ def get_args():
     parser.add_argument('--max_num_agents', type=int, default=3)
     parser.add_argument('--alpha', type=float, default=0.0)
     parser.add_argument('--bae', action='store_true')
+    parser.add_argument('--parse_mode', choices=['strict', 'lenient'], default='strict',
+                        help="strict reproduces the parsers every result on disk was produced by. "
+                             "lenient reads a case-insensitive label, a letter rather than a fixed "
+                             "character offset, and prefers the braces the prompt asked for. It "
+                             "changes reported numbers, so it is opt-in")
     parser.add_argument('--cot', action='store_true')
 
     return parser.parse_args()
@@ -246,6 +246,40 @@ def get_new_message(args, sample, responses, personas=None, suffix=None, agent_p
     return new_message, persona_configs
 
 
+def build_round_record(messages, agent_responses, result, persona_configs, raw_responses=None):
+    """One history record, the same shape for every benchmark.
+
+    There used to be two shapes. The gsm8k branch wrote `responses` as a list of
+    `model_dump_json()` strings and put the agent-keyed dict under
+    `agent_responses`; every other branch put the dict under `responses` and
+    wrote no JSON. `K_star_analysis.analysis` reads `responses` and skips it
+    unless it is a dict, so the numeric runs were contributing no embedded text
+    to the K* metric at all.
+
+    Both keys are written now, and both hold the agent-keyed dict, so old and
+    new readers see the same thing.
+    """
+    record = {
+        'messages': messages,
+        'responses': agent_responses,
+        'agent_responses': agent_responses,
+        'final_answers': [p.legacy for p in result.predictions],
+        # New: whether each response could be read at all. Without it an
+        # unreadable response and a wrong one are both "" and indistinguishable.
+        'final_answers_parsed': [p.parsed for p in result.predictions],
+        'final_answer_iscorr': [
+            bool(p.parsed and p.value == result.gold) for p in result.predictions
+        ],
+        'debate_answer': result.aggregate.legacy,
+        'debate_answer_iscorr': result.correct,
+        'answer': result.gold,
+        'persona_configs': [str(c) for c in persona_configs],
+    }
+    if raw_responses is not None:
+        record['raw_responses'] = raw_responses
+    return record
+
+
 def main(args):
     # =========================
     # Load Agents
@@ -300,7 +334,8 @@ def main(args):
     # =========================
     # Load Data
     # =========================
-    test_X, test_Y = load_data(args, split='test')
+    benchmark = benchmarks.get(args.data)
+    test_X, test_Y = benchmark.load(args, split='test')
 
     # =========================
     # Setup Names / filenames
@@ -331,12 +366,15 @@ def main(args):
 
     SUFFIX = get_instruction_suffix(args)
 
-    if args.data in ['gsm8k']:
-        evaluate = base_evaluate_gsm8k if args.bae else evaluate_gsm8k
-    elif args.data in ['hellaswag', 'pro_medicine', 'formal_logic', 'arc', 'truthfulqa', 'winogrande']:
-        evaluate = base_evaluate_mcq if args.bae else evaluate_mcq
-    else:
-        raise NotImplementedError
+    # One scorer, chosen from what the benchmark declares. This used to be an
+    # if/elif over dataset names whose else branch was a bare NotImplementedError.
+    scorer = benchmark.scorer(mode=args.parse_mode, bae=args.bae)
+    if args.parse_mode != 'strict':
+        print(f"[note] parse mode {args.parse_mode!r}: numbers are not comparable "
+              f"with runs scored in strict mode")
+
+    def evaluate(responses, gold):
+        return score_responses(scorer, responses, gold)
 
     # =========================
     # Debate Loop
@@ -427,8 +465,7 @@ def main(args):
         # First round inference - pass persona_configs
         # ============================================================
         responses = engine(messages, agents, args.num_agents, persona_configs=persona_configs)
-        response_texts = [resp.choices[0].message.content for resp in responses]
-        responses_json = [resp.model_dump_json() for resp in responses]
+        response_texts = [_response_text(resp) for resp in responses]
         agent_responses = dict(zip(agent_names, response_texts))
 
         # Verbose: print per-agent generation parameters
@@ -443,37 +480,17 @@ def main(args):
         # evaluate
         if args.centralized:
             central_agent_response = {list(agent_responses.keys())[0]: list(agent_responses.values())[0]}
-            final_resps, debate_resps, is_corr = evaluate(central_agent_response, y)
+            result = evaluate(central_agent_response, y)
         else:
-            final_resps, debate_resps, is_corr = evaluate(agent_responses, y)
+            result = evaluate(agent_responses, y)
 
+        final_resps = [p.legacy for p in result.predictions]
+        is_corr = result.correct
         print(f"ROUND 0 : {final_resps} (answer = {y})")
 
-        if args.data in ['gsm8k']:
-            final_answer_iscorr = [y_pred == np.round(y, 1) for y_pred in final_resps]
-
-            round_data = {
-                'messages': messages,
-                'responses': responses_json,
-                'agent_responses': agent_responses,
-                'final_answers': final_resps,
-                'final_answer_iscorr': final_answer_iscorr,
-                'debate_answer': debate_resps,
-                'debate_answer_iscorr': is_corr,
-                'answer': np.round(y, 1),
-                'persona_configs': [str(c) for c in persona_configs]
-            }
-        else:
-            final_answer_iscorr = [y_pred == y for y_pred in final_resps]
-            round_data = {
-                'responses': agent_responses,
-                'final_answers': final_resps,
-                'final_answer_iscorr': final_answer_iscorr,
-                'debate_answer': debate_resps,
-                'debate_answer_iscorr': is_corr,
-                'answer': y,
-                'persona_configs': [str(c) for c in persona_configs]
-            }
+        round_data = build_round_record(
+            messages, agent_responses, result, persona_configs)
+        final_answer_iscorr = round_data['final_answer_iscorr']
 
         rounds_data_dict = {'0': round_data}
         round_iscorr.append(is_corr)
@@ -496,8 +513,7 @@ def main(args):
 
             messages = list(new_agent_messages.values())
             responses = engine(messages, agents, args.num_agents, persona_configs=persona_configs)
-            response_texts = [resp.choices[0].message.content for resp in responses]
-            responses_json = [resp.model_dump_json() for resp in responses]
+            response_texts = [_response_text(resp) for resp in responses]
             agent_responses = dict(zip(agent_names, response_texts))
 
             if args.verbose:
@@ -508,37 +524,19 @@ def main(args):
 
             if args.centralized:
                 central_agent_response = {list(agent_responses.keys())[0]: list(agent_responses.values())[0]}
-                final_resps, debate_resps, is_corr = evaluate(central_agent_response, y)
+                result = evaluate(central_agent_response, y)
             else:
-                final_resps, debate_resps, is_corr = evaluate(agent_responses, y)
+                result = evaluate(agent_responses, y)
+
+            final_resps = [p.legacy for p in result.predictions]
+            is_corr = result.correct
 
             print("\n\n" + str(messages[0])[:200] + "...\n\n")
             print(f"ROUND {r} : {final_resps} (answer = {y})")
 
-            if args.data in ['gsm8k']:
-                final_answer_iscorr = [y_pred == np.round(y, 1) for y_pred in final_resps]
-                round_data = {
-                    'messages': messages,
-                    'responses': responses_json,
-                    'agent_responses': agent_responses,
-                    'final_answers': final_resps,
-                    'final_answer_iscorr': final_answer_iscorr,
-                    'debate_answer': debate_resps,
-                    'debate_answer_iscorr': is_corr,
-                    'answer': np.round(y, 1),
-                    'persona_configs': [str(c) for c in persona_configs]
-                }
-            else:
-                final_answer_iscorr = [y_pred == y for y_pred in final_resps]
-                round_data = {
-                    'responses': agent_responses,
-                    'final_answers': final_resps,
-                    'final_answer_iscorr': final_answer_iscorr,
-                    'debate_answer': debate_resps,
-                    'debate_answer_iscorr': is_corr,
-                    'answer': y,
-                    'persona_configs': [str(c) for c in persona_configs]
-                }
+            round_data = build_round_record(
+                messages, agent_responses, result, persona_configs)
+            final_answer_iscorr = round_data['final_answer_iscorr']
 
             rounds_data_dict[str(r)] = round_data
             round_iscorr.append(is_corr)

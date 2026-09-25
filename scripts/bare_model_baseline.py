@@ -23,19 +23,18 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import numpy as np
 from datasets import load_from_disk
 
 from splits import add_split_args, make_split, split_label
 
-from evaluator import evaluate_gsm8k, evaluate_mcq, get_instruction_suffix
+import benchmarks
+from benchmarks import score_responses
 from holdout_evaluation import _batch_indices
 from model.openai_compat import OpenAICompatChatWrapper
-from team_evaluation import _infer_answer_type
+from team_evaluation import answer_type_of
 
 # Named so the report tables read sensibly: it occupies the slot a persona would.
 AGENT_NAME = "bare_model"
@@ -60,17 +59,16 @@ def parse_args():
     return parser.parse_args()
 
 
-def answer_one(agent, sample, suffixes, args):
+def answer_one(agent, sample, scorers, args):
     """Ask the model one question and score it exactly as a team agent is scored."""
     question = sample["question"]
     answer = sample["answer"]
-    answer_type = _infer_answer_type(answer)
-    # The tagged dataset stores answers as strings and the gsm8k evaluator rounds
-    # with numpy, which raises on a string.
-    if answer_type == "gsm8k":
-        answer = float(answer)
+    answer_type = answer_type_of(sample)
+    scorer = scorers[answer_type]
+    # The tagged dataset stores every answer as a string, numeric ones included.
+    answer = scorer.normalise_gold(answer)
 
-    prompt = question + suffixes[answer_type]
+    prompt = question + scorer.instruction_suffix()
     try:
         text = agent.complete(
             [{"role": "user", "content": prompt}],
@@ -82,19 +80,19 @@ def answer_one(agent, sample, suffixes, args):
         print(f"[warn] call failed: {error!r}; scoring as incorrect")
         text = ""
 
-    responses = {AGENT_NAME: text}
-    if answer_type == "gsm8k":
-        final_answers, _, is_correct = evaluate_gsm8k(responses, answer)
-    else:
-        final_answers, _, is_correct = evaluate_mcq(responses, answer)
+    result = score_responses(scorer, {AGENT_NAME: text}, answer)
+    prediction = result.predictions[0]
 
     # With one respondent the majority answer is that respondent's, so the team
     # verdict and the agent verdict are the same fact recorded in both places.
     return {
         "tags": sample["tags"] or [],
         "answer_type": answer_type,
-        "correct": bool(is_correct),
-        "prediction": str(final_answers[0]) if final_answers else "",
+        "correct": bool(result.correct),
+        "parsed": prediction.parsed,
+        "prediction": str(prediction.legacy),
+        "gold": str(result.gold),
+        "question": question,
     }
 
 
@@ -115,11 +113,11 @@ def main():
         api_key=args.api_key,
     )
 
-    # get_instruction_suffix keys off dataset names and its fallback asks for a
-    # numeric answer, so both suffixes are built up front and chosen per question.
-    suffixes = {
-        "gsm8k": get_instruction_suffix(SimpleNamespace(data="gsm8k", bae=False, cot=False)),
-        "mcq": get_instruction_suffix(SimpleNamespace(data="arc", bae=False, cot=False)),
+    # Each scorer states the answer format it can read, so a split that mixes
+    # numeric and multiple-choice questions asks each one for the right thing.
+    scorers = {
+        answer_type: benchmarks.get_scorer(answer_type)
+        for answer_type in ("numeric", "mcq")
     }
 
     batches = _batch_indices(len(test_dataset), args.test_batch_size, args.split_seed)
@@ -137,7 +135,7 @@ def main():
         # attributed to the wrong question.
         results = [None] * len(samples)
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(answer_one, agent, s, suffixes, args): i
+            futures = {pool.submit(answer_one, agent, s, scorers, args): i
                        for i, s in enumerate(samples)}
             for future in concurrent.futures.as_completed(futures):
                 results[futures[future]] = future.result()

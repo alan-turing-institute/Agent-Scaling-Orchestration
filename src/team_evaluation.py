@@ -8,50 +8,60 @@ Provides `run_team_evaluation(selected_team, sampled_questions, args)` which:
 """
 from collections import Counter
 from copy import deepcopy
-import re
 from typing import List, Dict
 
-import numpy as np
 
 from openai import APIConnectionError, APITimeoutError
 
 from model.model_utils import get_agents, engine, get_persona_config
+from responses import response_text as _response_text
 import concurrent.futures
-from evaluator import get_instruction_suffix, evaluate_gsm8k, evaluate_mcq, base_evaluate_gsm8k, base_evaluate_mcq
+import benchmarks
+from benchmarks import score_responses
 
 
-def _response_text(resp):
-    """Extract text content from various response shapes returned by `engine`."""
-    # OpenAI-like response objects
-    try:
-        return resp.choices[0].message.content
-    except Exception:
-        pass
-    try:
-        return resp.choices[0].text
-    except Exception:
-        pass
-    # Already a plain string
-    if isinstance(resp, str):
-        return resp
-    # Fallback to str()
-    return str(resp)
 
 
 def _infer_answer_type(answer) -> str:
-    """Numeric answer -> gsm8k scoring, anything else -> MCQ scoring.
+    """Guess an answer type from the answer's shape. Last resort only.
 
-    Decided per question, not per batch: a tag like "step-by-step reasoning"
-    pulls questions from gsm8k and from the multiple-choice sets at once, and
-    judging the batch by its first answer silently mis-scores the rest.
+    Numeric-looking -> numeric scoring, anything else -> MCQ scoring. That
+    second branch is why this is a last resort: a coding benchmark's answer is
+    a string, so it lands on the MCQ letter parser, which reads a character out
+    of it and reports a number rather than failing. Prefer `answer_type_of`,
+    which asks the registry what the benchmark declared.
     """
     if answer is None:
         return "mcq"
     try:
         float(answer)
-        return "gsm8k"
+        return "numeric"
     except (TypeError, ValueError):
         return "mcq"
+
+
+def answer_type_of(sample) -> str:
+    """Which scorer reads this question's answers.
+
+    Decided per question, not per batch: a tag like "step-by-step reasoning"
+    pulls questions from gsm8k and from the multiple-choice sets at once, and
+    judging a batch by its first answer silently mis-scores the rest.
+
+    Taken from the `dataset` column the tagged dataset already carries, so a
+    benchmark declares its own answer shape once and every scoring path agrees.
+    Falls back to sniffing the answer only when that column is absent or names
+    something unregistered.
+    """
+    source = sample.get("dataset") if isinstance(sample, dict) else None
+    if source:
+        try:
+            return benchmarks.answer_type_of(source)
+        except KeyError:
+            print(f"[warn] {source!r} is not a registered benchmark; "
+                  f"guessing its answer type from the answer's shape")
+
+    answer = sample.get("answer") if isinstance(sample, dict) else None
+    return _infer_answer_type(answer)
 
 
 def run_team_evaluation(selected_team: List[str], sampled_questions, args,
@@ -98,18 +108,16 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args,
         # state, so only the definitions need replacing.
         personas = personas_override
 
-    # get_instruction_suffix keys off dataset names, and its fallback branch asks
-    # for a numeric answer, so MCQ questions borrow an MCQ dataset name or the
-    # agents are told the wrong answer format. Both suffixes are built up front
-    # and chosen per question.
-    numeric_args = deepcopy(args)
-    numeric_args.data = 'gsm8k'
-    mcq_args = deepcopy(args)
-    mcq_args.data = 'arc'
-    SUFFIXES = {
-        'gsm8k': get_instruction_suffix(numeric_args),
-        'mcq': get_instruction_suffix(mcq_args),
+    # Each scorer states the format it can read, so a batch that mixes numeric and
+    # multiple-choice questions asks each one for the right thing. This used to
+    # build a fake args namespace with `data = 'arc'` to trick the dataset-keyed
+    # suffix function into producing the MCQ wording.
+    parse_mode = getattr(args, 'parse_mode', benchmarks.STRICT)
+    SCORERS = {
+        answer_type: benchmarks.get_scorer(answer_type, mode=parse_mode)
+        for answer_type in ('numeric', 'mcq')
     }
+    SUFFIXES = {name: scorer.instruction_suffix() for name, scorer in SCORERS.items()}
 
     # Build per-agent counters
     per_agent_correct = {name: 0 for name in selected_team}
@@ -134,11 +142,11 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args,
         """Run the team on one question and return what it got right."""
         question = sample.get('question') if isinstance(sample, dict) else sample['question']
         answer = sample.get('answer') if isinstance(sample, dict) else sample['answer']
-        answer_type = _infer_answer_type(answer)
-        # The tagged dataset stores answers as strings; the gsm8k evaluator rounds
-        # them with numpy, which raises on a string.
-        if answer_type == 'gsm8k':
-            answer = float(answer)
+        answer_type = answer_type_of(sample if isinstance(sample, dict) else dict(sample))
+        scorer = SCORERS[answer_type]
+        # The tagged dataset stores every answer as a string, numeric ones
+        # included; the scorer knows what its own comparison needs.
+        answer = scorer.normalise_gold(answer)
         SUFFIX = SUFFIXES[answer_type]
         sample_tags = sample.get('tags') if isinstance(sample, dict) else sample['tags']
         if sample_tags is None:
@@ -201,29 +209,33 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args,
         # Preserve original agent order when zipping names -> responses
         agent_responses = dict(zip(agent_names, response_texts))
 
-        # Use repository evaluator voting logic to get team decision and per-agent final answers
-        if answer_type == 'gsm8k':
-            final_answers, debate_answer, is_corr = evaluate_gsm8k(agent_responses, answer)
-        else:
-            final_answers, debate_answer, is_corr = evaluate_mcq(agent_responses, answer)
+        result = score_responses(scorer, agent_responses, answer)
 
-        correct_by_agent = {}
-        for name, pred in zip(agent_names, final_answers):
-            try:
-                if answer_type == 'gsm8k':
-                    correct = (pred != "" and pred == np.round(answer, 1))
-                else:
-                    correct = (pred != "" and pred == answer)
-            except Exception:
-                # conservative: treat as incorrect on errors
-                correct = False
-            correct_by_agent[name] = bool(correct)
+        correct_by_agent = {
+            name: scorer.correct(prediction, result.gold)
+            for name, prediction in zip(agent_names, result.predictions)
+        }
+        # Kept apart from `correct_by_agent`: a response nobody could parse is
+        # not the same event as a wrong answer, and only one of the two is the
+        # model's fault.
+        parsed_by_agent = {
+            name: prediction.parsed
+            for name, prediction in zip(agent_names, result.predictions)
+        }
 
         return {
             "tags": sample_tags,
             "answer_type": answer_type,
             "correct_by_agent": correct_by_agent,
-            "team_correct": bool(is_corr),
+            "parsed_by_agent": parsed_by_agent,
+            "predictions": {
+                name: str(prediction.legacy)
+                for name, prediction in zip(agent_names, result.predictions)
+            },
+            "gold": str(result.gold),
+            "question": question,
+            "team_answer": str(result.aggregate.legacy),
+            "team_correct": bool(result.correct),
             "responses": agent_responses,
         }
 

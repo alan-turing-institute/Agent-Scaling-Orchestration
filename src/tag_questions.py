@@ -14,19 +14,13 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data.data_utils import load_data
+import benchmarks
 from model.model_utils import get_agents
 
 
-SUPPORTED_DATASETS = [
-    'gsm8k',
-    'arc',
-    'hellaswag',
-    'truthfulqa',
-    'winogrande',
-    'pro_medicine',
-    'formal_logic',
-]
+# Whatever the registry has. Adding a benchmark module used to mean remembering
+# to add its name here too, and forgetting meant the tagger silently refused it.
+SUPPORTED_DATASETS = benchmarks.list_names()
 
 
 def parse_args():
@@ -66,7 +60,7 @@ def resolve_datasets(raw_value):
     if not datasets:
         return SUPPORTED_DATASETS
 
-    invalid = [ds for ds in datasets if ds not in SUPPORTED_DATASETS]
+    invalid = [ds for ds in datasets if ds not in benchmarks.list_names()]
     if invalid:
         raise ValueError(f"Unsupported dataset(s): {invalid}")
     return datasets
@@ -191,7 +185,7 @@ def main():
     async def run_dataset(dataset_name):
         print(f"Processing dataset: {dataset_name}")
         args.data = dataset_name
-        test_X, test_Y = load_data(args, split=args.split)
+        test_X, test_Y = benchmarks.get(dataset_name).load(args, split=args.split)
         if args.data_size and args.data_size > 0:
             test_X = test_X[:args.data_size]
             test_Y = test_Y[:args.data_size]

@@ -1,5 +1,20 @@
+"""Commonsense sentence completion.
 
-from data.base_ds import format_ds
+Declares what the registry needs to know about this benchmark; `load`
+is the loader that used to live in `src/data/`, unchanged.
+"""
+NAME = 'hellaswag'
+ANSWER_TYPE = 'mcq'
+# The set this dataset was assigned in the paper. Names index into
+# model_utils.chosen_persona_bank().
+PERSONA_SET = [
+    'Careful_Analyst',
+    'Broad_Thinker',
+    'Practical_Reasoner',
+    'Detail_Oriented',
+    'Intuitive_Judge',
+]
+
 from datasets import load_dataset
 import pandas as pd
 
@@ -24,3 +39,5 @@ def load_data(args, split='validation'):
         labels.append(label)
     
     return questions, labels
+
+load = load_data
