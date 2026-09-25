@@ -19,6 +19,7 @@ from openai import APIConnectionError, APITimeoutError
 from model.model_utils import build_agent_pool, DEFAULT_MAX_NEW_TOKENS
 from orchestration.orchestrator import OrchestratorAgent, RandomSelector, team_selection
 from holdout_evaluation import evaluate_holdout
+from predictions import rows_from_report, strip_samples, write_predictions
 from splits import add_split_args, make_split, split_label
 from team_evaluation import run_team_evaluation
 from summariser import save_evaluation_summary, save_evaluation_summary_with_llm
@@ -60,6 +61,7 @@ def parse_args():
     parser.add_argument("--md_file", default=None, help="Scoreboard markdown (default: {out_dir}/agent_performance_by_tag.md)")
     parser.add_argument("--state_file", default=None, help="Scoreboard counts JSON (default: {out_dir}/agent_performance_state.json)")
     parser.add_argument("--selection_csv", default=None, help="Team selection log (default: {out_dir}/team_selection_results.csv)")
+    parser.add_argument("--predictions_path", default=None, help="Per-question predictions and responses (default: {out_dir}/predictions.jsonl)")
     parser.add_argument(
         "--summary_every",
         type=int,
@@ -84,6 +86,10 @@ def parse_args():
         default="counts",
         help="counts: scoreboard rendered from recorded counts. llm: the model rewrites the markdown each iteration",
     )
+    parser.add_argument("--response_chars", type=int, default=0,
+                        help="Clip stored agent responses to this many characters. "
+                             "0 keeps them whole, which is what makes a run re-scorable "
+                             "without hitting the GPU again")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode for verbose output")
 
     args = parser.parse_args()
@@ -93,6 +99,7 @@ def parse_args():
     args.md_file = args.md_file or str(out_dir / "agent_performance_by_tag.md")
     args.state_file = args.state_file or str(out_dir / "agent_performance_state.json")
     args.selection_csv = args.selection_csv or str(out_dir / "team_selection_results.csv")
+    args.predictions_path = args.predictions_path or str(out_dir / "predictions.jsonl")
     args.orchestrator_model = args.orchestrator_model or args.model_name
     args.orchestrator_api_base_url = args.orchestrator_api_base_url or args.api_base_url
     return args
@@ -338,6 +345,11 @@ def main():
                 print(f" - {tag}: {parts}")
         print("=" * 60)
 
+        write_predictions(args.predictions_path, rows_from_report(
+            report, batch=iteration, arm="train", team=selected_team,
+            response_chars=args.response_chars))
+        strip_samples(report)
+
         evaluation = {
             "iteration": iteration,
             "chosen_tag": result.get("chosen_tag"),
@@ -375,6 +387,7 @@ def main():
 
     print(f"\nRun records: {args.output_path}")
     print(f"Scoreboard:  {args.md_file}")
+    print(f"Predictions: {args.predictions_path}")
 
     if test_dataset is not None:
         # Read the finished scoreboard once: it stays frozen for every held-out

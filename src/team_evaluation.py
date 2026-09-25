@@ -225,6 +225,7 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args,
 
         return {
             "tags": sample_tags,
+            "dataset": sample.get("dataset") if isinstance(sample, dict) else None,
             "answer_type": answer_type,
             "correct_by_agent": correct_by_agent,
             "parsed_by_agent": parsed_by_agent,
@@ -292,4 +293,10 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args,
         "per_agent_correct_by_tag": {t: dict(v) for t, v in per_agent_correct_by_tag.items()},
         "per_tag_counts": dict(per_tag_counts),
         "answer_types": dict(answer_types),
+        # Per-question detail, for the caller to write to predictions.jsonl and
+        # then drop. Without it a finished run is a set of counts: there is no
+        # way to see why an agent was marked wrong, and re-scoring under a
+        # different parser costs another run on the GPU rather than a re-read.
+        # The caller pops this, so `holdout_records.jsonl` keeps its schema.
+        "samples": [r for r in results if r is not None],
     }

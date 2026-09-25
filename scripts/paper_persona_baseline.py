@@ -43,6 +43,7 @@ from datasets import load_from_disk
 from splits import add_split_args, make_split, split_label
 
 from holdout_evaluation import _batch_indices, with_server_retry
+from predictions import rows_from_report, strip_samples, write_predictions
 from model.model_utils import _build_enhanced_personas
 from team_evaluation import run_team_evaluation
 
@@ -62,6 +63,8 @@ def parse_args():
     parser.add_argument("--nvidia_persona", action="store_true",
                         help="Append the NVIDIA-format block where a persona defines one, as the orchestrator arms do")
     parser.add_argument("--limit", type=int, default=0, help="Answer only the first N held-out questions; 0 means all")
+    parser.add_argument("--response_chars", type=int, default=0,
+                        help="Clip stored responses to this many characters; 0 keeps them whole")
     parser.add_argument("--out_dir", default="data-claude/orchestrator/paper_personas")
     return parser.parse_args()
 
@@ -104,6 +107,8 @@ def main():
 
     records_path = out_dir / "holdout_records.jsonl"
     records_path.unlink(missing_ok=True)
+    predictions_path = out_dir / "holdout_predictions.jsonl"
+    predictions_path.unlink(missing_ok=True)
 
     total = team_correct = 0
     agent_totals = defaultdict(lambda: {"correct": 0, "questions": 0, "selected": 0})
@@ -134,6 +139,11 @@ def main():
                                          "question_indices": indices, "selected_team": team,
                                          "status": "evaluation_error", "error": repr(error)}) + "\n")
                 continue
+
+            write_predictions(predictions_path, rows_from_report(
+                report, batch=batch_number, arm=f"paper_personas:{name}", team=team,
+                question_indices=indices, response_chars=args.response_chars))
+            strip_samples(report)
 
             n = report["n_samples"]
             total += n

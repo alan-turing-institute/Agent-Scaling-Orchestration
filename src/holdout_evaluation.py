@@ -19,6 +19,7 @@ from pathlib import Path
 
 from openai import APIConnectionError, APITimeoutError
 
+from predictions import rows_from_report, strip_samples, write_predictions
 from team_evaluation import run_team_evaluation
 
 
@@ -123,6 +124,8 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
 
     records_path = Path(args.out_dir) / "holdout_records.jsonl"
     records_path.parent.mkdir(parents=True, exist_ok=True)
+    predictions_path = Path(args.out_dir) / "holdout_predictions.jsonl"
+    response_chars = getattr(args, "response_chars", 0)
 
     for batch_index, indices in enumerate(batches, start=1):
         batch = test_dataset.select(indices)
@@ -167,7 +170,12 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
                 record["error"] = repr(error)
             if report is not None:
                 _accumulate(totals, team, report)
-                record["report"] = report
+                # Per-question detail goes to its own file; the record keeps the
+                # counts it has always kept.
+                write_predictions(predictions_path, rows_from_report(
+                    report, batch=batch_index, arm="selected", team=team,
+                    question_indices=indices, response_chars=response_chars))
+                record["report"] = strip_samples(report)
                 print(f"Team accuracy: {report['team_accuracy']:.2%}")
         else:
             record["status"] = "no_valid_team"
@@ -177,8 +185,12 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
             baseline_team = baseline_rng.sample(pool_names, args.team_size)
             baseline_report = run_team_evaluation(baseline_team, batch, args)
             _accumulate(baseline_totals, baseline_team, baseline_report)
+            write_predictions(predictions_path, rows_from_report(
+                baseline_report, batch=batch_index, arm="random_baseline",
+                team=baseline_team, question_indices=indices,
+                response_chars=response_chars))
             record["baseline_team"] = baseline_team
-            record["baseline_report"] = baseline_report
+            record["baseline_report"] = strip_samples(baseline_report)
             print(f"Random baseline accuracy: {baseline_report['team_accuracy']:.2%}")
 
         with records_path.open("a", encoding="utf-8") as fh:
@@ -217,6 +229,6 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
     print(f"Team accuracy: {summary['team_accuracy']:.2%}")
     if random_baseline:
         print(f"Random-team baseline: {summary['baseline_team_accuracy']:.2%}")
-    print(f"Written to {summary_path} and {records_path}")
+    print(f"Written to {summary_path}, {records_path} and {predictions_path}")
 
     return summary
