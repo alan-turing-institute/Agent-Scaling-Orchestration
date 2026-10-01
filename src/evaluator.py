@@ -36,6 +36,16 @@ def get_instruction_suffix(args):
         return ' Make sure to state your final answer in curly brackets at the very end of your response, just like: "{final answer: 123}".'
 
 
+def evaluate_question(responses, answer, data_type, base=False):
+    """Evaluate one question with the evaluator for its dataset."""
+    if data_type == 'gsm8k':
+        evaluate = base_evaluate_gsm8k if base else evaluate_gsm8k
+        return evaluate(responses, float(answer))
+
+    evaluate = base_evaluate_mcq if base else evaluate_mcq
+    return evaluate(responses, answer)
+
+
 def extract_number(text):
     if text:
         matches = re.findall(r"-?\d+\.?\d*", text)
@@ -63,7 +73,11 @@ def evaluate_gsm8k(responses, answer):
         most_common = [k for k, v in counter.items() if v == max_count]
         debate_answer = random.choice(most_common)
 
-    return final_answers, debate_answer, debate_answer == np.round(answer, 1)
+    is_corr = False
+    if debate_answer is not None:
+        is_corr = debate_answer == np.round(answer, 1)
+
+    return final_answers, debate_answer, is_corr
 
 
 def _evaluate_gsm8k(responses, answer):

@@ -1,19 +1,35 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
-.cache/
-*.csv
-*.json
-*.jsonl
-*.npy
-*.tsv
-*.log
-*.swp
-out/
-out-baseline/
-history/
-cache/
+.pytest_cache/
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# Jupyter
 .ipynb_checkpoints/
 
-.DS_STORE
+# macOS
+.DS_Store
+
+# Experiment output. Regenerable; never committed.
+out/
+out-baseline/
+results/
+**/history/
+*.log
+
+# Benchmark datasets downloaded by the loaders in src/data/.
+# data/tagged_dataset/ is a versioned experiment input, so it is kept.
+data/*
+!data/tagged_dataset/
+
+# Caches and scratch
+cache/
+.cache/
+*.npy
+*.swp
