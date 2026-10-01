@@ -240,7 +240,13 @@ def get_agents(args, peft_path=None):
 
 
 def _add_nvidia_personas(args, personas):
+    """Append each persona's NVIDIA-format block, where it has one.
+
+    Only the five gsm8k personas define `nvidia_persona`; the rest are left as
+    they are rather than raising.
+    """
     for persona_name, persona_data in personas.items():
+        if "nvidia_persona" in persona_data:
             persona_data["prompt"] += f"\n{persona_data['nvidia_persona']}"
 
     return personas
@@ -926,7 +932,7 @@ def _build_enhanced_personas(args):
         for name in paper_persona_names(args.data)
     }
 
-    if getattr(args, "persona_prompt", True):
+    if getattr(args, "persona_prompt", False):
         personas = _add_nvidia_personas(args, personas)
 
     return personas

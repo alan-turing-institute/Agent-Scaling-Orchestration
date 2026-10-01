@@ -22,9 +22,8 @@ when reading the number:
   `winogrande` one as `Elimination_Based_Solver`. Under `winogrande` this script gets
   it back under the paper's name, and passes the definitions explicitly so each
   dataset gets the prompt written for it.
-- The bank personas also carry an extra NVIDIA-format block that `_add_nvidia_personas`
-  appends and the per-dataset sets mostly lack, so the arms' prompts are slightly
-  longer than these. `--nvidia_persona` appends it where a set defines one.
+- Only the five gsm8k personas define an extra NVIDIA-format block.
+  `--nvidia_persona` appends it to those; the orchestrator arms never append it.
 
 Output is written in the shape `scripts/report_run.py` reads.
 """
