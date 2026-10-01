@@ -15,12 +15,13 @@ when reading the number:
 
 - The paper's sets have five personas; the arms select four. `--team_size 4` runs a
   truncated version, so the two effects can be separated.
-- The per-dataset definitions are not the same objects as the 50-persona bank the
-  orchestrator selects from. Most names are shared and identical, but
-  `Elimination_Specialist` is written twice in the paper - a science-MCQ solver for
-  `arc`, a pronoun-resolution solver for `winogrande` - and the bank kept the `arc`
-  one. This script passes the per-dataset definitions explicitly so each dataset gets
-  the prompt written for it.
+- The per-dataset sets are drawn from the same 50-persona bank the orchestrator
+  selects from, with one naming wrinkle: `Elimination_Specialist` is written twice in
+  the paper - a science-MCQ solver for `arc`, a pronoun-resolution solver for
+  `winogrande`. The bank kept the `arc` one under that name and carries the
+  `winogrande` one as `Elimination_Based_Solver`. Under `winogrande` this script gets
+  it back under the paper's name, and passes the definitions explicitly so each
+  dataset gets the prompt written for it.
 - The bank personas also carry an extra NVIDIA-format block that `_add_nvidia_personas`
   appends and the per-dataset sets mostly lack, so the arms' prompts are slightly
   longer than these. `--nvidia_persona` appends it where a set defines one.

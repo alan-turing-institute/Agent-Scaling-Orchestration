@@ -73,11 +73,12 @@ def run_team_evaluation(selected_team: List[str], sampled_questions, args,
         sampled_questions: a HuggingFace Dataset or list-like with dicts containing at least `question` and `answer`
         args: namespace with runtime options (model_name, api keys, etc.)
         personas_override: use these persona definitions instead of the ones
-            `get_agents` builds from the shared bank. The paper's per-dataset sets
-            are not a subset of that bank: `Elimination_Specialist` names a
-            science-MCQ solver under `arc` and a pronoun-resolution solver under
-            `winogrande`, and the bank kept one of them. A caller reproducing those
-            sets has to supply the definitions it means.
+            `get_agents` builds from the shared bank by name. The paper's
+            per-dataset sets come from that bank, but `Elimination_Specialist`
+            names a science-MCQ solver under `arc` and a pronoun-resolution solver
+            under `winogrande` (the bank's `Elimination_Based_Solver`), so a caller
+            reproducing those sets under the paper's names has to supply the
+            definitions it means.
 
     Returns:
         dict with keys: `team_accuracy` (float), `per_agent_accuracy` (dict mapping persona->accuracy)
