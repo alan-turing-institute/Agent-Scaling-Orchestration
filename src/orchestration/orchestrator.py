@@ -4,7 +4,7 @@ import random
 from openai import OpenAI
 
 from model.model_utils import engine
-from model.openai_compat import OpenAICompatChatWrapper
+from model.openai_compat import OpenAICompatChatWrapper, thinking_extra_body
 
 
 class OrchestratorAgent:
@@ -77,7 +77,7 @@ Output ONLY a JSON object with this exact structure (no markdown, no extra text)
             max_tokens=self.max_tokens,
             temperature=self.temperature,
             top_p=self.top_p,
-            extra_body={"thinking_token_budget": self.thinking_token_budget},
+            extra_body=thinking_extra_body(self.thinking_token_budget),
         )
 
         return self._parse_team_response(response)

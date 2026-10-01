@@ -46,7 +46,8 @@ def parse_args():
     parser.add_argument('--agent_models', type=str, default='')
     parser.add_argument('--max_new_tokens', type=int, default=MAX_NEW_TOKENS)
     parser.add_argument('--thinking_token_budget', type=int, default=THINKING_TOKEN_BUDGET,
-                        help='Reasoning budget for API models that accept it')
+                        help='Thinking budget for a model served with --reasoning-config. '
+                             'Not sent unless set; defaults to $THINKING_TOKEN_BUDGET')
     parser.add_argument('--temperature', type=float, default=0.0)
     parser.add_argument('--top_p', type=float, default=TOP_P)
 

@@ -6,6 +6,7 @@ from defaults import (
     THINKING_TOKEN_BUDGET,
     TOP_P,
 )
+from model.openai_compat import thinking_extra_body
 
 model_dirs = {
     'llama3.1-8b': 'meta-llama/Meta-Llama-3.1-8B-Instruct',
@@ -58,7 +59,7 @@ def engine(messages, agent, num_agents=1, stop_sequences=None, persona_configs=N
                 max_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
-                extra_body={"thinking_token_budget": thinking_token_budget},
+                extra_body=thinking_extra_body(thinking_token_budget),
                 #logprobs=True
             )
 

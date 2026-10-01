@@ -66,7 +66,8 @@ def parse_args():
     parser.add_argument("--iterations", type=int, default=ORCHESTRATOR_ITERATIONS,
                         help="Number of team-selection rounds to run")
     parser.add_argument("--thinking_token_budget", type=int, default=THINKING_TOKEN_BUDGET,
-                        help="Reasoning budget for API models that accept it")
+                        help="Thinking budget for a model served with --reasoning-config. "
+                             "Not sent unless set; defaults to $THINKING_TOKEN_BUDGET")
 
     # Agents in the selected team
     parser.add_argument("--max_new_tokens", type=int, default=MAX_NEW_TOKENS)

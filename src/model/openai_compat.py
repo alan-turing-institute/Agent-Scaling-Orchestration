@@ -3,6 +3,17 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 
+def thinking_extra_body(thinking_token_budget):
+    """`extra_body` for a request, carrying the thinking budget only if one is set.
+
+    A server started without --reasoning-config rejects the field, so leaving
+    it out is the only safe default.
+    """
+    if thinking_token_budget is None:
+        return None
+    return {"thinking_token_budget": thinking_token_budget}
+
+
 class OpenAICompatChatWrapper:
     """OpenAI-compatible chat wrapper.
 

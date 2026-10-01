@@ -146,7 +146,7 @@ baselines are mutually exclusive with each other.
 | `--max_new_tokens` | `512` | Response length cap |
 | `--temperature` | `1.0` | Overridden per agent by persona config |
 | `--top_p` | `0.9` | Overridden per agent by persona config |
-| `--thinking_token_budget` | `1024` | Reasoning budget; sent as `extra_body`, so endpoints that do not accept it will reject the request |
+| `--thinking_token_budget` | `$THINKING_TOKEN_BUDGET`, else off | Thinking budget, sent as `extra_body`. Only set it against a server started with `--reasoning-config`; any other server rejects the request |
 
 **Solver and topology**
 
@@ -184,7 +184,7 @@ python src/tag_questions.py \
 | `--max_new_tokens` | `512` | |
 | `--temperature` | `0.0` | Deliberately deterministic for tagging |
 | `--top_p` | `0.9` | |
-| `--thinking_token_budget` | `1024` | |
+| `--thinking_token_budget` | `$THINKING_TOKEN_BUDGET`, else off | |
 | `--use_vllm`, `--vllm_base_url`, `--azure_*`, `--openai_*` | env | Backend selection, as in `main.py` |
 
 ### `src/tag_dataset.py` — orchestration stage 2
@@ -245,7 +245,7 @@ python src/train_orchestrator.py \
 | `--orchestrator_max_tokens` / `--orchestrator_temperature` / `--orchestrator_top_p` | `4096` / `0.1` / `0.5` | The team-selection call |
 | `--summariser_max_tokens` / `--summariser_temperature` | `8192` / `0.5` | The scoreboard rewrite |
 | `--summariser_max_attempts` | `3` | Retries before the run fails and the scoreboard is left unchanged |
-| `--thinking_token_budget` | `1024` | All three |
+| `--thinking_token_budget` | `$THINKING_TOKEN_BUDGET`, else off | All three |
 
 ### `src/orchestrator_pool_sweep.py` — agent-pool selection probe
 

@@ -5,13 +5,18 @@ function parameter) at the point of use rather than importing a constant here,
 so that passing a flag actually changes behaviour.
 """
 
+import os
+
 MAX_NEW_TOKENS = 512
 TEMPERATURE = 1.0
 TOP_P = 0.9
 
-# Reasoning budget for models served with an OpenAI-compatible API that accept it.
-# Sent as extra_body; endpoints that do not understand the field reject the request.
-THINKING_TOKEN_BUDGET = 1024
+# Reasoning budget for a thinking model. Off unless set, because vLLM rejects
+# the field on a server started without --reasoning-config, which is every
+# non-thinking model. THINKING_TOKEN_BUDGET in the environment opts in, so a
+# sweep can set it once rather than on every command line.
+_thinking_token_budget = os.environ.get("THINKING_TOKEN_BUDGET")
+THINKING_TOKEN_BUDGET = int(_thinking_token_budget) if _thinking_token_budget else None
 
 ORCHESTRATOR_MAX_TOKENS = 4096
 ORCHESTRATOR_TEMPERATURE = 0.1

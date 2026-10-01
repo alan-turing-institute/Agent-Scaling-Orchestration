@@ -3,6 +3,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from model.openai_compat import thinking_extra_body
+
 
 
 
@@ -102,7 +104,7 @@ def save_evaluation_summary_with_llm(orchestrator, evaluations,
                 model=orchestrator.model_name,
                 messages=messages,
                 max_tokens=max_tokens,
-                extra_body={"thinking_token_budget": thinking_token_budget},
+                extra_body=thinking_extra_body(thinking_token_budget),
                 temperature=temperature,
             )
             content = response.choices[0].message.content
