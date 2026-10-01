@@ -7,7 +7,10 @@ so that passing a flag actually changes behaviour.
 
 import os
 
-MAX_NEW_TOKENS = 512
+# OpenAICompatChatWrapper.complete forces max_tokens to 4096, so 4096 is what
+# every vLLM run has used whatever this said. Defaulting to it means the flag
+# keeps meaning the same thing once the wrapper honours it.
+MAX_NEW_TOKENS = 4096
 TEMPERATURE = 1.0
 TOP_P = 0.9
 
@@ -17,6 +20,9 @@ TOP_P = 0.9
 # sweep can set it once rather than on every command line.
 _thinking_token_budget = os.environ.get("THINKING_TOKEN_BUDGET")
 THINKING_TOKEN_BUDGET = int(_thinking_token_budget) if _thinking_token_budget else None
+
+# Tagging asks for a short list of tags, and has always been capped at 512.
+TAGGING_MAX_NEW_TOKENS = 512
 
 ORCHESTRATOR_MAX_TOKENS = 4096
 ORCHESTRATOR_TEMPERATURE = 0.1

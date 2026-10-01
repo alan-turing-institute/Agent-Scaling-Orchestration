@@ -143,7 +143,7 @@ baselines are mutually exclusive with each other.
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--max_new_tokens` | `512` | Response length cap |
+| `--max_new_tokens` | `4096` | Response length cap |
 | `--temperature` | `1.0` | Overridden per agent by persona config |
 | `--top_p` | `0.9` | Overridden per agent by persona config |
 | `--thinking_token_budget` | `$THINKING_TOKEN_BUDGET`, else off | Thinking budget, sent as `extra_body`. Only set it against a server started with `--reasoning-config`; any other server rejects the request |
@@ -241,7 +241,7 @@ python src/train_orchestrator.py \
 
 | Flag | Default | Applies to |
 |---|---|---|
-| `--max_new_tokens` / `--temperature` / `--top_p` | `512` / `1.0` / `0.9` | The agents in the selected team |
+| `--max_new_tokens` / `--temperature` / `--top_p` | `4096` / `1.0` / `0.9` | The agents in the selected team |
 | `--orchestrator_max_tokens` / `--orchestrator_temperature` / `--orchestrator_top_p` | `4096` / `0.1` / `0.5` | The team-selection call |
 | `--summariser_max_tokens` / `--summariser_temperature` | `8192` / `0.5` | The scoreboard rewrite |
 | `--summariser_max_attempts` | `3` | Retries before the run fails and the scoreboard is left unchanged |
@@ -285,7 +285,7 @@ python src/agent_selection_sweep.py --agent_type chosen --choose_type name \
 | `--choose_type` | `name` | Which agent-description variant's selections to replay |
 | `--selection_model` | `gpt-4.1` | Whose chosen-agents file to read |
 | `--agent_models` | `ministral-3b` | Model the agents run on |
-| `--num_agents` / `--data_size` / `--max_new_tokens` | `4` / `100` / `512` | Passed to each run |
+| `--num_agents` / `--data_size` / `--max_new_tokens` | `4` / `100` / `4096` | Passed to each run |
 | `--solver` / `--debate_rounds` | `vote` / `0` | Passed to each run |
 | `--max_workers` | `10` | Concurrent `main.py` processes |
 

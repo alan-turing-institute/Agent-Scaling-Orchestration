@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from defaults import MAX_NEW_TOKENS, THINKING_TOKEN_BUDGET, TOP_P
+from defaults import TAGGING_MAX_NEW_TOKENS, THINKING_TOKEN_BUDGET, TOP_P
 from data.data_utils import load_data
 from model.model_utils import get_agents
 
@@ -44,7 +44,7 @@ def parse_args():
 
     parser.add_argument('--model', type=str, default='Qwen/Qwen3.6-35B-A3B')
     parser.add_argument('--agent_models', type=str, default='')
-    parser.add_argument('--max_new_tokens', type=int, default=MAX_NEW_TOKENS)
+    parser.add_argument('--max_new_tokens', type=int, default=TAGGING_MAX_NEW_TOKENS)
     parser.add_argument('--thinking_token_budget', type=int, default=THINKING_TOKEN_BUDGET,
                         help='Thinking budget for a model served with --reasoning-config. '
                              'Not sent unless set; defaults to $THINKING_TOKEN_BUDGET')
