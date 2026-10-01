@@ -491,7 +491,7 @@ Do not start this before section 3 lands. Sketched in dependency order.
 
 ---
 
-## Status — updated 2026-09-25
+## Status — updated 2026-10-01
 
 Work is happening in the clone `../Agent-Scaling-Orchestration-refactor`, branch
 `refactor/benchmark-registry`, so the running fold-1 sweep is untouched. Nothing
@@ -504,6 +504,7 @@ has been merged back.
 | `Honour the generation budget...` | §1.4, §4.7 |
 | `Put benchmarks behind a registry...` | §3 (all), §4.6, §5.1, §5.2, §5.3, part of §2 |
 | `Write down what each agent answered...` | §4.4 |
+| `Build the paper persona sets from the bank...` | §4.1, §4.2 (key optional; `persona_prompt` fallback now False) |
 
 Verification, all offline — nothing in this branch has contacted the vLLM server:
 
@@ -537,26 +538,20 @@ at all. Fixed in the reader, so histories already on disk become readable.
 
 ### Next, in order
 
-1. **§4.1** — collapse `_build_enhanced_personas` onto the bank. The per-dataset
-   name lists are already extracted and live on each benchmark module as
-   `PERSONA_SET`; this is now just deleting ~650 lines and pointing
-   `scripts/paper_persona_baseline.py` at `benchmarks.persona_set(name)`. Note
-   `winogrande`'s `Elimination_Specialist` is the bank's
-   `Elimination_Based_Solver` — verified by comparing definitions, not by name.
-2. **§4.2** — `_add_nvidia_personas` raises on 45 of the 50 bank personas; make
-   the key optional and stop `chosen_agents`/`persona_prompt` defaulting to True.
-3. **§4.3** — one `with_server_retry`, currently defined identically in two files.
-4. **§2** — remaining dead code: the inert `main.py` flags, the dead second
-   `truthfulqa` branch (decide which set the paper baseline should use first).
-5. **§5** — re-score a finished arm under `--parse_mode lenient` from the new
-   predictions files and record the delta in `docs/experiment-log.md`. This is
-   now a re-read, not a re-run.
-6. **§3.4** — coding benchmark. The seam is in place: one module in
+1. **§4.3** — one `with_server_retry`, currently defined identically in two files.
+2. **§2** — remaining dead code: the inert `main.py` flags. The dead second
+   `truthfulqa` branch went with §4.1; the paper baseline keeps the first set,
+   which is the one it always got.
+3. **§5** — re-score a finished arm under `--parse_mode lenient` from the new
+   predictions files and record the delta in `docs/experiment-log.md`. No run on
+   disk has a predictions file yet, so this needs one arm run on this branch
+   first; after that it is a re-read, not a re-run.
+4. **§3.4** — coding benchmark. The seam is in place: one module in
    `src/benchmarks/` plus a `code_tests` scorer. The sandbox decision (subprocess
    with timeout and no network, vs. Docker) is still open and should be settled
    before the scorer is written, since it decides whether `Scorer.correct` can
    stay synchronous.
-7. **§6** — trajectory layer for the agentic benchmarks.
+5. **§6** — trajectory layer for the agentic benchmarks.
 
 ### Merging back
 
