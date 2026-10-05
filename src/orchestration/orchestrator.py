@@ -277,6 +277,15 @@ def team_selection(orchestrator: OrchestratorAgent, dataset, num_samples=5, prio
         print(f"Retrying team selection (attempt {attempt + 1}/{max_attempts})")
         invalid_feedback = ", ".join(invalid) if invalid else None
 
+    # The prompt asks for exactly team_size names, but nothing stopped a reply with
+    # more from being evaluated as a bigger team. At --team_size 1 that would turn
+    # a single-agent arm into a vote. Keep the first team_size: the model lists its
+    # picks in order of preference.
+    agents = team_result.get("agents", [])
+    if len(agents) > team_size:
+        print(f"[warn] orchestrator named {len(agents)} agents for a team of {team_size}; keeping {agents[:team_size]}")
+        team_result["agents"] = agents[:team_size]
+
     return {
         "chosen_tag": chosen_tag,
         "batch_size": num_samples,

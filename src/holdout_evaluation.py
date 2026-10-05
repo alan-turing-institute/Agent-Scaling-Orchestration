@@ -97,6 +97,12 @@ def _select_team(orchestrator, tag_frequencies, batch_size, scoreboard_md, team_
         invalid = team_result.get("invalid_agents") or []
         invalid_feedback = ", ".join(invalid) if invalid else None
 
+    # Same cap as orchestration.team_selection: a reply naming extra agents must not
+    # become a bigger team, which at --team_size 1 would turn the arm into a vote.
+    agents = team_result.get("agents", [])
+    if len(agents) > team_size:
+        print(f"[warn] orchestrator named {len(agents)} agents for a team of {team_size}; keeping {agents[:team_size]}")
+        team_result["agents"] = agents[:team_size]
     return team_result
 
 
