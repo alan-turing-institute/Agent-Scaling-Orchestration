@@ -33,7 +33,8 @@ from splits import add_split_args, make_split, split_label
 import benchmarks
 from benchmarks import score_responses
 from holdout_evaluation import _batch_indices
-from predictions import write_predictions
+from predictions import SCHEMA_VERSION, write_predictions
+from runner import question_key
 from model.openai_compat import OpenAICompatChatWrapper
 from team_evaluation import answer_type_of
 
@@ -55,6 +56,8 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--max_tokens", type=int, default=4096)
+    parser.add_argument("--parse_mode", choices=["strict", "lenient"], default="strict",
+                        help="strict reproduces the parsers every result so far used; lenient fixes them")
     parser.add_argument("--limit", type=int, default=0, help="Answer only the first N held-out questions; 0 means all")
     parser.add_argument("--response_chars", type=int, default=0,
                         help="Clip stored responses to this many characters; 0 keeps them whole")
@@ -72,16 +75,18 @@ def answer_one(agent, sample, scorers, args):
     answer = scorer.normalise_gold(answer)
 
     prompt = question + scorer.instruction_suffix()
+    completion, error_text = None, None
     try:
-        text = agent.complete(
+        completion = agent.generate(
             [{"role": "user", "content": prompt}],
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
         )
+        text = completion.text
     except Exception as error:
         print(f"[warn] call failed: {error!r}; scoring as incorrect")
-        text = ""
+        text, error_text = "", repr(error)
 
     result = score_responses(scorer, {AGENT_NAME: text}, answer)
     prediction = result.predictions[0]
@@ -98,6 +103,56 @@ def answer_one(agent, sample, scorers, args):
         "question": question,
         "response": text,
         "dataset": sample.get("dataset"),
+        "completion": completion,
+        "error": error_text,
+    }
+
+
+def prediction_row(r, batch_index, question_index, args):
+    completion = r.get("completion")
+    usage = completion.usage() if completion else {}
+    response = r.get("response") or ""
+    reasoning = completion.reasoning if completion else ""
+    if args.response_chars:
+        response = response[:args.response_chars]
+        reasoning = reasoning[:args.response_chars]
+    stage = {
+        "id": AGENT_NAME, "persona": None, "role": "solver", "model": args.model_name,
+        "inputs": [], "max_tokens": args.max_tokens, "seed": None,
+        "response": response,
+        "reasoning": reasoning,
+        "used_reasoning": completion.used_reasoning if completion else False,
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "finish_reason": usage.get("finish_reason"),
+        "latency_s": usage.get("latency_s"),
+        "served_model": args.model_name,
+        "error": r.get("error"),
+        "prediction": r["prediction"], "parsed": r["parsed"], "correct": r["correct"],
+        "transition": None, "copied": None,
+    }
+    return {
+        "schema": SCHEMA_VERSION,
+        "arm": "bare_model",
+        "batch": batch_index,
+        "question_index": question_index,
+        "question_key": question_key(r.get("question")),
+        "dataset": r.get("dataset"),
+        "answer_type": r["answer_type"],
+        "tags": r["tags"],
+        "question": r.get("question"),
+        "gold": r.get("gold"),
+        "team": [AGENT_NAME],
+        "config_id": None,
+        "aggregation": {"rule": "stage", "over": [AGENT_NAME], "tie_break": None},
+        "team_answer": r["prediction"],
+        "team_correct": r["correct"],
+        "calls": 1,
+        "depth": 1,
+        "prompt_tokens": stage["prompt_tokens"] or 0,
+        "completion_tokens": stage["completion_tokens"] or 0,
+        "versions": {"parse_mode": args.parse_mode, "role_templates": None},
+        "stages": [stage],
     }
 
 
@@ -121,7 +176,7 @@ def main():
     # Each scorer states the answer format it can read, so a split that mixes
     # numeric and multiple-choice questions asks each one for the right thing.
     scorers = {
-        answer_type: benchmarks.get_scorer(answer_type)
+        answer_type: benchmarks.get_scorer(answer_type, mode=args.parse_mode)
         for answer_type in ("numeric", "mcq")
     }
 
@@ -177,28 +232,10 @@ def main():
         with records_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, default=str) + "\n")
 
-        # Same per-question detail the team arms write, so the arms can be
-        # compared question by question rather than only in aggregate.
-        write_predictions(predictions_path, [{
-            "arm": "bare_model",
-            "batch": batch_index,
-            "question_index": indices[position],
-            "dataset": r.get("dataset"),
-            "answer_type": r["answer_type"],
-            "tags": r["tags"],
-            "question": r.get("question"),
-            "gold": r.get("gold"),
-            "team": [AGENT_NAME],
-            "team_answer": r["prediction"],
-            "team_correct": r["correct"],
-            "agents": {AGENT_NAME: {
-                "prediction": r["prediction"],
-                "correct": r["correct"],
-                "parsed": r["parsed"],
-                "response": (r.get("response") or "")[:args.response_chars]
-                            if args.response_chars else r.get("response"),
-            }},
-        } for position, r in enumerate(results)])
+        # Same per-question detail the team arms write, in the same shape: one
+        # stage, no persona, so the arms can be compared question by question.
+        write_predictions(predictions_path, [prediction_row(r, batch_index, indices[position], args)
+                                             for position, r in enumerate(results)])
 
     summary = {
         "run": str(out_dir),
