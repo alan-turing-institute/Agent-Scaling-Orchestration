@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Research code for paper *Understanding Agent Scaling in LLM-Based Multi-Agent Systems via Diversity*.
 `README.md` has paper story, persona table, K\* definition, full flag list.
 
-Collection of experiment entry points, not a library. No tests, no lint, no packaging, no `__init__.py`.
+Collection of experiment entry points, not a library. No lint, no packaging, no `__init__.py`.
+Offline tests in `tests/` run directly as scripts.
 
 Two pipelines share `src/model` and `src/data`:
 
@@ -143,13 +144,44 @@ dropped and the selection retried once with the rejected names quoted back, so a
 no longer reaches `_build_chosen_personas` as a KeyError. A parse failure returns an empty team and
 the iteration is skipped and recorded, rather than falling back to agents that never existed.
 
-`team_evaluation.py` — `run_team_evaluation` rebuilds args for `get_agents` (sets `chosen_agents`,
-`chosen_personas`, `num_agents`), infers gsm8k-vs-MCQ from answer shape, one thread per agent,
-results placed by index so responses stay aligned with agent names. `vllm_base_url` falls back to
-`args.api_base_url` before the 8001 default. MCQ batches borrow `args.data = 'arc'` so
-`get_instruction_suffix` asks for `(A)` rather than its numeric fallback, and gsm8k answers are
-coerced to float because the tagged dataset stores them as strings. Returns accuracies **and** raw
-counts (`per_agent_correct`, `per_agent_correct_by_tag`, `per_tag_counts`, `team_correct`).
+`team_evaluation.py` — `run_team_evaluation(selected_team, questions, args, config=None)` runs a
+team on each question (questions in parallel, `--eval_workers`) and adds up the results. With only
+`selected_team` it runs `team_config.vote(selected_team)`; pass a `TeamConfig` for anything else.
+Answer type comes from the question's `dataset` column via the benchmark registry, per question.
+Returns accuracies **and** raw counts (`per_agent_correct`, `per_agent_correct_by_tag`,
+`per_tag_counts`, `team_correct`) keyed by **stage id** — for a vote the stage ids are the persona
+names, so the scoreboard keys are unchanged — plus `config_id`, call and token totals, and
+`samples` (per-question detail; callers write it with `predictions.save_report` and drop it).
+
+### Team configs and the runner
+
+The orchestrator path no longer goes through `engine`/`get_agents`. Four modules replace that:
+
+- `team_config.py` — `TeamConfig`: an ordered tuple of `Stage(id, persona, role, model, inputs,
+  max_tokens)`, each reading only earlier stages via `Input(source, handoff)`, plus an aggregate
+  (`vote` over `voters()`, or `stage` = the `final` stage's answer). Builders: `vote`, `debate`,
+  `centralized`, `synthesis`, `pipeline`, `parallel`, and `split_budget` for matched compute.
+  `config_id` hashes everything behavioural, including the role-template version.
+- `roles.py` — role templates (`solver`, `debater`, `critic`, `reviser`, `planner`, `checker`,
+  `hub`, `synthesiser`) and handoff rendering (`answer`, `rationale` = last 600 chars, `full`).
+  A solver with no inputs gets the exact legacy prompt (persona, blank line, question + suffix);
+  bump `ROLE_TEMPLATES_VERSION` on any template change.
+- `runner.py` — `run_question` executes a config layer by layer (stages in a layer run together),
+  scores **every** stage, records each stage's transition from the stage it read (`kept_right`,
+  `fixed`, `broke`, `kept_wrong`) and whether it copied that answer, and aggregates. Ties break with
+  a per-question seeded RNG by default (`--tie_break global` restores the old global-RNG
+  behaviour). A per-request `seed` is sent unless `--request_seed -1`. Connection/timeout errors
+  propagate to the caller's retry; other stage failures score as unanswered. `add_runner_args`
+  holds the shared flags (`--models_file`, `--parse_mode`, `--tie_break`, `--request_seed`).
+- `model/registry.py` — model key -> served name and endpoint. `default` is `--model_name` at
+  `--vllm_base_url`/`--api_base_url`/8001; `--models_file` adds more (see
+  `configs/models.example.json`). `OpenAICompatChatWrapper.generate` returns a `Completion` with
+  tokens, finish reason, latency and reasoning; `complete` still returns the text.
+
+`scripts/run_config.py` runs one fixed config over the held-out split in the same batches as the
+orchestrator arms. `scripts/rescore.py` re-scores a predictions file under another parser without
+calling a model. Offline tests: `PYTHONPATH=src python tests/test_runner.py` and
+`tests/test_scorers.py` (no pytest in the pinned env).
 
 `summariser.py` — two modes. `save_evaluation_summary` (default, `--summariser counts`) folds those
 counts into `agent_performance_state.json` and renders the markdown from it: agent totals, per-tag
@@ -163,13 +195,16 @@ after it with the scoreboard frozen: the split is shuffled and chunked (`--split
 `--test_batch_size`), each batch's tag profile drives one selection, every test question is answered
 exactly once. `--random_baseline` scores a randomly drawn team on the same batches for reference.
 
-Answer type is decided **per question** (`_infer_answer_type`), not per batch: a tag spans gsm8k and
+Answer type is decided **per question** (`answer_type_of`, from the `dataset` column), not per batch: a tag spans gsm8k and
 MCQ sets, and judging a batch by its first answer silently mis-scores or drops the rest.
 
 Outputs default under `data-claude/orchestrator/`: `agent_performance_by_tag.md`,
 `agent_performance_state.json`, `run_records.jsonl` (one record per iteration),
 `team_selection_results.csv` (header written once, not per row), plus `holdout_records.jsonl` and
-`holdout_summary.json` when a test split is held out.
+`holdout_summary.json` when a test split is held out. `predictions.jsonl` (training) and
+`holdout_predictions.jsonl` hold one row per question (schema 2: every stage's response, answer,
+parsed flag, correctness, transition, tokens), and `configs.json` maps each `config_id` to its
+stages.
 
 ### Question tagging
 

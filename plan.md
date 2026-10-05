@@ -491,11 +491,70 @@ Do not start this before section 3 lands. Sketched in dependency order.
 
 ---
 
-## Status — updated 2026-10-01
+## Status — updated 2026-10-05
 
-Work is happening in the clone `../Agent-Scaling-Orchestration-refactor`, branch
-`refactor/benchmark-registry`, so the running fold-1 sweep is untouched. Nothing
-has been merged back.
+The branch was rebased onto `main` after the experiment branch merged (#4) and
+now carries C1–C5 of the research plan ("Orchestration Meets Agent Scaling") on
+top of the registry work below.
+
+### C1–C5, landed
+
+| Commit | Covers |
+|---|---|
+| `Return what a call cost, and let stages name their model` | C1: `Completion` from `generate()`, `model/registry.py`, `--models_file` |
+| `Describe a team as a small graph of stages` | C2: `team_config.py`, `roles.py` |
+| `Run every team through one runner and score every stage` | C3, C4: `runner.py`; `run_team_evaluation` wraps it |
+| `Record every stage of every question, and re-score from the file` | C5: schema-2 rows, `configs.json`, `scripts/rescore.py`, `scripts/run_config.py` |
+
+Offline: `tests/test_runner.py` (prompts byte-identical to the old vote,
+config validation, handoffs, transitions, tie-break, report shape, rows,
+rescore agreement) and `tests/test_scorers.py` both pass. An independent review
+found a crash in `paper_persona_baseline.py` (stale import), wrong credit for
+debate and hub stages, and config validation holes; all three fixed and tested.
+
+### Regression gate (C0)
+
+The 0.8B `random` arm, fold 0, rerun against the same server. Teams are drawn
+by a seeded generator, so all four runs answered with identical teams:
+
+| Run | Team correct | Agent answers correct |
+|---|---|---|
+| old code, 2 Oct (the published result) | 65/140 | 220/560 |
+| old code, today | 69/140 | 235/560 |
+| new code, run 1 | 69/140 | 236/560 |
+| new code, run 2 | 72/140 | 242/560 |
+
+| Pair | Sum over batch x agent of the difference in correct answers (of 560 answers) | Sum of per-batch team differences |
+|---|---|---|
+| old today vs new run 1 | 89 | 28 |
+| new run 1 vs new run 2 | 74 | 13 |
+| old 2 Oct vs old today | 99 | 26 |
+
+**Passes.** Old and new code differ by no more than two runs of the same code.
+The gap from the published 65 is the server: the 0.8B container was recreated
+at 23:30 on 2 October, after the published run, and the old code gives 69 on
+today's container too. The somewhat larger team-level churn between old and new
+is the tie-break change: 37 of 140 questions had a tied vote.
+
+**The server is not deterministic under load.** The same request repeated in
+sequence gives identical text (10/10, with or without a per-request seed), but
+under concurrent load 0/10 came back identical. So arms run at
+`--eval_workers 5` differ in at least 13–18% of agent answers (the sums above
+are a lower bound: flips inside one batch can cancel) and by 3–4 team questions
+per fold from serving noise alone - the size of the selection effects being
+measured. Comparisons must be paired and repeated, or run with a serving setup
+whose outputs do not depend on the batch; which vLLM setting causes it
+(speculative decoding is on for the 0.8B) has not been isolated.
+
+### Next
+
+Experiments E2, E10 and E12 can run now with `scripts/run_config.py`. Still
+open from the list below: §4.3, §2, §5 (now a re-read, since gate runs carry
+predictions), §3.4, §6.
+
+## Status — 2026-10-01 (registry work)
+
+Written while the work lived in a separate clone during the fold-1 sweep.
 
 ### Done
 
