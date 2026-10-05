@@ -65,7 +65,7 @@ def answer_type_of(sample) -> str:
 
 
 @lru_cache(maxsize=8)
-def _registry(model_name, base_url, models_file, api_key):
+def _registry(model_name, base_url, models_file, api_key, max_inflight):
     """One registry, and so one client per model, for the life of the process.
 
     `get_agents` built fresh clients for every batch; nothing about a client is
@@ -75,6 +75,7 @@ def _registry(model_name, base_url, models_file, api_key):
         pass
     a = _Args()
     a.model_name, a.vllm_base_url, a.models_file, a.vllm_api_key = model_name, base_url, models_file, api_key
+    a.max_inflight = max_inflight
     return ModelRegistry.from_args(a)
 
 
@@ -88,7 +89,8 @@ def registry_for(args) -> ModelRegistry:
                 or "http://127.0.0.1:8001/v1")
     model_name = getattr(args, "model_name", None) or getattr(args, "model", None)
     return _registry(model_name, base_url, getattr(args, "models_file", None),
-                     getattr(args, "vllm_api_key", "EMPTY") or "EMPTY")
+                     getattr(args, "vllm_api_key", "EMPTY") or "EMPTY",
+                     getattr(args, "max_inflight", 0) or 0)
 
 
 def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, args,
@@ -110,14 +112,29 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
             the paper's names has to supply the definitions it means.
         config: the team to run. Default: `team_config.vote(selected_team)`.
 
-    Per-agent counts are keyed by stage id. For a vote the stage ids are the
-    persona names, so the scoreboard and every saved record keep their keys.
+    Per-agent counts are keyed by persona: each persona is credited with the
+    answer of the last stage it played (`credited_stage` in the report). For a
+    vote that is its only answer, so every saved record keeps its meaning.
     """
     if config is None:
         if not selected_team:
             raise ValueError("run_team_evaluation needs selected_team or config")
-        config = team_config.vote(list(selected_team))
-    agents = config.stage_ids
+        roles = getattr(args, "roles", None)
+        config = team_config.for_team(
+            list(selected_team), topology=getattr(args, "topology", "vote") or "vote",
+            rounds=getattr(args, "rounds", 1), handoff=getattr(args, "handoff", "full") or "full",
+            roles=[r.strip() for r in roles.split(",")] if roles else None,
+        )
+
+    # Credit: each agent (a persona, or a stage with none) is credited with the
+    # answer of the last stage it played - a debater's final round, the hub's
+    # verdict, a worker's own answer. Report keys are those agents, so for any
+    # team picked by name the scoreboard and the holdout accumulators keep the
+    # persona keys they have always used. Per-stage detail is in `samples`.
+    credit = {}
+    for stage in config.stages:
+        credit[stage.persona or stage.id] = stage.id
+    agents = list(credit)
 
     if personas_override is not None:
         personas = personas_override
@@ -165,10 +182,10 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
             "gold": str(gold),
             # The per-agent views the counters below and older readers use.
             # A response nobody could parse is kept apart from a wrong one.
-            "correct_by_agent": {sid: by_id[sid]["correct"] for sid in agents},
-            "parsed_by_agent": {sid: by_id[sid]["parsed"] for sid in agents},
-            "predictions": {sid: by_id[sid]["prediction"] for sid in agents},
-            "responses": {sid: by_id[sid]["response"] for sid in agents},
+            "correct_by_agent": {a: by_id[credit[a]]["correct"] for a in agents},
+            "parsed_by_agent": {a: by_id[credit[a]]["parsed"] for a in agents},
+            "predictions": {a: by_id[credit[a]]["prediction"] for a in agents},
+            "responses": {a: by_id[credit[a]]["response"] for a in agents},
         })
         return result
 
@@ -224,6 +241,8 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
         "answer_types": dict(Counter(r["answer_type"] for r in results)),
         # What was run and what it cost, so configurations can be compared at
         # matched compute.
+        "agents": agents,
+        "credited_stage": credit,
         "config_id": config.config_id,
         "config": config.to_dict(),
         "calls": sum(r["calls"] for r in results),

@@ -100,8 +100,17 @@ class OpenAICompatChatWrapper:
         api_key: str = "EMPTY",
         timeout: Optional[float] = 300.0,
         max_retries: int = 4,
+        limiter=None,
     ):
+        """`limiter`, if given, is a semaphore held for the duration of each call.
+
+        Sharing one across every client of a server caps how many requests are
+        in flight there. At 1, every request runs alone, which is what makes
+        greedy output reproducible: the vLLM servers here give different text
+        for the same request depending on what else is in the batch.
+        """
         self.base_url = base_url.rstrip("/")
+        self.limiter = limiter
         self.model_name = model_name
         self.api_key = api_key
         self.timeout = timeout
@@ -139,8 +148,7 @@ class OpenAICompatChatWrapper:
         extra_body = {**thinking_budget_extra_body(), **kwargs.pop("extra_body", {})}
         if seed is not None:
             kwargs["seed"] = seed
-        started = time.monotonic()
-        resp = self._client.chat.completions.create(
+        request = dict(
             model=self.model_name,
             messages=messages,
             max_tokens=max_tokens,
@@ -149,7 +157,15 @@ class OpenAICompatChatWrapper:
             extra_body=extra_body or None,
             **kwargs,
         )
-        latency = time.monotonic() - started
+        if self.limiter is not None:
+            with self.limiter:
+                started = time.monotonic()
+                resp = self._client.chat.completions.create(**request)
+                latency = time.monotonic() - started
+        else:
+            started = time.monotonic()
+            resp = self._client.chat.completions.create(**request)
+            latency = time.monotonic() - started
         self.last_usage = getattr(resp, "usage", None)
 
         choice = resp.choices[0]

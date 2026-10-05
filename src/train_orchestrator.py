@@ -20,7 +20,7 @@ from model.model_utils import build_agent_pool, DEFAULT_MAX_NEW_TOKENS
 from orchestration.orchestrator import OrchestratorAgent, RandomSelector, team_selection
 from holdout_evaluation import evaluate_holdout
 from predictions import save_report
-from runner import add_runner_args
+from runner import add_runner_args, add_topology_args
 from splits import add_split_args, make_split, split_label
 from team_evaluation import run_team_evaluation
 from summariser import save_evaluation_summary, save_evaluation_summary_with_llm
@@ -56,8 +56,8 @@ def parse_args():
     parser.add_argument("--random_baseline", action="store_true", help="Also score a randomly chosen team on every held-out batch")
     add_split_args(parser)
     add_runner_args(parser)
+    add_topology_args(parser)
     parser.set_defaults(test_fraction=0.0)
-    parser.add_argument("--solver", choices=["vote", "debate"], default="vote", help="How to aggregate the selected team answers (only vote is implemented)")
     parser.add_argument("--out_dir", default="data-claude/orchestrator", help="Directory for the run's outputs")
     parser.add_argument("--output_path", default=None, help="Run record JSONL (default: {out_dir}/run_records.jsonl)")
     parser.add_argument("--md_file", default=None, help="Scoreboard markdown (default: {out_dir}/agent_performance_by_tag.md)")
@@ -204,8 +204,6 @@ def main():
     if args.seed is not None:
         random.seed(args.seed)
 
-    if args.solver == "debate":
-        print("[warn] --solver debate is not implemented in team_evaluation; scoring by vote")
 
     print("📂 Loading dataset...")
     dataset_path = resolve_dataset_path(args.dataset_path)
@@ -335,7 +333,7 @@ def main():
         print("\n" + "=" * 60)
         print("TEAM EVALUATION")
         print("=" * 60)
-        print(f"Team accuracy ({args.solver}): {report['team_accuracy']:.2%}")
+        print(f"Team accuracy ({args.topology}): {report['team_accuracy']:.2%}")
         for agent_name, accuracy in report["per_agent_accuracy"].items():
             print(f"{agent_name}: {accuracy:.2%}")
 

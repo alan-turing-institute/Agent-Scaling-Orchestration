@@ -340,3 +340,43 @@ def split_budget(config: TeamConfig, total_tokens: int) -> TeamConfig:
     return TeamConfig(stages=config.stages, aggregate=config.aggregate, final=config.final,
                       vote_over=config.vote_over, max_tokens=share,
                       name=f"{config.name}@{total_tokens}" if config.name else "")
+
+
+TOPOLOGIES = ("vote", "debate", "centralized", "synthesis", "pipeline")
+
+
+def for_team(team: Sequence[str], topology="vote", rounds=1, roles=None, handoff="full",
+             model="default"):
+    """Arrange a selected team into a topology.
+
+    The orchestrator and the random selector both return an ordered list of
+    names, and nothing in their prompt says which name gets which job. So the
+    order decides: in `centralized` and `synthesis` the last name leads and the
+    rest are workers (a team of four is three workers and a hub, as in the
+    paper's centralized setup); in `pipeline` names take `roles` in order.
+    Choosing roles deliberately is a later change to the orchestrator itself.
+    """
+    team = list(team)
+    if topology == "vote":
+        return vote(team, model=model)
+    if topology == "debate":
+        return debate(team, rounds=rounds, model=model, handoff=handoff)
+    if topology in ("centralized", "synthesis"):
+        if len(team) < 2:
+            raise ValueError(f"{topology} needs at least two agents, got {team}")
+        build = centralized if topology == "centralized" else synthesis
+        leader = {"hub": team[-1]} if topology == "centralized" else {"synthesiser": team[-1]}
+        return build(team[:-1], model=model, handoff=handoff, **leader)
+    if topology == "pipeline":
+        roles = list(roles or default_pipeline_roles(len(team)))
+        if len(roles) != len(team):
+            raise ValueError(f"pipeline: {len(roles)} roles for {len(team)} agents")
+        return pipeline(list(zip(roles, team)), model=model, handoff=handoff)
+    raise ValueError(f"unknown topology {topology!r}; known: {TOPOLOGIES}")
+
+
+def default_pipeline_roles(n):
+    """solver, then critics, then a reviser: solver -> critic -> reviser for three."""
+    if n == 1:
+        return ["solver"]
+    return ["solver"] + ["critic"] * (n - 2) + ["reviser"]

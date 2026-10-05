@@ -47,6 +47,23 @@ def add_runner_args(parser):
                              "global: the old behaviour, drawn from the global random state")
     parser.add_argument("--request_seed", type=int, default=0,
                         help="Base for the per-request seed sent with every call; -1 sends none")
+    parser.add_argument("--max_inflight", type=int, default=0,
+                        help="Cap on agent requests in flight per server; 0 = no cap. 1 makes greedy "
+                             "output reproducible: the servers' output depends on what else is in the batch")
+    return parser
+
+
+def add_topology_args(parser):
+    """How a team chosen by name works together. For entry points that select teams."""
+    parser.add_argument("--topology", choices=["vote", "debate", "centralized", "synthesis", "pipeline"],
+                        default="vote",
+                        help="How a selected team works together. centralized/synthesis: the last selected "
+                             "agent leads, the rest are workers. pipeline: agents take --roles in order")
+    parser.add_argument("--rounds", type=int, default=1, help="debate: exchange rounds after the first answer")
+    parser.add_argument("--roles", default=None,
+                        help="pipeline: comma-separated roles, one per agent (default solver,critic...,reviser)")
+    parser.add_argument("--handoff", choices=["full", "rationale", "answer"], default="full",
+                        help="What a stage sees of the stages it reads")
     return parser
 
 

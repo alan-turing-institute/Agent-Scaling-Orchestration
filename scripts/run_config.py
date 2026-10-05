@@ -139,7 +139,7 @@ def main():
     for path in (records_path, predictions_path, out_dir / "configs.json"):
         path.unlink(missing_ok=True)
 
-    team = config.stage_ids
+    team = None  # the agents credited, from the first report
     totals = _empty_totals()
     tokens = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
     batches = _batch_indices(len(test_dataset), args.test_batch_size, args.split_seed)
@@ -149,7 +149,7 @@ def main():
             "batch": batch_index,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "question_indices": indices,
-            "selected_team": team,
+            "selected_team": None,
             "invalid_agents": [],
             "reasoning": f"Fixed config {config.config_id}; no selection",
         }
@@ -161,6 +161,8 @@ def main():
             record.update({"status": "evaluation_error", "error": repr(error)})
             report = None
         if report is not None:
+            team = report["agents"]
+            record["selected_team"] = team
             _accumulate(totals, team, report)
             for key in tokens:
                 tokens[key] += report.get(key, 0) or 0

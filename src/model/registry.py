@@ -50,12 +50,20 @@ class ModelSpec:
 class ModelRegistry:
     """Resolves model keys to specs and hands out one client per model."""
 
-    def __init__(self, specs: Dict[str, ModelSpec]):
+    def __init__(self, specs: Dict[str, ModelSpec], max_inflight: int = 0):
+        """`max_inflight` > 0 caps requests in flight per server (base URL).
+
+        The cap is per server, not per model key, because what makes output
+        batch-dependent is what else the server is running at the same time.
+        It only sees this process: two runs against one server still interleave.
+        """
         if DEFAULT_KEY not in specs:
             raise ValueError(f"a model registry needs a {DEFAULT_KEY!r} entry")
         self._specs = dict(specs)
         self._clients: Dict[str, OpenAICompatChatWrapper] = {}
         self._lock = threading.Lock()
+        self.max_inflight = max_inflight or 0
+        self._limiters: Dict[str, threading.BoundedSemaphore] = {}
 
     @classmethod
     def from_args(cls, args) -> "ModelRegistry":
@@ -83,7 +91,7 @@ class ModelRegistry:
         models_file = getattr(args, "models_file", None)
         if models_file:
             specs.update(load_models_file(models_file))
-        return cls(specs)
+        return cls(specs, max_inflight=getattr(args, "max_inflight", 0) or 0)
 
     def resolve(self, key: Optional[str]) -> ModelSpec:
         key = key or DEFAULT_KEY
@@ -100,10 +108,15 @@ class ModelRegistry:
         with self._lock:
             client = self._clients.get(spec.key)
             if client is None:
+                limiter = None
+                if self.max_inflight > 0:
+                    limiter = self._limiters.setdefault(
+                        spec.base_url, threading.BoundedSemaphore(self.max_inflight))
                 client = OpenAICompatChatWrapper(
                     base_url=spec.base_url,
                     model_name=spec.served_name,
                     api_key=spec.api_key,
+                    limiter=limiter,
                 )
                 self._clients[spec.key] = client
             return client
