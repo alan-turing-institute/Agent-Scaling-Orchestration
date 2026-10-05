@@ -6,7 +6,7 @@ def load_data(args, split='validation'):
     # TruthfulQA only has 'validation' split
     split = 'validation'
 
-    dataset = load_dataset('truthful_qa', 'multiple_choice', cache_dir=args.data_dir)[split]
+    dataset = load_dataset('truthfulqa/truthful_qa', 'multiple_choice', cache_dir=args.data_dir)[split]
     dataset = pd.DataFrame(dataset)
 
     # Shuffle and limit dataset size

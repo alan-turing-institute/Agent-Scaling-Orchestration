@@ -17,3 +17,5 @@ cache/
 .ipynb_checkpoints/
 
 .DS_STORE
+env/
+data-claude/

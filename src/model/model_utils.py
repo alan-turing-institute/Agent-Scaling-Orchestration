@@ -237,13 +237,13 @@ def _add_nvidia_personas(args, personas):
     return personas
 
 
-def _build_chosen_personas(args):
-    """
-    Build list of personas based on what was chosen by the orchestrator
-    """
-    if not (getattr(args, 'chosen_agents', False)):
-        return {"None": {"prompt": "", "temperature": 0, "top_p": 0.9, "style": "default"}}
+def chosen_persona_bank():
+    """Every persona the orchestrator may choose from.
 
+    The union of the per-dataset sets in `_build_enhanced_personas` plus the
+    default set, so a team can be assembled across tasks rather than within one.
+    Keyed by the name used in `--chosen_personas`.
+    """
     all_personas = {
         "Conservative_Verifier": {
                 "prompt": """You are a careful, methodical problem solver who values accuracy above speed.
@@ -780,13 +780,87 @@ Your approach:
                 "temperature": 0,
                 "top_p": 0.9,
                 "style": "elimination"
+        },
+        "Careful_Analyst": {
+                "prompt": "You are a careful analyst who thinks step by step and verifies conclusions.",
+                "temperature": 0,
+                "top_p": 0.85,
+                "style": "careful"
+        },
+        "Broad_Thinker": {
+                "prompt": "You are a broad thinker who considers multiple perspectives and possibilities.",
+                "temperature": 0,
+                "top_p": 0.92,
+                "style": "broad"
+        },
+        "Practical_Reasoner": {
+                "prompt": "You are a practical reasoner who focuses on what makes sense in context.",
+                "temperature": 0,
+                "top_p": 0.9,
+                "style": "practical"
+        },
+        "Detail_Oriented": {
+                "prompt": "You are detail-oriented and pay attention to specifics that others might miss.",
+                "temperature": 0,
+                "top_p": 0.88,
+                "style": "detailed"
+        },
+        "Intuitive_Judge": {
+                "prompt": "You have strong intuition and can quickly identify the most likely answer.",
+                "temperature": 0,
+                "top_p": 0.9,
+                "style": "intuitive"
         }
     }
+
+    return all_personas
+
+
+def _build_chosen_personas(args):
+    """
+    Build list of personas based on what was chosen by the orchestrator
+    """
+    if not (getattr(args, 'chosen_agents', False)):
+        return {"None": {"prompt": "", "temperature": 0, "top_p": 0.9, "style": "default"}}
+
+    all_personas = chosen_persona_bank()
 
     # chosen_personas = args.chosen_personas.split(",")
     chosen_personas = {chosen_persona: all_personas[chosen_persona] for chosen_persona in args.chosen_personas.split(",")}
 
     return chosen_personas
+
+
+
+def build_agent_pool(names=None):
+    """Describe the persona bank in the shape the orchestrator prompt expects.
+
+    Derived from the bank itself rather than hand-maintained, so a persona added
+    there becomes selectable without a second edit. `specialty` is the persona's
+    opening line and `strengths` are the bullets under "Your approach".
+    """
+    bank = chosen_persona_bank()
+    selected = names or list(bank.keys())
+
+    pool = []
+    for name in selected:
+        persona = bank.get(name)
+        if persona is None:
+            continue
+        lines = [line.strip() for line in persona.get("prompt", "").splitlines() if line.strip()]
+        specialty = lines[0] if lines else name.replace("_", " ")
+        for prefix in ("You are an ", "You are a ", "You are "):
+            if specialty.startswith(prefix):
+                specialty = specialty[len(prefix):]
+                break
+        strengths = [line.lstrip("- ").strip() for line in lines[1:] if line.startswith("-")]
+        pool.append({
+            "name": name,
+            "specialty": specialty.rstrip("."),
+            "strengths": strengths,
+            "style": persona.get("style", ""),
+        })
+    return pool
 
 
 def _build_enhanced_personas(args):

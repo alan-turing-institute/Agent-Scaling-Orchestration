@@ -6,7 +6,7 @@ def load_data(args, split='validation'):
     # WinoGrande uses 'validation' for test, 'train' for training
     split = 'validation' if split == 'test' else split
     
-    dataset = load_dataset('winogrande', 'winogrande_xl', cache_dir=args.data_dir)[split]
+    dataset = load_dataset('allenai/winogrande', 'winogrande_xl', cache_dir=args.data_dir)[split]
     dataset = pd.DataFrame(dataset)
     
     if split == 'train':

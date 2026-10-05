@@ -4,7 +4,7 @@ import random
 from openai import OpenAI
 
 from model.model_utils import engine
-from model.openai_compat import OpenAICompatChatWrapper
+from model.openai_compat import OpenAICompatChatWrapper, thinking_budget_extra_body
 
 
 class OrchestratorAgent:
@@ -15,11 +15,14 @@ class OrchestratorAgent:
         self.max_tokens = max_tokens
         self.conversation_history = []
 
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        # A long run is worth more than a fast failure: wait a while for a
+        # loaded server, and retry rather than lose the run to one bad call.
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=300.0, max_retries=4)
 
         self.debug = debug
 
-    def select_team(self, tag_profile, tag_frequencies, batch_size=5, prior_md=None):
+    def select_team(self, tag_profile, tag_frequencies, batch_size=5, prior_md=None,
+                    team_size=4, invalid_feedback=None):
         """
         Select a team of agents based on tag profile.
 
@@ -32,31 +35,41 @@ class OrchestratorAgent:
             Dict with selected agents and reasoning
         """
 
-        system_prompt = """You are an intelligent orchestrator agent responsible for assembling teams of specialized AI agents to solve batches of questions.
+        name_slots = ", ".join(f'"AgentName{i + 1}"' for i in range(team_size))
+        system_prompt = f"""You are an intelligent orchestrator agent responsible for assembling teams of specialized AI agents to solve batches of questions.
 
 Your task is to:
 1. Analyze the tag profile of a batch of questions
 2. Review the available agent pool and their specialties
-3. Recommend a team of 4 agents from the pool that can effectively solve the batch
+3. Recommend a team of {team_size} agents from the pool that can effectively solve the batch
 4. Provide your reasoning
 
 Guidelines:
 - Prefer diversity: avoid teams with similar agents
 - Favor agents whose strengths match the tag profile
+- Use the performance summary when one is given: prefer agents with a record on these tags, and try an untested agent when the record is thin
+- Copy agent names exactly as written in the pool, including underscores
 - Only select agents from the provided agent pool
 
 Output ONLY a JSON object with this exact structure (no markdown, no extra text):
-{
-    "selected_agents": ["AgentName1", "AgentName2", "AgentName3", "AgentName4"],
+{{
+    "selected_agents": [{name_slots}],
     "reasoning": "Brief explanation of why this team was selected, and the reason for each individual agent choice."
-}"""
+}}"""
 
         user_message = self._create_team_selection_prompt(
             tag_profile,
             tag_frequencies,
             batch_size,
             prior_md=prior_md,
+            team_size=team_size,
         )
+
+        if invalid_feedback:
+            user_message = (
+                f"{user_message}\n\nYour previous answer named agents that are not in the pool: "
+                f"{invalid_feedback}. Choose only from the pool listed above and copy the names exactly."
+            )
 
         if self.debug:
             print(f"\n [DEBUG] --- Orchestrator Prompt ---\n{user_message}\n---------------------------\n")
@@ -72,11 +85,13 @@ Output ONLY a JSON object with this exact structure (no markdown, no extra text)
             max_tokens=self.max_tokens,
             temperature=0.1,
             top_p=0.5,
+            extra_body=thinking_budget_extra_body() or None,
         )
 
         return self._parse_team_response(response)
 
-    def _create_team_selection_prompt(self, tag_profile, tag_frequencies, batch_size, prior_md=None):
+    def _create_team_selection_prompt(self, tag_profile, tag_frequencies, batch_size, prior_md=None,
+                                      team_size=4):
         """Create the prompt for team selection."""
 
         tag_profile_summary = ", ".join(tag_profile) if tag_profile else "none"
@@ -87,6 +102,7 @@ Output ONLY a JSON object with this exact structure (no markdown, no extra text)
 
         agent_info = "\n".join([
             f"  • {agent['name']}: {agent['specialty']}"
+            + (f" (strengths: {', '.join(agent['strengths'][:4])})" if agent.get("strengths") else "")
             for agent in self.agent_pool
         ])
 
@@ -99,7 +115,7 @@ Tags present in this batch:
 Available agent pool:
 {agent_info}
 
-Based on this tag profile, select the best team of 4 agents from the agent pool to solve these questions.
+Based on this tag profile, select the best team of {team_size} agents from the agent pool to solve these questions.
 Consider the dominant tags, the complementary strengths of agents.
 
 Output only valid JSON with no additional text."""
@@ -126,8 +142,17 @@ Output only valid JSON with no additional text."""
             print(f"\n [DEBUG] --- Orchestrator Response ---\n{response}\n---------------------------\n")
         
         try:
-            # Try to extract JSON from the response
-            response_text = response.choices[0].message.content.strip()
+            # A reasoning model that spends its budget thinking returns content
+            # None, so coerce before parsing rather than raising on it.
+            response_text = (response.choices[0].message.content or "").strip()
+            if not response_text:
+                print("⚠️  Warning: empty response content; no team selected")
+                return {
+                    "agents": [],
+                    "invalid_agents": [],
+                    "reasoning": "Empty response - no team selected",
+                    "reasoning trace": getattr(response.choices[0].message, "reasoning", "No reasoning available"),
+                }
             
             # If the response is wrapped in markdown code blocks, remove them
             if response_text.startswith("```"):
@@ -143,16 +168,20 @@ Output only valid JSON with no additional text."""
             selected_agents = data.get("selected_agents", [])
             reasoning = data.get("reasoning", "")
             
-            # Validate that selected agents exist in the pool
-            # pool_names = {agent["name"] for agent in self.agent_pool}
-            # valid_agents = [agent for agent in selected_agents if agent in pool_names]
-            
-            # if not valid_agents:
-            #     print(f"⚠️  Warning: No valid agents found. Using default team.")
-            #     valid_agents = ["MathReasoner", "FactChecker"]
-            
+            pool_names = [agent["name"] for agent in self.agent_pool]
+            valid_agents, invalid_agents = [], []
+            for name in selected_agents:
+                if name in pool_names and name not in valid_agents:
+                    valid_agents.append(name)
+                elif name not in pool_names:
+                    invalid_agents.append(name)
+
+            if invalid_agents:
+                print(f"⚠️  Warning: agents not in the pool: {invalid_agents}")
+
             return {
-                "agents": selected_agents,
+                "agents": valid_agents,
+                "invalid_agents": invalid_agents,
                 "reasoning": reasoning,
                 "reasoning trace": response.choices[0].message.reasoning if hasattr(response.choices[0].message, 'reasoning') else "No reasoning available",
             }
@@ -161,8 +190,9 @@ Output only valid JSON with no additional text."""
             print(f"⚠️  Warning: Could not parse JSON response. Using default team.")
             print(f"Raw response: {response_text[:200]}")
             return {
-                "agents": ["MathReasoner", "FactChecker"],
-                "reasoning": "Default team (parsing failed)",
+                "agents": [],
+                "invalid_agents": [],
+                "reasoning": "Parsing failed - no team selected",
                 "reasoning trace": response.choices[0].message.reasoning if hasattr(response.choices[0].message, 'reasoning') else "No reasoning available",
             }
         
@@ -200,7 +230,8 @@ def sample_tag_questions(dataset, num_samples=5):
     }
 
 
-def team_selection(orchestrator: OrchestratorAgent, dataset, num_samples=5, prior_md=None):
+def team_selection(orchestrator: OrchestratorAgent, dataset, num_samples=5, prior_md=None,
+                   team_size=4, max_attempts=2):
     """
     Select a team of agents for a batch of questions using the orchestrator.
 
@@ -226,7 +257,34 @@ def team_selection(orchestrator: OrchestratorAgent, dataset, num_samples=5, prio
     for tag, count in sorted(tag_frequencies.items(), key=lambda x: x[1], reverse=True):
         print(f"   - {tag}: {count}/{num_samples}")
 
-    team_result = orchestrator.select_team(tag_profile, tag_frequencies, batch_size=num_samples, prior_md=prior_md)
+    # Retry once when the model names agents that are not in the pool, telling it
+    # which names were wrong; an unretried miss silently shrinks the team.
+    invalid_feedback = None
+    for attempt in range(1, max_attempts + 1):
+        team_result = orchestrator.select_team(
+            tag_profile,
+            tag_frequencies,
+            batch_size=num_samples,
+            prior_md=prior_md,
+            team_size=team_size,
+            invalid_feedback=invalid_feedback,
+        )
+        if len(team_result.get("agents", [])) >= team_size:
+            break
+        if attempt == max_attempts:
+            break
+        invalid = team_result.get("invalid_agents") or []
+        print(f"Retrying team selection (attempt {attempt + 1}/{max_attempts})")
+        invalid_feedback = ", ".join(invalid) if invalid else None
+
+    # The prompt asks for exactly team_size names, but nothing stopped a reply with
+    # more from being evaluated as a bigger team. At --team_size 1 that would turn
+    # a single-agent arm into a vote. Keep the first team_size: the model lists its
+    # picks in order of preference.
+    agents = team_result.get("agents", [])
+    if len(agents) > team_size:
+        print(f"[warn] orchestrator named {len(agents)} agents for a team of {team_size}; keeping {agents[:team_size]}")
+        team_result["agents"] = agents[:team_size]
 
     return {
         "chosen_tag": chosen_tag,
@@ -235,9 +293,36 @@ def team_selection(orchestrator: OrchestratorAgent, dataset, num_samples=5, prio
         "tag_profile": tag_profile,
         "tag_frequencies": tag_frequencies,
         "selected_team": team_result.get("agents", []),
+        "invalid_agents": team_result.get("invalid_agents", []),
         "reasoning": team_result.get("reasoning", ""),
         "reasoning trace": team_result.get("reasoning trace", ""),
         "team_selection": team_result,
     }
 
     
+
+class RandomSelector:
+    """Stands in for the orchestrator and picks a team uniformly at random.
+
+    It has the same `select_team` signature, so both the training loop and the
+    held-out evaluation use it without knowing the difference. This is the
+    reference point for the whole experiment: the memory arms measure what the
+    scoreboard is worth given that a team is being chosen, and this arm measures
+    what choosing is worth at all. Its own RNG is seeded, so the arm is
+    reproducible and independent of the global random state the samplers use.
+    """
+
+    def __init__(self, agent_pool, seed=0):
+        self.agent_pool = agent_pool
+        self.pool_names = [agent["name"] for agent in agent_pool]
+        self.rng = random.Random(seed)
+
+    def select_team(self, tag_profile, tag_frequencies, batch_size=5, prior_md=None,
+                    team_size=4, invalid_feedback=None):
+        team = self.rng.sample(self.pool_names, min(team_size, len(self.pool_names)))
+        return {
+            "agents": team,
+            "invalid_agents": [],
+            "reasoning": "Random selection: team drawn uniformly from the pool, ignoring the tag profile",
+            "reasoning trace": "",
+        }

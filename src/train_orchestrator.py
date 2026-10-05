@@ -1,43 +1,32 @@
+"""Orchestrator loop: select a team per tag, score it, record what happened.
+
+Each iteration samples a tag from the tagged dataset, asks the orchestrator to
+pick a team from the persona bank, evaluates that team on the sampled questions,
+and folds the counts into a scoreboard the next iteration reads back.
+"""
+
 import argparse
-from pathlib import Path
 import csv
 import json
-import os
-import tempfile
+import random
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 from datasets import load_from_disk
+from openai import APIConnectionError, APITimeoutError
 
-from orchestration.orchestrator import OrchestratorAgent, team_selection
+from model.model_utils import build_agent_pool
+from orchestration.orchestrator import OrchestratorAgent, RandomSelector, team_selection
+from holdout_evaluation import evaluate_holdout
+from splits import add_split_args, make_split, split_label
 from team_evaluation import run_team_evaluation
-from summariser import save_evaluation_summary_with_llm
+from summariser import save_evaluation_summary, save_evaluation_summary_with_llm
 
-AGENT_POOL = [
-    {
-        "name": "Conservative_Verifier",
-        "specialty": "Careful, methodical reasoning with step-by-step validation and error checking",
-        "strengths": ["verification", "accuracy", "step-by-step reasoning", "error detection"],
-    },
-    {
-        "name": "Creative_Explorer",
-        "specialty": "Innovative problem solving with pattern-seeking and alternative reasoning paths",
-        "strengths": ["pattern recognition", "creative reasoning", "alternative strategies", "insight"],
-    },
-    {
-        "name": "Rigorous_Formalist",
-        "specialty": "Precise mathematical formalism, clear definitions, and logically complete derivations",
-        "strengths": ["formal reasoning", "logical rigor", "precise notation", "assumption checking"],
-    },
-    {
-        "name": "Intuitive_Estimator",
-        "specialty": "Intuitive estimation and reasonableness checks for numerical solutions",
-        "strengths": ["estimation", "sanity checking", "intuition", "plausibility assessment"],
-    },
-    {
-        "name": "Systematic_Decomposer",
-        "specialty": "Breaking complex problems into manageable subproblems and structured solving steps",
-        "strengths": ["decomposition", "planning", "modular reasoning", "solution structure"],
-    },
-]
+# Every persona in the bank is a candidate, so the orchestrator can staff a team
+# across tasks rather than within one. Built from the bank itself, so a persona
+# added there is selectable without editing this file.
+AGENT_POOL = build_agent_pool()
 
 
 def parse_args():
@@ -45,13 +34,66 @@ def parse_args():
     parser.add_argument("--api_base_url", default="http://localhost:8001/v1", help="OpenAI-compatible API base URL")
     parser.add_argument("--api_key", default="none", help="API key for the OpenAI-compatible endpoint")
     parser.add_argument("--model_name", default="Qwen/Qwen3.6-35B-A3B", help="Model name to request from the API")
-    parser.add_argument("--dataset_path", default="data/tagged_dataset", help="Path to the Hugging Face dataset on disk")
+    parser.add_argument("--orchestrator_model", default=None,
+                        help="Model that selects teams and, with --summariser llm, writes the scoreboard. "
+                             "Default: --model_name, so one model plays every role")
+    parser.add_argument("--orchestrator_api_base_url", default=None,
+                        help="Endpoint serving --orchestrator_model. Default: --api_base_url. Agents always use "
+                             "--model_name at --api_base_url, so a strong orchestrator can pick small agents "
+                             "from a second server")
+    parser.add_argument("--dataset_path", default="data-claude/tagged_dataset", help="Path to the Hugging Face dataset on disk")
+    parser.add_argument("--iterations", type=int, default=10, help="Number of select-evaluate-summarise cycles")
     parser.add_argument("--num_samples", type=int, default=5, help="Number of questions to sample for team selection")
-    parser.add_argument("--solver", choices=["vote", "debate"], default="vote", help="How to aggregate the selected team answers")
-    parser.add_argument("--output_path", default="out/orchestrator_results.json", help="Where to save the evaluation report")
+    parser.add_argument("--eval_workers", type=int, default=5, help="Questions evaluated concurrently within one batch")
+    parser.add_argument("--team_size", type=int, default=4, help="Number of agents the orchestrator must select")
+    parser.add_argument("--orchestrator_max_tokens", type=int, default=8192, help="Token budget for one selection. A reasoning model spends most of it thinking, and a long scoreboard leaves less room for the answer")
+    parser.add_argument("--seed", type=int, default=None, help="Seed for tag and question sampling")
+    parser.add_argument("--test_batch_size", type=int, default=None, help="Questions per held-out batch (default: --num_samples)")
+    parser.add_argument("--random_baseline", action="store_true", help="Also score a randomly chosen team on every held-out batch")
+    add_split_args(parser)
+    parser.set_defaults(test_fraction=0.0)
+    parser.add_argument("--solver", choices=["vote", "debate"], default="vote", help="How to aggregate the selected team answers (only vote is implemented)")
+    parser.add_argument("--out_dir", default="data-claude/orchestrator", help="Directory for the run's outputs")
+    parser.add_argument("--output_path", default=None, help="Run record JSONL (default: {out_dir}/run_records.jsonl)")
+    parser.add_argument("--md_file", default=None, help="Scoreboard markdown (default: {out_dir}/agent_performance_by_tag.md)")
+    parser.add_argument("--state_file", default=None, help="Scoreboard counts JSON (default: {out_dir}/agent_performance_state.json)")
+    parser.add_argument("--selection_csv", default=None, help="Team selection log (default: {out_dir}/team_selection_results.csv)")
+    parser.add_argument(
+        "--summary_every",
+        type=int,
+        default=1,
+        help="Rewrite the scoreboard every N evaluated iterations (1 = after every task). Pending results are always flushed at the end of the run",
+    )
+    parser.add_argument(
+        "--selection",
+        choices=["orchestrator", "random"],
+        default="orchestrator",
+        help="orchestrator: the model chooses the team. random: teams are drawn uniformly from the pool and the model is never asked, which is the reference point for whether choosing is worth anything at all",
+    )
+    parser.add_argument(
+        "--memory",
+        choices=["scoreboard", "none"],
+        default="scoreboard",
+        help="scoreboard: the orchestrator selects with the running scoreboard in view. none: it never sees one, so every selection is made from the tag profile and the agent pool alone. The scoreboard is still written either way, so a no-memory run can be analysed like any other",
+    )
+    parser.add_argument(
+        "--summariser",
+        choices=["counts", "llm"],
+        default="counts",
+        help="counts: scoreboard rendered from recorded counts. llm: the model rewrites the markdown each iteration",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug mode for verbose output")
-    parser.add_argument("--md_file", default="out/agent_performance_by_tag.md", help="Path to the markdown summary file")
-    return parser.parse_args()
+
+    args = parser.parse_args()
+
+    out_dir = Path(args.out_dir)
+    args.output_path = args.output_path or str(out_dir / "run_records.jsonl")
+    args.md_file = args.md_file or str(out_dir / "agent_performance_by_tag.md")
+    args.state_file = args.state_file or str(out_dir / "agent_performance_state.json")
+    args.selection_csv = args.selection_csv or str(out_dir / "team_selection_results.csv")
+    args.orchestrator_model = args.orchestrator_model or args.model_name
+    args.orchestrator_api_base_url = args.orchestrator_api_base_url or args.api_base_url
+    return args
 
 
 def resolve_dataset_path(dataset_path):
@@ -71,99 +113,284 @@ def resolve_dataset_path(dataset_path):
     return path
 
 
-def write_team_selection(filename, result):
-    headers = [
-        "iteration",
-        "chosen_tag",
-        "batch_size",
-        "tag_profile",
-        "selected_team",
-        "reasoning",
-        "reasoning_trace"
-    ]
+SELECTION_HEADERS = [
+    "iteration",
+    "chosen_tag",
+    "batch_size",
+    "tag_profile",
+    "selected_team",
+    "invalid_agents",
+    "reasoning",
+    "reasoning_trace",
+]
 
-    with open(filename, mode="a", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=headers)
-        writer.writeheader()
+
+def write_team_selection(filename, result):
+    """Append one selection to the CSV, writing the header only for a new file."""
+    path = Path(filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    is_new = not path.exists() or path.stat().st_size == 0
+
+    with path.open("a", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=SELECTION_HEADERS)
+        if is_new:
+            writer.writeheader()
         writer.writerow({
             "iteration": result.get("iteration"),
             "chosen_tag": result.get("chosen_tag"),
             "batch_size": result.get("batch_size"),
             "tag_profile": result.get("tag_profile"),
             "selected_team": result.get("selected_team"),
+            "invalid_agents": result.get("invalid_agents"),
             "reasoning": result.get("reasoning"),
-            "reasoning_trace": result.get("reasoning trace")
+            "reasoning_trace": result.get("reasoning trace"),
         })
 
 
-if __name__ == "__main__":
+def write_run_record(path, record):
+    """Append one machine-readable record per iteration."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, default=str) + "\n")
+
+
+def with_server_retry(call, what, attempts=4, wait_seconds=180):
+    """Run `call`, waiting out a server that is restarting rather than giving up.
+
+    The engine has wedged more than once on this box, and the watchdog that
+    restarts it needs several minutes to reload weights. Without this, every
+    iteration in that window fails and the run is lost.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except (APIConnectionError, APITimeoutError) as error:
+            if attempt == attempts:
+                raise
+            print(f"[warn] {what} could not reach the server ({error!r}); "
+                  f"waiting {wait_seconds}s, attempt {attempt + 1}/{attempts}")
+            time.sleep(wait_seconds)
+    return None
+
+
+def flush_summary(args, orchestrator, evaluations, pending, pool_names):
+    """Write the scoreboard from whatever results are waiting."""
+    if args.summariser == "llm":
+        save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path=args.md_file)
+    else:
+        save_evaluation_summary(
+            pending,
+            out_md_path=args.md_file,
+            state_path=args.state_file,
+            pool_names=pool_names,
+        )
+
+
+def main():
     args = parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+
+    if args.solver == "debate":
+        print("[warn] --solver debate is not implemented in team_evaluation; scoring by vote")
 
     print("📂 Loading dataset...")
     dataset_path = resolve_dataset_path(args.dataset_path)
     dataset = load_from_disk(str(dataset_path))
     print(f"✓ Dataset loaded: {len(dataset)} questions")
 
-    orchestrator = OrchestratorAgent(
-        args.model_name,
-        AGENT_POOL,
-        api_key=args.api_key,
-        base_url=args.api_base_url,
-        debug=args.debug,
-    )
+    # Hold out a test split before any learning, so the final numbers come from
+    # questions no iteration could have trained on. Same split_seed in two runs
+    # means the same split, evaluated in the same batches.
+    test_dataset = None
+    if args.n_folds or (args.test_fraction and args.test_fraction > 0):
+        dataset, test_dataset = make_split(dataset, args)
+        print(f"✓ Train/test split: {len(dataset)} train, {len(test_dataset)} held out "
+              f"[{split_label(args)}]")
+    print(f"✓ Agent pool: {len(AGENT_POOL)} candidate personas")
 
+    # The random arm uses the same loop end to end - same split, same batches,
+    # same scoreboard bookkeeping - and only swaps out who names the team.
+    if args.selection == "random":
+        print("✓ Selection: random teams; the orchestrator model is not called")
+        orchestrator = RandomSelector(AGENT_POOL, seed=args.split_seed)
+    else:
+        print(f"✓ Orchestrator: {args.orchestrator_model} at {args.orchestrator_api_base_url}; "
+              f"agents: {args.model_name} at {args.api_base_url}")
+        orchestrator = OrchestratorAgent(
+            args.orchestrator_model,
+            AGENT_POOL,
+            max_tokens=args.orchestrator_max_tokens,
+            api_key=args.api_key,
+            base_url=args.orchestrator_api_base_url,
+            debug=args.debug,
+        )
+
+    pool_names = [agent["name"] for agent in AGENT_POOL]
     evaluations = []
+    pending = []
 
-    for i in range(10):
-        # Read existing performance markdown (if any) so the orchestrator can use it
-        md_path = Path(args.md_file)
-        prior_md = md_path.read_text(encoding="utf-8") if md_path.exists() else None
+    for iteration in range(1, args.iterations + 1):
+        print("\n" + "#" * 60)
+        print(f"ITERATION {iteration}/{args.iterations}")
+        print("#" * 60)
 
-        result = team_selection(orchestrator, dataset, num_samples=args.num_samples, prior_md=prior_md)
+        # The scoreboard is the loop's memory: read it back before every choice.
+        # With --memory none it is written but never read, which is the baseline
+        # for asking what the memory is worth.
+        prior_md = None
+        if args.memory == "scoreboard":
+            md_path = Path(args.md_file)
+            prior_md = md_path.read_text(encoding="utf-8") if md_path.exists() else None
 
-        if result:
-            print("\n" + "=" * 60)
-            print("ORCHESTRATION SUMMARY")
-            print("=" * 60)
-            print(f"Chosen tag: {result['chosen_tag']}")
-            print(f"Batch size: {result['batch_size']}")
-            print(f"Tag profile: {result['tag_profile']}")
-            print(f"Selected team: {result['selected_team']}")
-            print(f"Reasoning: {result['reasoning']}")
-            print(f"Full reasoning trace: {result['reasoning trace']}")
-            print("=" * 60)
-
-            write_team_selection("out/team_selection_results.csv", result)
-
-            selected_team = result["selected_team"]
-            sampled_questions = result["sampled_questions"]
-            report = run_team_evaluation(selected_team, sampled_questions, args)
-
-            print("\n" + "=" * 60)
-            print("TEAM EVALUATION")
-            print("=" * 60)
-            print(f"Team accuracy ({args.solver}): {report['team_accuracy']:.2%}")
-            for agent_name, accuracy in report["per_agent_accuracy"].items():
-                print(f"{agent_name}: {accuracy:.2%}")
-
-            # Print per-tag per-agent accuracies
-            by_tag = report.get("per_agent_accuracy_by_tag", {})
-            if by_tag:
-                print("\nPer-agent accuracies by tag:")
-                for tag, accs in by_tag.items():
-                    parts = ", ".join(f"{name}: {acc:.2%}" for name, acc in accs.items())
-                    print(f" - {tag}: {parts}")
-            print("=" * 60)
-
-            # Collect evaluation metadata to inform the LLM summary
-            evaluations.append({
-                "chosen_tag": result.get("chosen_tag"),
-                "batch_size": result.get("batch_size"),
-                "tag_profile": result.get("tag_profile"),
-                "selected_team": selected_team,
-                "report": report,
+        # A run is thirty iterations long against a server it does not control,
+        # so a failed call costs the iteration rather than the run.
+        try:
+            result = with_server_retry(
+                lambda: team_selection(
+                    orchestrator,
+                    dataset,
+                    num_samples=args.num_samples,
+                    prior_md=prior_md,
+                    team_size=args.team_size,
+                ),
+                "selection",
+            )
+        except Exception as error:
+            print(f"[warn] selection failed: {error!r}; skipping this iteration")
+            write_run_record(args.output_path, {
+                "iteration": iteration,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "status": "selection_error",
+                "error": repr(error),
             })
+            continue
+        if not result:
+            continue
 
-            # After each epoch/evaluation, update the markdown summary so the next
-            # epoch can read and use it when selecting teams.
-            save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path=args.md_file)
+        result["iteration"] = iteration
+
+        print("\n" + "=" * 60)
+        print("ORCHESTRATION SUMMARY")
+        print("=" * 60)
+        print(f"Chosen tag: {result['chosen_tag']}")
+        print(f"Batch size: {result['batch_size']}")
+        print(f"Tag profile: {result['tag_profile']}")
+        print(f"Selected team: {result['selected_team']}")
+        if result.get("invalid_agents"):
+            print(f"Rejected names (not in pool): {result['invalid_agents']}")
+        print(f"Reasoning: {result['reasoning']}")
+        print("=" * 60)
+
+        write_team_selection(args.selection_csv, result)
+
+        selected_team = result["selected_team"]
+        if not selected_team:
+            print("[warn] no valid agents selected; skipping evaluation for this iteration")
+            write_run_record(args.output_path, {
+                "iteration": iteration,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "chosen_tag": result.get("chosen_tag"),
+                "tag_profile": result.get("tag_profile"),
+                "selected_team": [],
+                "invalid_agents": result.get("invalid_agents"),
+                "status": "no_valid_team",
+            })
+            continue
+
+        if len(selected_team) != args.team_size:
+            print(f"[warn] team has {len(selected_team)} agents, expected {args.team_size}; evaluating anyway")
+
+        sampled_questions = result["sampled_questions"]
+        try:
+            report = with_server_retry(
+                lambda: run_team_evaluation(selected_team, sampled_questions, args),
+                "evaluation",
+            )
+        except Exception as error:
+            print(f"[warn] evaluation failed: {error!r}; skipping this iteration")
+            write_run_record(args.output_path, {
+                "iteration": iteration,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "chosen_tag": result.get("chosen_tag"),
+                "selected_team": selected_team,
+                "status": "evaluation_error",
+                "error": repr(error),
+            })
+            continue
+
+        print("\n" + "=" * 60)
+        print("TEAM EVALUATION")
+        print("=" * 60)
+        print(f"Team accuracy ({args.solver}): {report['team_accuracy']:.2%}")
+        for agent_name, accuracy in report["per_agent_accuracy"].items():
+            print(f"{agent_name}: {accuracy:.2%}")
+
+        by_tag = report.get("per_agent_accuracy_by_tag", {})
+        if by_tag:
+            print("\nPer-agent accuracies by tag:")
+            for tag, accs in by_tag.items():
+                parts = ", ".join(f"{name}: {acc:.2%}" for name, acc in accs.items())
+                print(f" - {tag}: {parts}")
+        print("=" * 60)
+
+        evaluation = {
+            "iteration": iteration,
+            "chosen_tag": result.get("chosen_tag"),
+            "batch_size": result.get("batch_size"),
+            "tag_profile": result.get("tag_profile"),
+            "selected_team": selected_team,
+            "report": report,
+        }
+        evaluations.append(evaluation)
+
+        write_run_record(args.output_path, {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "model": args.model_name,
+            "orchestrator_model": args.orchestrator_model,
+            "num_samples": args.num_samples,
+            "team_size": args.team_size,
+            "invalid_agents": result.get("invalid_agents"),
+            "reasoning": result.get("reasoning"),
+            "status": "evaluated",
+            **evaluation,
+        })
+
+        # Rewrite the scoreboard so later iterations select with this result in
+        # view. With --summary_every > 1 the results wait in `pending`, so the
+        # orchestrator keeps choosing against an older scoreboard until the batch
+        # is flushed.
+        pending.append(evaluation)
+        is_last = iteration == args.iterations
+        if len(pending) >= args.summary_every or is_last:
+            flush_summary(args, orchestrator, evaluations, pending, pool_names)
+            pending = []
+
+    if pending:
+        flush_summary(args, orchestrator, evaluations, pending, pool_names)
+
+    print(f"\nRun records: {args.output_path}")
+    print(f"Scoreboard:  {args.md_file}")
+
+    if test_dataset is not None:
+        # Read the finished scoreboard once: it stays frozen for every held-out
+        # batch, so the evaluation measures what the loop learned, not what it
+        # would keep learning.
+        scoreboard_md = None
+        if args.memory == "scoreboard":
+            md_path = Path(args.md_file)
+            scoreboard_md = md_path.read_text(encoding="utf-8") if md_path.exists() else None
+        evaluate_holdout(
+            orchestrator,
+            test_dataset,
+            args,
+            pool_names,
+            scoreboard_md=scoreboard_md,
+            random_baseline=args.random_baseline,
+        )
+
+
+if __name__ == "__main__":
+    main()
