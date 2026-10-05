@@ -538,11 +538,11 @@ is the tie-break change: 37 of 140 questions had a tied vote.
 
 **The server is not deterministic under load.** The same request repeated in
 sequence gives identical text (10/10, with or without a per-request seed), but
-under concurrent load 0/10 came back identical. So arms run at
-`--eval_workers 5` differ in at least 13–18% of agent answers (the sums above
-are a lower bound: flips inside one batch can cancel) and by 3–4 team questions
-per fold from serving noise alone - the size of the selection effects being
-measured. Comparisons must be paired and repeated, or run with a serving setup
+under concurrent load 0/10 came back identical. Two runs of the
+new code on the same fold, compared question by question: 500 of 560 responses
+differ in text, 114 of 560 (20%) flip between right and wrong, and 21 of 140
+(15%) team verdicts flip, netting out to 3 questions. That is serving noise
+alone, and it is the size of the selection effects being measured. Comparisons must be paired and repeated, or run with a serving setup
 whose outputs do not depend on the batch; which vLLM setting causes it
 (speculative decoding is on for the 0.8B) has not been isolated.
 
