@@ -19,7 +19,7 @@ from pathlib import Path
 
 from openai import APIConnectionError, APITimeoutError
 
-from predictions import rows_from_report, strip_samples, write_predictions
+from predictions import save_report
 from team_evaluation import run_team_evaluation
 
 
@@ -172,10 +172,9 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
                 _accumulate(totals, team, report)
                 # Per-question detail goes to its own file; the record keeps the
                 # counts it has always kept.
-                write_predictions(predictions_path, rows_from_report(
-                    report, batch=batch_index, arm="selected", team=team,
-                    question_indices=indices, response_chars=response_chars))
-                record["report"] = strip_samples(report)
+                record["report"] = save_report(
+                    predictions_path, report, batch=batch_index, arm="selected", team=team,
+                    question_indices=indices, response_chars=response_chars)
                 print(f"Team accuracy: {report['team_accuracy']:.2%}")
         else:
             record["status"] = "no_valid_team"
@@ -185,12 +184,10 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
             baseline_team = baseline_rng.sample(pool_names, args.team_size)
             baseline_report = run_team_evaluation(baseline_team, batch, args)
             _accumulate(baseline_totals, baseline_team, baseline_report)
-            write_predictions(predictions_path, rows_from_report(
-                baseline_report, batch=batch_index, arm="random_baseline",
-                team=baseline_team, question_indices=indices,
-                response_chars=response_chars))
             record["baseline_team"] = baseline_team
-            record["baseline_report"] = strip_samples(baseline_report)
+            record["baseline_report"] = save_report(
+                predictions_path, baseline_report, batch=batch_index, arm="random_baseline",
+                team=baseline_team, question_indices=indices, response_chars=response_chars)
             print(f"Random baseline accuracy: {baseline_report['team_accuracy']:.2%}")
 
         with records_path.open("a", encoding="utf-8") as fh:

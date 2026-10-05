@@ -40,10 +40,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from datasets import load_from_disk
 
+from runner import add_runner_args
 from splits import add_split_args, make_split, split_label
 
 from holdout_evaluation import _batch_indices, with_server_retry
-from predictions import rows_from_report, strip_samples, write_predictions
+from predictions import save_report
 from model.model_utils import _build_enhanced_personas
 from team_evaluation import run_team_evaluation
 
@@ -55,6 +56,7 @@ def parse_args():
     parser.add_argument("--api_base_url", default="http://127.0.0.1:8001/v1")
     parser.add_argument("--api_key", default="EMPTY")
     add_split_args(parser)
+    add_runner_args(parser)
     parser.add_argument("--test_batch_size", type=int, default=5)
     parser.add_argument("--eval_workers", type=int, default=5)
     parser.add_argument("--team_size", type=int, default=0,
@@ -140,10 +142,9 @@ def main():
                                          "status": "evaluation_error", "error": repr(error)}) + "\n")
                 continue
 
-            write_predictions(predictions_path, rows_from_report(
-                report, batch=batch_number, arm=f"paper_personas:{name}", team=team,
-                question_indices=indices, response_chars=args.response_chars))
-            strip_samples(report)
+            save_report(predictions_path, report, batch=batch_number,
+                        arm=f"paper_personas:{name}", team=team,
+                        question_indices=indices, response_chars=args.response_chars)
 
             n = report["n_samples"]
             total += n

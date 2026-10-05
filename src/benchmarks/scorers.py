@@ -49,11 +49,15 @@ def extract_number(text):
     return ""
 
 
-def _majority(predictions: Sequence[Prediction]) -> Prediction:
-    """Most common parsed value; ties broken at random, as they always were.
+def _majority(predictions: Sequence[Prediction], rng=None) -> Prediction:
+    """Most common parsed value; ties broken at random.
 
-    Uses the global `random`, which every entry point seeds, so a tie resolves
-    the same way on a re-run with the same seed.
+    With no `rng` this uses the global `random`, as every result on disk did.
+    That couples tie-breaking to everything else drawing from the global
+    generator - which is why two arms with the same `--seed` stop seeing the
+    same training tags after a few iterations, and why a threaded run breaks
+    ties in whatever order its threads happen to reach them. Pass a generator
+    seeded per question to make a tie resolve the same way every time.
     """
     parsed = [p for p in predictions if p.parsed]
     if not parsed:
@@ -61,7 +65,8 @@ def _majority(predictions: Sequence[Prediction]) -> Prediction:
 
     counter = collections.Counter(p.value for p in parsed)
     top = max(counter.values())
-    winner = random.choice([value for value, count in counter.items() if count == top])
+    tied = [value for value, count in counter.items() if count == top]
+    winner = (rng or random).choice(tied)
     return Prediction(value=winner, parsed=True, raw=str(winner))
 
 
@@ -107,8 +112,8 @@ class NumericScorer:
             return False
         return bool(prediction.value == np.round(gold, 1))
 
-    def aggregate(self, predictions: Sequence[Prediction]) -> Prediction:
-        return _majority(predictions)
+    def aggregate(self, predictions: Sequence[Prediction], rng=None) -> Prediction:
+        return _majority(predictions, rng=rng)
 
 
 class MCQScorer:
@@ -181,8 +186,8 @@ class MCQScorer:
             return False
         return bool(prediction.value == gold)
 
-    def aggregate(self, predictions: Sequence[Prediction]) -> Prediction:
-        return _majority(predictions)
+    def aggregate(self, predictions: Sequence[Prediction], rng=None) -> Prediction:
+        return _majority(predictions, rng=rng)
 
 
 class BaseMCQScorer(MCQScorer):
@@ -216,7 +221,7 @@ class BaseNumericScorer(NumericScorer):
         return bool(prediction.value == np.round(gold, 1))
 
 
-def score_responses(scorer, responses: dict, gold: Any) -> ScoreResult:
+def score_responses(scorer, responses: dict, gold: Any, rng=None) -> ScoreResult:
     """Score one question across a team.
 
     `responses` is `{agent_name: text}`; ordering is the caller's contract, as
@@ -225,7 +230,7 @@ def score_responses(scorer, responses: dict, gold: Any) -> ScoreResult:
     """
     gold = scorer.normalise_gold(gold)
     predictions = [scorer.extract(text) for text in responses.values()]
-    aggregate = scorer.aggregate(predictions)
+    aggregate = scorer.aggregate(predictions, rng=rng)
     return ScoreResult(
         predictions=predictions,
         aggregate=aggregate,

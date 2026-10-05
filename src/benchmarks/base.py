@@ -113,8 +113,10 @@ class Scorer(Protocol):
     def correct(self, prediction: Prediction, gold: Any) -> bool:
         ...
 
-    def aggregate(self, predictions: Sequence[Prediction]) -> Prediction:
+    def aggregate(self, predictions: Sequence[Prediction], rng=None) -> Prediction:
         """Reduce a team's predictions to the team's answer.
+
+        `rng` breaks ties; without one, the global `random` does, as it always has.
 
         On the scorer rather than in the solver because this is the operation
         that does *not* generalise: majority vote over floats and over `(A)` are

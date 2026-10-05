@@ -19,7 +19,8 @@ from openai import APIConnectionError, APITimeoutError
 from model.model_utils import build_agent_pool, DEFAULT_MAX_NEW_TOKENS
 from orchestration.orchestrator import OrchestratorAgent, RandomSelector, team_selection
 from holdout_evaluation import evaluate_holdout
-from predictions import rows_from_report, strip_samples, write_predictions
+from predictions import save_report
+from runner import add_runner_args
 from splits import add_split_args, make_split, split_label
 from team_evaluation import run_team_evaluation
 from summariser import save_evaluation_summary, save_evaluation_summary_with_llm
@@ -54,6 +55,7 @@ def parse_args():
     parser.add_argument("--test_batch_size", type=int, default=None, help="Questions per held-out batch (default: --num_samples)")
     parser.add_argument("--random_baseline", action="store_true", help="Also score a randomly chosen team on every held-out batch")
     add_split_args(parser)
+    add_runner_args(parser)
     parser.set_defaults(test_fraction=0.0)
     parser.add_argument("--solver", choices=["vote", "debate"], default="vote", help="How to aggregate the selected team answers (only vote is implemented)")
     parser.add_argument("--out_dir", default="data-claude/orchestrator", help="Directory for the run's outputs")
@@ -345,10 +347,8 @@ def main():
                 print(f" - {tag}: {parts}")
         print("=" * 60)
 
-        write_predictions(args.predictions_path, rows_from_report(
-            report, batch=iteration, arm="train", team=selected_team,
-            response_chars=args.response_chars))
-        strip_samples(report)
+        save_report(args.predictions_path, report, batch=iteration, arm="train",
+                    team=selected_team, response_chars=args.response_chars)
 
         evaluation = {
             "iteration": iteration,
