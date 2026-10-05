@@ -180,6 +180,10 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
 
     summary = {
         "run": str(args.out_dir),
+        # Which model answered and which one chose. They differ when a strong
+        # orchestrator picks small agents from a second server.
+        "agent_model": getattr(args, "model_name", None),
+        "orchestrator_model": getattr(args, "orchestrator_model", None),
         "summary_every": args.summary_every,
         "iterations_trained": args.iterations,
         "test_questions": totals["questions"],

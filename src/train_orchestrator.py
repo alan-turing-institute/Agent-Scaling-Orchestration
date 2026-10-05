@@ -34,6 +34,13 @@ def parse_args():
     parser.add_argument("--api_base_url", default="http://localhost:8001/v1", help="OpenAI-compatible API base URL")
     parser.add_argument("--api_key", default="none", help="API key for the OpenAI-compatible endpoint")
     parser.add_argument("--model_name", default="Qwen/Qwen3.6-35B-A3B", help="Model name to request from the API")
+    parser.add_argument("--orchestrator_model", default=None,
+                        help="Model that selects teams and, with --summariser llm, writes the scoreboard. "
+                             "Default: --model_name, so one model plays every role")
+    parser.add_argument("--orchestrator_api_base_url", default=None,
+                        help="Endpoint serving --orchestrator_model. Default: --api_base_url. Agents always use "
+                             "--model_name at --api_base_url, so a strong orchestrator can pick small agents "
+                             "from a second server")
     parser.add_argument("--dataset_path", default="data-claude/tagged_dataset", help="Path to the Hugging Face dataset on disk")
     parser.add_argument("--iterations", type=int, default=10, help="Number of select-evaluate-summarise cycles")
     parser.add_argument("--num_samples", type=int, default=5, help="Number of questions to sample for team selection")
@@ -84,6 +91,8 @@ def parse_args():
     args.md_file = args.md_file or str(out_dir / "agent_performance_by_tag.md")
     args.state_file = args.state_file or str(out_dir / "agent_performance_state.json")
     args.selection_csv = args.selection_csv or str(out_dir / "team_selection_results.csv")
+    args.orchestrator_model = args.orchestrator_model or args.model_name
+    args.orchestrator_api_base_url = args.orchestrator_api_base_url or args.api_base_url
     return args
 
 
@@ -208,12 +217,14 @@ def main():
         print("✓ Selection: random teams; the orchestrator model is not called")
         orchestrator = RandomSelector(AGENT_POOL, seed=args.split_seed)
     else:
+        print(f"✓ Orchestrator: {args.orchestrator_model} at {args.orchestrator_api_base_url}; "
+              f"agents: {args.model_name} at {args.api_base_url}")
         orchestrator = OrchestratorAgent(
-            args.model_name,
+            args.orchestrator_model,
             AGENT_POOL,
             max_tokens=args.orchestrator_max_tokens,
             api_key=args.api_key,
-            base_url=args.api_base_url,
+            base_url=args.orchestrator_api_base_url,
             debug=args.debug,
         )
 
@@ -338,6 +349,7 @@ def main():
         write_run_record(args.output_path, {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "model": args.model_name,
+            "orchestrator_model": args.orchestrator_model,
             "num_samples": args.num_samples,
             "team_size": args.team_size,
             "invalid_agents": result.get("invalid_agents"),
