@@ -3,6 +3,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from model.openai_compat import thinking_budget_extra_body
+
 
 
 def summariser_prompt(existing_md, summary_items):
@@ -92,6 +94,7 @@ def save_evaluation_summary_with_llm(orchestrator, evaluations, out_md_path="out
             messages=messages,
             max_tokens=4096,
             temperature=0.5,
+            extra_body=thinking_budget_extra_body() or None,
         )
 
         md_content = response.choices[0].message.content
