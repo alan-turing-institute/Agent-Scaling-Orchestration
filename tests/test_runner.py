@@ -9,6 +9,7 @@ solvers sends exactly the requests `run_team_evaluation` always sent, so moving
 the orchestrator arms onto the runner cannot move a number by itself.
 """
 
+import concurrent.futures
 import json
 import sys
 import tempfile
@@ -309,6 +310,79 @@ with tempfile.TemporaryDirectory() as tmp:
         row = json.loads(line)
         check(f"rescore strict agrees, q{row['question_index']}",
               rescore.rescore_row(row, "strict")["team_correct"], row["team_correct"])
+
+
+# --------------------------------------------------------------------------
+# --topology arranges a selected team; each persona is credited with its last stage.
+# --------------------------------------------------------------------------
+check("for_team vote", team_config.for_team([A, B, C, D]).config_id, team_config.vote([A, B, C, D]).config_id)
+check("for_team centralized: last leads", team_config.for_team([A, B, C, D], "centralized").final, f"hub:{D}")
+check("for_team synthesis: last leads", team_config.for_team([A, B, C], "synthesis").final, f"synth:{C}")
+check("for_team pipeline default roles", [s.role for s in team_config.for_team([A, B, C, D], "pipeline").stages],
+      ["solver", "critic", "critic", "reviser"])
+raises("pipeline roles must match the team", lambda: team_config.for_team([A, B], "pipeline", roles=["solver"]), ValueError)
+
+
+class TopologyArgs(Args):
+    topology = "debate"
+    rounds = 1
+    handoff = "full"
+    roles = None
+
+
+# A changes its mind in round 1 (wrong, then right); B stays wrong.
+flip_answers = {prefix(A): lambda c: "{final answer: 8}" if "Work from your team" in c else "{final answer: 6}",
+                prefix(B): "{final answer: 7}"}
+team_evaluation.registry_for = lambda args: FakeRegistry(FakeClient(flip_answers, []))
+try:
+    report = team_evaluation.run_team_evaluation([A, B], samples[:1], TopologyArgs())
+finally:
+    team_evaluation.registry_for = original
+check("debate report keyed by persona", report["agents"], [A, B])
+check("debater credited with its final round", report["per_agent_correct"], {A: 1, B: 0})
+check("credited stage", report["credited_stage"], {A: f"{A}@r1", B: f"{B}@r1"})
+check("debate votes over the final round", report["samples"][0]["answer_stages"], [f"{A}@r1", f"{B}@r1"])
+check("debate ran two rounds", report["calls"], 4)
+
+
+# --------------------------------------------------------------------------
+# --max_inflight: one semaphore per server, shared by every client of it.
+# --------------------------------------------------------------------------
+import threading  # noqa: E402
+import time  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from model.registry import ModelRegistry, ModelSpec  # noqa: E402
+
+registry = ModelRegistry({
+    "default": ModelSpec("default", "m0", "http://a/v1"),
+    "other": ModelSpec("other", "m1", "http://a/v1"),
+    "far": ModelSpec("far", "m2", "http://b/v1"),
+}, max_inflight=1)
+check("same server shares a limiter", registry.client("default").limiter is registry.client("other").limiter, True)
+check("other server has its own", registry.client("default").limiter is registry.client("far").limiter, False)
+
+state = {"now": 0, "peak": 0}
+lock = threading.Lock()
+
+
+def fake_create(**kwargs):
+    with lock:
+        state["now"] += 1
+        state["peak"] = max(state["peak"], state["now"])
+    time.sleep(0.02)
+    with lock:
+        state["now"] -= 1
+    message = SimpleNamespace(content="{final answer: 8}", reasoning_content=None, reasoning=None)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")], usage=None)
+
+
+for key in ("default", "other"):
+    registry.client(key)._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+with concurrent.futures.ThreadPoolExecutor(8) as pool:
+    list(pool.map(lambda k: registry.client(k).generate([{"role": "user", "content": "q"}]),
+                  ["default", "other"] * 8))
+check("at most one request in flight", state["peak"], 1)
 
 
 if FAILURES:

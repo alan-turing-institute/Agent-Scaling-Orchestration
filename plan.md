@@ -546,9 +546,32 @@ alone, and it is the size of the selection effects being measured. Comparisons m
 whose outputs do not depend on the batch; which vLLM setting causes it
 (speculative decoding is on for the 0.8B) has not been isolated.
 
+### Before the next experiments (done, 2026-10-05)
+
+- **Noise.** Speculative decoding is not the cause: with MTP off, 0/40 outputs
+  still matched under load (31% right/wrong flips) and per-stream speed barely
+  moved (186 vs 194 tok/s). vLLM 0.21's batch-invariant mode refuses Qwen3.5,
+  whose GDN layers' backend does not support it. `--max_inflight 1` (a
+  per-server semaphore) does fix it: the same 80 calls twice gave 80/80
+  identical responses, the first on a cold prefix cache. Cost: ~5.8 s per call
+  on the 0.8B, so a 560-call arm takes ~55 min rather than ~20.
+- **`--topology`** in the training loop (`vote`, `debate --rounds`,
+  `centralized`, `synthesis`, `pipeline --roles`), arranging whatever team the
+  orchestrator or the random selector picked; the last pick leads a hub or
+  synthesis. Replaces the dead `--solver` flag.
+- **Credit:** each persona is credited with its last stage's answer, so the
+  scoreboard keeps persona keys under any topology.
+- **`bare_model_baseline.py`** lets connection errors reach a retry instead of
+  scoring them as wrong.
+- **`scripts/compare_runs.py`**: per-question pairing across folds and repeats,
+  McNemar or sign-flip, Holm-corrected, with each arm's repeat-to-repeat flip
+  rate. On the two gate runs it reproduces the 15% team flip rate.
+
 ### Next
 
-Experiments E2, E10 and E12 can run now with `scripts/run_config.py`. Still
+Experiments E2, E10 and E12 can run now: E2 through `train_orchestrator.py
+--topology`, E10 and E12 through `scripts/run_config.py`. Run them with
+`--max_inflight 1`, one arm at a time per server. Still
 open from the list below: §4.3, §2, §5 (now a re-read, since gate runs carry
 predictions), §3.4, §6.
 

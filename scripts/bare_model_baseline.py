@@ -20,6 +20,7 @@ import argparse
 import concurrent.futures
 import json
 import sys
+import threading
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,12 +28,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from datasets import load_from_disk
+from openai import APIConnectionError, APITimeoutError
 
 from splits import add_split_args, make_split, split_label
 
 import benchmarks
 from benchmarks import score_responses
-from holdout_evaluation import _batch_indices
+from holdout_evaluation import _batch_indices, with_server_retry
 from predictions import SCHEMA_VERSION, write_predictions
 from runner import question_key
 from model.openai_compat import OpenAICompatChatWrapper
@@ -56,6 +58,8 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--max_tokens", type=int, default=4096)
+    parser.add_argument("--max_inflight", type=int, default=0,
+                        help="Cap on requests in flight; 1 makes greedy output reproducible")
     parser.add_argument("--parse_mode", choices=["strict", "lenient"], default="strict",
                         help="strict reproduces the parsers every result so far used; lenient fixes them")
     parser.add_argument("--limit", type=int, default=0, help="Answer only the first N held-out questions; 0 means all")
@@ -84,6 +88,10 @@ def answer_one(agent, sample, scorers, args):
             top_p=args.top_p,
         )
         text = completion.text
+    except (APIConnectionError, APITimeoutError):
+        # A server that is down is not a wrong answer. Catching this scored a
+        # whole held-out split at 0% once; let the retry below wait it out.
+        raise
     except Exception as error:
         print(f"[warn] call failed: {error!r}; scoring as incorrect")
         text, error_text = "", repr(error)
@@ -171,6 +179,7 @@ def main():
         base_url=args.api_base_url,
         model_name=args.model_name,
         api_key=args.api_key,
+        limiter=threading.BoundedSemaphore(args.max_inflight) if args.max_inflight > 0 else None,
     )
 
     # Each scorer states the answer format it can read, so a split that mixes
@@ -197,7 +206,8 @@ def main():
         # attributed to the wrong question.
         results = [None] * len(samples)
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(answer_one, agent, s, scorers, args): i
+            futures = {pool.submit(with_server_retry,
+                                   lambda s=s: answer_one(agent, s, scorers, args), "bare model call"): i
                        for i, s in enumerate(samples)}
             for future in concurrent.futures.as_completed(futures):
                 results[futures[future]] = future.result()

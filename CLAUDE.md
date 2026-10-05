@@ -172,15 +172,31 @@ The orchestrator path no longer goes through `engine`/`get_agents`. Four modules
   a per-question seeded RNG by default (`--tie_break global` restores the old global-RNG
   behaviour). A per-request `seed` is sent unless `--request_seed -1`. Connection/timeout errors
   propagate to the caller's retry; other stage failures score as unanswered. `add_runner_args`
-  holds the shared flags (`--models_file`, `--parse_mode`, `--tie_break`, `--request_seed`).
+  holds the shared flags (`--models_file`, `--parse_mode`, `--tie_break`, `--request_seed`,
+  `--max_inflight`); `add_topology_args` the team-arrangement flags the training loop takes.
 - `model/registry.py` — model key -> served name and endpoint. `default` is `--model_name` at
   `--vllm_base_url`/`--api_base_url`/8001; `--models_file` adds more (see
   `configs/models.example.json`). `OpenAICompatChatWrapper.generate` returns a `Completion` with
   tokens, finish reason, latency and reasoning; `complete` still returns the text.
 
+A team chosen by name (orchestrator or random selector) is arranged by `--topology`
+(`team_config.for_team`): `vote` (default), `debate --rounds N`, `centralized`/`synthesis` (the
+**last** selected agent leads, the rest work), `pipeline --roles ...` (names take roles in
+order). Each persona is credited with its **last** stage's answer (`credited_stage` in the
+report), so the scoreboard keeps persona keys whatever the topology.
+
+**Serving noise.** The vLLM servers return different greedy text for the same request depending
+on what else is in the batch: two runs of the same arm at `--eval_workers 5` flip ~20% of agent
+answers and ~15% of team verdicts. Not caused by speculative decoding (tested), and vLLM's
+batch-invariant mode does not support Qwen3.5's GDN layers. `--max_inflight 1` (per-server
+semaphore in `model/registry.py`) runs every request alone: two runs of the same 80 calls gave
+80/80 identical responses, cold prefix cache included. It costs ~2.5-3x the wall-clock (0.8B:
+~5.8 s per call, so a 560-call arm takes ~55 min instead of ~20). It only governs this process: never run two arms against one server at once.
+
 `scripts/run_config.py` runs one fixed config over the held-out split in the same batches as the
 orchestrator arms. `scripts/rescore.py` re-scores a predictions file under another parser without
-calling a model. Offline tests: `PYTHONPATH=src python tests/test_runner.py` and
+calling a model. `scripts/compare_runs.py` pairs arms question by question across folds and
+repeats (McNemar / sign-flip, Holm-corrected) and prints each arm's repeat-to-repeat flip rate. Offline tests: `PYTHONPATH=src python tests/test_runner.py` and
 `tests/test_scorers.py` (no pytest in the pinned env).
 
 `summariser.py` — two modes. `save_evaluation_summary` (default, `--summariser counts`) folds those
