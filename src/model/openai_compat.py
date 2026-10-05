@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 # One place that decides how long a generation may be. `complete()` used to
 # overwrite whatever the caller asked for with a hardcoded 4096, so
@@ -25,6 +27,51 @@ def thinking_budget_extra_body() -> Dict[str, int]:
     return {"thinking_token_budget": int(budget)} if budget else {}
 
 
+@dataclass
+class Completion:
+    """One generation and what it cost.
+
+    `complete()` returns only the text, which is all the debate harness wants.
+    Anything that compares configurations needs more: how many tokens a call
+    used (so compute can be matched across architectures), why it stopped (a
+    `length` stop is a truncation, not an answer), how long it took, and which
+    model and server produced it.
+    """
+
+    content: str = ""
+    reasoning: str = ""
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    finish_reason: Optional[str] = None
+    latency_s: Optional[float] = None
+    model: Optional[str] = None
+    endpoint: Optional[str] = None
+    seed: Optional[int] = None
+
+    @property
+    def text(self) -> str:
+        """The text to score: the answer, or the reasoning if the answer is empty.
+
+        A reasoning model that spends its whole budget thinking returns an
+        empty `content` with the text under `reasoning_content`. Scoring that
+        as an empty answer is indistinguishable from a wrong one.
+        """
+        return self.content if self.content.strip() else self.reasoning
+
+    @property
+    def used_reasoning(self) -> bool:
+        """True when `text` came from the reasoning because the answer was empty."""
+        return not self.content.strip() and bool(self.reasoning.strip())
+
+    def usage(self) -> Dict[str, Any]:
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "finish_reason": self.finish_reason,
+            "latency_s": self.latency_s,
+        }
+
+
 class OpenAICompatChatWrapper:
     """OpenAI-compatible chat wrapper.
 
@@ -37,10 +84,11 @@ class OpenAICompatChatWrapper:
       - kind = "openai_compat"
       - model_name: str
       - complete(messages, ...) -> str
+      - generate(messages, ...) -> Completion
 
-    The last response's token usage is kept on `last_usage` so a caller can
-    record what a run cost; the OpenAI SDK object itself is not returned,
-    because every caller here wants the text.
+    `complete` is what the debate harness has always called. `generate` returns
+    the text with its token usage, stop reason and latency, for the runner. The
+    last response's usage is also kept on `last_usage`.
     """
 
     kind = "openai_compat"
@@ -77,17 +125,21 @@ class OpenAICompatChatWrapper:
             max_retries=self.max_retries,
         )
 
-    def complete(
+    def generate(
         self,
         messages: List[Dict[str, str]],
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
+        seed: Optional[int] = None,
         **kwargs,
-    ) -> str:
+    ) -> Completion:
         if max_tokens is None:
             max_tokens = DEFAULT_MAX_TOKENS
         extra_body = {**thinking_budget_extra_body(), **kwargs.pop("extra_body", {})}
+        if seed is not None:
+            kwargs["seed"] = seed
+        started = time.monotonic()
         resp = self._client.chat.completions.create(
             model=self.model_name,
             messages=messages,
@@ -97,17 +149,37 @@ class OpenAICompatChatWrapper:
             extra_body=extra_body or None,
             **kwargs,
         )
+        latency = time.monotonic() - started
         self.last_usage = getattr(resp, "usage", None)
 
-        message = resp.choices[0].message
-        content = getattr(message, "content", None) or ""
-        if content.strip():
-            return content
-        # A reasoning model that spends its whole budget thinking returns an
-        # empty `content` with the text under `reasoning_content`. Scoring that
-        # as an empty answer is indistinguishable from a wrong one.
+        choice = resp.choices[0]
+        message = choice.message
+        reasoning = ""
         for attribute in ("reasoning_content", "reasoning"):
-            fallback = getattr(message, attribute, None) or ""
-            if fallback.strip():
-                return fallback
-        return content
+            reasoning = getattr(message, attribute, None) or ""
+            if reasoning.strip():
+                break
+        usage = self.last_usage
+        return Completion(
+            content=getattr(message, "content", None) or "",
+            reasoning=reasoning,
+            prompt_tokens=getattr(usage, "prompt_tokens", None),
+            completion_tokens=getattr(usage, "completion_tokens", None),
+            finish_reason=getattr(choice, "finish_reason", None),
+            latency_s=round(latency, 3),
+            model=self.model_name,
+            endpoint=self.base_url,
+            seed=seed,
+        )
+
+    def complete(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        **kwargs,
+    ) -> str:
+        return self.generate(
+            messages, max_tokens=max_tokens, temperature=temperature, top_p=top_p, **kwargs
+        ).text

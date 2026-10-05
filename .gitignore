@@ -5,6 +5,8 @@ __pycache__/
 .cache/
 *.csv
 *.json
+# Example configs are code, not results.
+!configs/*.json
 *.jsonl
 *.npy
 *.tsv
