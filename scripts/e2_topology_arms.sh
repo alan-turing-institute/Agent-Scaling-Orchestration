@@ -9,17 +9,24 @@
 # random teams and the arms pair question for question.
 #
 # Reproducibility: the vLLM servers give different greedy text for the same
-# request depending on what else is in the batch, so every arm runs with
-# --max_inflight 1. To get throughput back, the agent model is served several
-# times over (PORTS) and each worker sends one arm at a time to its own server.
-# Several copies of the 0.8B fit on the box and barely compete for bandwidth.
+# request depending on what else is in the batch. MAX_INFLIGHT=1 sends one
+# request at a time and reproduces exactly, but only on a single server with
+# nothing else running: separate copies of a server disagree with each other
+# (measured 2026-10-06), and copies on one GPU give no speed-up because the GPU
+# time-slices between them. The default, MAX_INFLIGHT=0, runs at full
+# concurrency instead; reruns then differ (~15% of team verdicts on the 0.8B),
+# which adds variance but no bias between arms.
+#
+# One worker runs per entry in PORTS, one arm at a time each. Repeat a port to
+# run several arms against one server, e.g. PORTS="8001 8001"; size the server's
+# --max-num-seqs to the total (each arm keeps ~20 requests in flight).
 #
 # Jobs sit in a queue ordered fold by fold, longest first, and the workers pull
 # from it. A job whose holdout_summary.json exists is skipped; a job that was
 # interrupted is cleared and rerun from scratch, because the scoreboard of a
 # half-finished continual run would carry over. Rerunning the script resumes.
 #
-#   PORTS="8001 8003 8004 8005" ./scripts/e2_topology_arms.sh
+#   PORTS="8001 8001" ./scripts/e2_topology_arms.sh
 #
 # Orchestrator: the 35B on 8002. Results: data-claude/e2-topology/<label>/
 # fold<k>/<selection>-<topology>/; logs beside them under data-claude/logs/.
@@ -30,7 +37,8 @@ cd "$(dirname "$0")/.." || exit 1
 PYTHON=${PYTHON:-./env/bin/python}
 MODEL=${MODEL:-Qwen/Qwen3.5-0.8B}
 LABEL=${LABEL:-qwen3.5-0.8b}
-PORTS=${PORTS:-"8001 8003 8004 8005"}
+PORTS=${PORTS:-"8001 8001"}
+MAX_INFLIGHT=${MAX_INFLIGHT:-0}
 ORCH_MODEL=${ORCH_MODEL:-nvidia/Qwen3.6-35B-A3B-NVFP4}
 ORCH_API=${ORCH_API:-http://127.0.0.1:8002/v1}
 ITERATIONS=${ITERATIONS:-30}
@@ -83,7 +91,7 @@ run_job() {  # port fold selection topology
     common="--dataset_path data-claude/tagged_dataset --model_name $MODEL --api_base_url $api \
         --split_seed 0 --n_folds 5 --fold $fold --num_samples 5 --team_size 4 --seed 0 \
         --test_batch_size 5 --eval_workers 5 --summary_every 1 \
-        --topology $topology --rounds 1 --handoff full --max_inflight 1"
+        --topology $topology --rounds 1 --handoff full --max_inflight $MAX_INFLIGHT"
     orch="--orchestrator_model $ORCH_MODEL --orchestrator_api_base_url $ORCH_API"
     case $selection in
         random)    args="--iterations 0 --selection random --memory none" ;;
