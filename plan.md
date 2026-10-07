@@ -454,7 +454,7 @@ tool dispatcher are less code, and keep per-stage models working.
 | Stage | Benchmark | Items | Graded by | Notes |
 |---|---|---|---|---|
 | H1 | GPQA-Diamond (`Idavidrein/gpqa`) | 198 | existing `mcq` scorer | Gated: `HF_TOKEN` from the environment. Shuffle the options with a fixed seed when loading |
-| H1 | MMLU-Pro, hard categories (`TIGER-Lab/MMLU-Pro`) | 100–300 | existing `mcq` (A–J) | For example law, engineering, physics, chemistry |
+| H1 | MMLU-Pro, hard categories (`TIGER-Lab/MMLU-Pro`) | 100–300 | existing `mcq` (A–J) | For example law, engineering, physics, chemistry. New to us: our `pro_medicine` is MMLU's 4-option professional medicine (`cais/mmlu`), not MMLU-Pro. Option counts vary (9,981 of 12,032 have 10; the rest have 4, 8 or 9), so the template must take a variable count |
 | H1 | AIME 2022–25 (`AI-MO/aimo-validation-aime`, `math-ai/aime25`) | 120 | existing `numeric` | Small n, so treat it as a stress test. Needs long outputs |
 | H2 | MATH-500, levels 4–5 (`HuggingFaceH4/MATH-500`) | ~250 | new `math` scorer | `math-verify` or sympy equivalence |
 | H3 | Plancraft | first 100 of 580 | environment state | PyPI `plancraft` 0.4.9, pure Python. 4 tools |
@@ -475,8 +475,8 @@ that a single agent scores roughly 20–45%: the 0.8B will sit near chance on GP
 Numbered to continue the research plan's C list. C9 there, an adapter onto their
 Hydra harness, is replaced by C14–C17.
 
-- **C11 — scorers from the registry.** `team_evaluation.py:158` and
-  `scripts/bare_model_baseline.py:188` build scorers only for `("numeric", "mcq")`.
+- **C11 — scorers from the registry.** `team_evaluation.py:159` and
+  `scripts/bare_model_baseline.py:187` build scorers only for `("numeric", "mcq")`.
   `_infer_answer_type` still guesses from the gold answer when a source is not
   registered. Build each scorer lazily from its benchmark, and make an unknown source
   an error. *Needed by every new benchmark; moves nothing.*
@@ -523,8 +523,13 @@ Hydra harness, is replaced by C14–C17.
     batch the benchmark tag alone would drive selection.
   - Structural tags: benchmark, tool count, and the difficulty labels each set ships
     with.
+  - **Tag vocabulary.** `canonicalise_tags.py` only builds a vocabulary from
+    scratch. Rebuilding it over old and new tags would change the 699 pool's tags,
+    so add a mode that maps new raw tags onto the existing canonical set
+    (`data-claude/tag_mapping.json`) and clusters only what is left.
   - The paper assigned no personas for these sets, so `PERSONA_SET` is empty, and
-    there is no canonical arm unless sets are written the same way.
+    there is no canonical arm unless sets are written the same way. Any new
+    personas go into the bank in `src/personas.py`.
 
 ### 6.4 Order
 
@@ -575,6 +580,45 @@ H2, once a sandbox exists, and Finance-Agent's Python tool needs that sandbox to
 | 8 | §6 harder benchmarks: H1–H2 static, then the agentic layer (C11–C18) | — |
 
 ---
+
+## Status — 2026-10-07: ready to start the harder benchmarks
+
+PR #5 merged into `main` (`a24063f`). That brings C1–C5, the benchmark registry
+and the runner, and moves the persona bank from `model/model_utils.py` into
+`src/personas.py` unchanged. Work on §6 happens on branch `benchmarks/harder`.
+
+**Workspace.** Develop in the worktree `../Agent-Scaling-Orchestration-benchmarks`,
+never in the directory a sweep runs from. The E2 sweep runs from the frozen
+worktree `../Agent-Scaling-Orchestration-e2`, whose `data-claude/` and `env/` are
+symlinks into the main checkout.
+
+The benchmarks worktree has its own `env/`: a uv venv with the same package set as
+the shared one, plus `math-verify`. Its `data-claude/` holds copies of the
+read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
+`benchmarks/`), so nothing it writes lands in the main checkout's results.
+
+**Checked on 2026-10-07, in that worktree:**
+
+- **Tests.** `tests/test_runner.py` and `tests/test_scorers.py` pass, and every
+  entry point answers `--help`.
+- **Data.** MMLU-Pro (12,032 test questions, 14 categories), AIME (90 from
+  2022–24, plus 30 from 2025, integer answers) and MATH-500 (262 at levels 4–5)
+  all load. All three are public.
+- **GPQA-Diamond** returns 403. The HF account must accept the dataset's terms
+  once on its page; approval is automatic.
+- **Equivalence checking.** `math-verify` installs on aarch64 and gets the MATH
+  answer shapes right (fractions against decimals, tuples, a wrong integer).
+- **Plancraft.** `plancraft` 0.4.9 resolves on aarch64 (dry run).
+
+**What can start now, and what waits.**
+
+- **Starts now:** C11, the H1 benchmark modules, the fetch scripts and the
+  offline tests. None of this calls a model.
+- **Waits:** tagging the new pool, the bare-model screens and every arm. Tagging
+  uses the 35B, which the E2 sweep is using as its orchestrator on :8002. Any
+  extra load on :8001/:8002 changes the sweep's answers, because the servers'
+  outputs depend on the batch. So all of this waits for E2 to finish.
+- **Also waits:** C18's tag-vocabulary extension has to exist before tagging.
 
 ## Status — updated 2026-10-05
 
