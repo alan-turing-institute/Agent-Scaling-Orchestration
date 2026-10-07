@@ -45,6 +45,8 @@ _MODULES = [
     "benchmarks.mmlu_pro",
     "benchmarks.aime",
     "benchmarks.math500",
+    # Agentic (H3 onwards): graded on the environment's outcome.
+    "benchmarks.plancraft",
 ]
 
 
@@ -60,6 +62,10 @@ class ModuleBenchmark:
     fetch: Any = None
     # Optional: the module's own `load_instances`, with ids, metadata and structural tags.
     _instances: Any = None
+    # Agentic benchmarks: `environment(instance) -> Environment`, and the default
+    # cap on an agent's turns (see benchmarks.environment).
+    environment: Any = None
+    max_steps: Any = None
 
     def load(self, args, split: str = "test"):
         if self._load is None:
@@ -94,7 +100,11 @@ def _load_registry() -> dict[str, ModuleBenchmark]:
             _load=getattr(module, "load", None),
             fetch=getattr(module, "fetch", None),
             _instances=getattr(module, "load_instances", None),
+            environment=getattr(module, "ENVIRONMENT", None),
+            max_steps=getattr(module, "MAX_STEPS", None),
         )
+        if (benchmark.answer_type == "outcome") != (benchmark.environment is not None):
+            raise TypeError(f"{path}: answer type 'outcome' and ENVIRONMENT go together")
         if benchmark._load is None and benchmark._instances is None:
             raise TypeError(f"{path} defines neither load nor load_instances")
         _REGISTRY[benchmark.name] = benchmark

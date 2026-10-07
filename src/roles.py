@@ -82,3 +82,47 @@ def render_prompt(persona_text, question, suffix, role="solver", inputs=()):
         parts.append(f"Work from your team:\n\n{handed}")
     parts.append(ROLES[role] + suffix)
     return "\n\n".join(parts)
+
+
+# Agentic tasks: the same roles, worded for acting on an environment through
+# tools rather than answering a question. Versioned separately so a change here
+# does not move the static prompts' version, and recorded on every agentic stage.
+AGENT_ROLE_TEMPLATES_VERSION = "1"
+
+AGENT_ROLES = {
+    "solver": "Complete the task using the tools. Any work above is for reference only.",
+    "debater": ("Above are your team's attempts at the same task, including your own earlier attempt "
+                "if you made one. The environment is as your own last attempt left it, or fresh. "
+                "Weigh their approaches against yours, then complete the task using the tools."),
+    "critic": ("Above is a teammate's attempt, and the environment is as they left it. Check their "
+               "work against the task, fix what is wrong using the tools, and finish the task."),
+    "reviser": ("The environment is as the work above left it. Keep what is right, fix what is "
+                "wrong using the tools, and finish the task."),
+    "planner": ("First write out the steps the task needs and what could go wrong at each, then "
+                "carry them out using the tools."),
+    "checker": ("The environment is as the work above left it. Check it against the task, correct "
+                "it using the tools if needed, and finish the task."),
+    "hub": ("You lead this team. Read their attempts above; the environment is fresh. Complete the "
+            "task yourself using the tools."),
+    "synthesiser": ("Combine what the attempts above learned, then complete the task yourself using "
+                    "the tools; the environment is fresh."),
+}
+
+DELEGATING_HUB = ("You lead this team. Use the delegate tool to give a teammate an instruction; they "
+                  "act on the same environment you do and report back. Check their work, act "
+                  "yourself where needed, and finish the task.")
+
+
+def render_agent_prompt(persona_text, task, role="solver", inputs=(), delegating=False):
+    """The user message for one agentic stage: persona, task, team's work, role."""
+    if role not in AGENT_ROLES:
+        raise KeyError(f"unknown role {role!r}; known: {sorted(AGENT_ROLES)}")
+    parts = []
+    if persona_text:
+        parts.append(persona_text)
+    parts.append(f"Task:\n{task}")
+    if inputs:
+        handed = "\n\n".join(f"--- {label} ---\n{text}" for label, text in inputs)
+        parts.append(f"Work from your team:\n\n{handed}")
+    parts.append(DELEGATING_HUB if delegating else AGENT_ROLES[role])
+    return "\n\n".join(parts)

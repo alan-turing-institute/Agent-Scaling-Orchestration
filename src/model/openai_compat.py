@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 DEFAULT_MAX_TOKENS = 4096
@@ -42,6 +43,21 @@ class Completion:
     model: Optional[str] = None
     endpoint: Optional[str] = None
     seed: Optional[int] = None
+    # Function calls the model made, when the request offered `tools`:
+    # [{"id", "name", "arguments": dict, "arguments_raw": str, "error": str|None}].
+    # `error` is set when the arguments were not valid JSON; `arguments` is then {}.
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+
+    def assistant_message(self) -> Dict[str, Any]:
+        """This turn as a chat message, to append to the conversation before the tool results."""
+        message: Dict[str, Any] = {"role": "assistant", "content": self.content or ""}
+        if self.tool_calls:
+            message["tool_calls"] = [
+                {"id": call["id"], "type": "function",
+                 "function": {"name": call["name"], "arguments": call["arguments_raw"]}}
+                for call in self.tool_calls
+            ]
+        return message
 
     @property
     def text(self) -> str:
@@ -170,6 +186,23 @@ class OpenAICompatChatWrapper:
             if reasoning.strip():
                 break
         usage = self.last_usage
+        tool_calls = []
+        for index, call in enumerate(getattr(message, "tool_calls", None) or []):
+            function = getattr(call, "function", None)
+            raw = getattr(function, "arguments", None) or "{}"
+            try:
+                arguments, error = json.loads(raw), None
+                if not isinstance(arguments, dict):
+                    arguments, error = {}, f"arguments are not a JSON object: {raw[:200]}"
+            except json.JSONDecodeError as exc:
+                arguments, error = {}, f"arguments are not valid JSON ({exc.msg}): {raw[:200]}"
+            tool_calls.append({
+                "id": getattr(call, "id", None) or f"call_{index}",
+                "name": getattr(function, "name", "") or "",
+                "arguments": arguments,
+                "arguments_raw": raw,
+                "error": error,
+            })
         return Completion(
             content=getattr(message, "content", None) or "",
             reasoning=reasoning,
@@ -180,6 +213,7 @@ class OpenAICompatChatWrapper:
             model=self.model_name,
             endpoint=self.base_url,
             seed=seed,
+            tool_calls=tool_calls,
         )
 
     def complete(

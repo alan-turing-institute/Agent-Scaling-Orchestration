@@ -10,6 +10,9 @@ what the prompt is asking for:
     tag assignment     {"assignments": {...}}, onto an existing tag sharing a word
     team selection     {"selected_agents": [...]}, names copied from the pool listed
     an agent's answer  reasoning ending in the format its suffix asks for
+    a request with     two tool calls with arguments made up from each tool's schema
+      tools            (a `delegate` first when offered), then the tool that ends the
+                       task (impossible, submit, done, ...), or a text reply if none
 
 Answers are a hash of the prompt, so a rerun gives the same text and a test can
 compare two runs. Accuracy is whatever the hash lands on: these runs check that
@@ -100,6 +103,48 @@ def answer_reply(prompt):
     return f"Let me work through this step by step.\nSo the answer follows.\n{answer}"
 
 
+FINISHING_TOOLS = ("impossible", "submit", "submit_final_result", "done", "finish", "submit_answer")
+
+
+def _argument(name, schema, salt):
+    if schema.get("enum"):
+        return pick(schema["enum"], salt, name)[0]
+    if schema.get("type") == "integer":
+        return 1 + digest(salt, name) % 3
+    if schema.get("type") == "number":
+        return 1.0
+    if schema.get("type") == "array":
+        return []
+    if schema.get("type") == "object":
+        return {}
+    if "slot" in name:
+        return pick(["[I1]", "[I2]", "[A1]", "[B2]"], salt, name)[0]
+    return "mock"
+
+
+def tool_reply(messages, tools):
+    """A tool call chosen from the conversation so far: explore twice, then finish."""
+    functions = {t["function"]["name"]: t["function"] for t in tools if t.get("type") == "function"}
+    made = [m for m in messages if m.get("role") == "tool"]
+    delegated = any("delegate" in json.dumps(m.get("tool_calls") or "") for m in messages if m.get("role") == "assistant")
+    salt = json.dumps(messages[1:2]) + str(len(made))
+    if "delegate" in functions and not delegated:
+        name = "delegate"
+    elif len(made) < 2:
+        explore = [n for n in functions if n not in FINISHING_TOOLS and n != "delegate"] or list(functions)
+        name = pick(explore, salt, "explore")[0]
+    else:
+        finishing = [n for n in FINISHING_TOOLS if n in functions]
+        if not finishing:
+            return {"role": "assistant", "content": "I have finished the task."}, "stop"
+        name = finishing[0]
+    properties = functions[name].get("parameters", {}).get("properties", {})
+    arguments = {k: _argument(k, v, salt) for k, v in properties.items()}
+    call = {"id": "call_%d" % (digest(salt, name) % 10**8), "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)}}
+    return {"role": "assistant", "content": "", "tool_calls": [call]}, "tool_calls"
+
+
 def reply_for(messages):
     system = " ".join(m.get("content") or "" for m in messages if m.get("role") == "system")
     prompt = (messages[-1].get("content") or "") if messages else ""
@@ -141,17 +186,20 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.rstrip("/").endswith("/chat/completions"):
             return self._send({"error": "not found"}, 404)
         messages = request.get("messages", [])
-        content = reply_for(messages)
+        if request.get("tools"):
+            message, finish = tool_reply(messages, request["tools"])
+        else:
+            message, finish = {"role": "assistant", "content": reply_for(messages)}, "stop"
+        content = message.get("content") or json.dumps(message.get("tool_calls"))
         if Handler.log_path:
             with Handler.lock, open(Handler.log_path, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps({"request": request, "reply": content}) + "\n")
-        prompt_tokens = sum(len((m.get("content") or "").split()) for m in messages)
+        prompt_tokens = sum(len(str(m.get("content") or "").split()) for m in messages)
         self._send({
             "id": "mock-%d" % digest(json.dumps(messages)),
             "object": "chat.completion",
             "model": request.get("model", "mock"),
-            "choices": [{"index": 0, "finish_reason": "stop",
-                         "message": {"role": "assistant", "content": content}}],
+            "choices": [{"index": 0, "finish_reason": finish, "message": message}],
             "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": len(content.split()),
                       "total_tokens": prompt_tokens + len(content.split())},
         })

@@ -23,6 +23,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from benchmarks.base import Prediction, ScoreResult
+from benchmarks.environment import OutcomeScorer
 
 STRICT = "strict"
 LENIENT = "lenient"
@@ -362,6 +363,7 @@ SCORERS = {
     "numeric": NumericScorer,
     "mcq": MCQScorer,
     "math": MathScorer,
+    "outcome": OutcomeScorer,
 }
 
 # Which scorer the `--bae` flag swaps in for each answer type.
@@ -369,6 +371,7 @@ BAE_SCORERS = {
     "numeric": BaseNumericScorer,
     "mcq": BaseMCQScorer,
     "math": MathScorer,
+    "outcome": OutcomeScorer,
 }
 
 

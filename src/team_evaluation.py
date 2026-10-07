@@ -131,6 +131,8 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
             registry=registry, max_tokens=max_tokens, tie_break=tie_break,
             request_seed=None if request_seed is None or request_seed < 0 else request_seed,
             instance=benchmarks.instance_of(sample),
+            environment=benchmarks.get(sample["dataset"]).environment,
+            max_steps=benchmarks.get(sample["dataset"]).max_steps,
         )
         by_id = {r["id"]: r for r in result["stages"]}
         result.update({

@@ -35,7 +35,8 @@ from splits import add_split_args, make_split, split_label
 import benchmarks
 from benchmarks import score_responses
 from holdout_evaluation import _batch_indices, with_server_retry
-from predictions import SCHEMA_VERSION, write_predictions
+from episode import run_episode
+from predictions import SCHEMA_VERSION, split_traces, traces_path, write_predictions
 from runner import question_key
 from model.openai_compat import OpenAICompatChatWrapper
 
@@ -68,11 +69,51 @@ def parse_args():
     return parser.parse_args()
 
 
+def attempt_task(agent, sample, scorer, answer_type, args):
+    """An agentic task: the bare model works through it alone, with no persona and no team.
+
+    The same episode a team's solver runs (`episode.run_episode`), with the
+    benchmark's turn cap, graded on the environment's outcome.
+    """
+    benchmark = benchmarks.get(sample["dataset"])
+    instance = benchmarks.instance_of(sample)
+    env = benchmark.environment(instance)
+    episode, error_text = None, None
+    try:
+        episode = run_episode(agent, env, system="You are a helpful assistant.", user=env.task_prompt(),
+                              max_steps=benchmark.max_steps or 30, max_tokens=args.max_tokens,
+                              temperature=args.temperature, top_p=args.top_p)
+        prediction = episode.pop("prediction")
+    except (APIConnectionError, APITimeoutError):
+        raise
+    except Exception as error:
+        print(f"[warn] episode failed: {error!r}; scoring as incorrect")
+        prediction, error_text = scorer.extract(""), repr(error)
+    correct = bool(scorer.correct(prediction, scorer.normalise_gold(sample["answer"]), instance=instance))
+    return {
+        "tags": sample["tags"] or [],
+        "answer_type": answer_type,
+        "correct": correct,
+        "parsed": prediction.parsed,
+        "prediction": str(prediction.legacy),
+        "gold": str(sample["answer"]),
+        "question": sample["question"],
+        "question_id": instance.id,
+        "response": (episode or {}).get("response", ""),
+        "dataset": sample.get("dataset"),
+        "completion": None,
+        "episode": episode,
+        "error": error_text,
+    }
+
+
 def answer_one(agent, sample, scorers, args):
     """Ask the model one question and score it exactly as a team agent is scored."""
     question = sample["question"]
     answer = sample["answer"]
     answer_type, scorer = scorers.for_sample(sample)
+    if benchmarks.get(sample["dataset"]).environment is not None:
+        return attempt_task(agent, sample, scorer, answer_type, args)
     # The tagged dataset stores every answer as a string, numeric ones included.
     answer = scorer.normalise_gold(answer)
 
@@ -107,6 +148,7 @@ def answer_one(agent, sample, scorers, args):
         "prediction": str(prediction.legacy),
         "gold": str(result.gold),
         "question": question,
+        "question_id": benchmarks.instance_of(sample).id,
         "response": text,
         "dataset": sample.get("dataset"),
         "completion": completion,
@@ -137,12 +179,19 @@ def prediction_row(r, batch_index, question_index, args):
         "prediction": r["prediction"], "parsed": r["parsed"], "correct": r["correct"],
         "transition": None, "copied": None,
     }
+    episode = r.get("episode")
+    if episode:
+        # An agentic task: the episode's cost and ending, and its steps for the traces file.
+        stage.update({key: episode.get(key) for key in
+                      ("prompt_tokens", "completion_tokens", "finish_reason", "steps", "stopped",
+                       "outcome", "calls", "tool_calls")})
     return {
         "schema": SCHEMA_VERSION,
         "arm": "bare_model",
         "batch": batch_index,
         "question_index": question_index,
         "question_key": question_key(r.get("question")),
+        "question_id": r.get("question_id"),
         "dataset": r.get("dataset"),
         "answer_type": r["answer_type"],
         "tags": r["tags"],
@@ -153,7 +202,7 @@ def prediction_row(r, batch_index, question_index, args):
         "aggregation": {"rule": "stage", "over": [AGENT_NAME], "tie_break": None},
         "team_answer": r["prediction"],
         "team_correct": r["correct"],
-        "calls": 1,
+        "calls": stage.get("calls") or 1,
         "depth": 1,
         "prompt_tokens": stage["prompt_tokens"] or 0,
         "completion_tokens": stage["completion_tokens"] or 0,
@@ -243,8 +292,9 @@ def main():
 
         # Same per-question detail the team arms write, in the same shape: one
         # stage, no persona, so the arms can be compared question by question.
-        write_predictions(predictions_path, [prediction_row(r, batch_index, indices[position], args)
-                                             for position, r in enumerate(results)])
+        rows = [prediction_row(r, batch_index, indices[position], args) for position, r in enumerate(results)]
+        write_predictions(traces_path(predictions_path), split_traces(rows))
+        write_predictions(predictions_path, rows)
 
     summary = {
         "run": str(out_dir),

@@ -669,6 +669,38 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
   - **Stand-in server runs:** `tests/mock_e2e.sh` passes on a math500+aime
     pool, and the 699 pool still runs its arms, canonical included.
   - **Still to do with the servers:** hand-check 50 real responses.
+- **H3 in code (2026-10-07).**
+  - **C14:** `Completion.tool_calls`. Arguments that aren't JSON become an error
+    the model reads, not a crash.
+  - **C15:** the `Environment` protocol and `OutcomeScorer`. It votes over end
+    states (`success|<fingerprint>`).
+  - **C16:** `episode.run_episode`, a turn-capped loop with no wall-clock caps,
+    plus runner support:
+    - forks for voters;
+    - continuation for critics, revisers, checkers and debaters (`resume()`
+      lets them overrule an `impossible`);
+    - fresh environments for hubs;
+    - `--topology delegated`, whose hub calls workers through a tool on its
+      own environment;
+    - stages read each other's actions, never their grades.
+  - **C17:** `*_traces.jsonl` beside the predictions files.
+  - **`plancraft`:** the package's text environment, with the renderer stubbed
+    and a cheap fork; the paper's first 100.
+  - **Bare model:** runs one episode with no persona.
+  - **Checked:**
+    - replaying the package's optimal plans through our environment succeeds
+      on all 580;
+    - on the stand-in server, all four arms run, and every topology (vote,
+      debate, centralized, synthesis, pipeline, delegated) runs through the
+      E2 driver;
+    - `tests/test_agentic.py` passes.
+  - **Waiting until E2 ends (it is using the servers):**
+    - **Serve flags.** Add tool calling to the serve scripts:
+      `--enable-auto-tool-choice --tool-call-parser qwen3_xml` for the Qwen
+      models (as `vllm/qwen3.6/run_docker.sh` has), and `--tool-call-parser
+      mistral` for Ministral. Don't edit `vllm/qwen3.5-0.8b/run_docker.sh`
+      now: E2's server-config trials relaunch the server from it.
+    - **Tool-calling screen.** 20 Plancraft items per agent model.
 - **Waits:** tagging the new pool, the bare-model screens and every arm. Tagging
   uses the 35B, which the E2 sweep is using as its orchestrator on :8002. Any
   extra load on :8001/:8002 changes the sweep's answers, because the servers'

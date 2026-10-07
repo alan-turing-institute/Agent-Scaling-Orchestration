@@ -1,0 +1,14 @@
+# Extra packages for the agentic benchmarks, on top of requirements.txt.
+#
+# plancraft pulls in wandb, hydra, imageio and more that its text environment
+# never imports, so install it without its dependencies and add only what the
+# text environment needs:
+#
+#   pip install -r requirements-agentic.txt
+#   pip install --no-deps plancraft==0.4.9
+#
+loguru==0.7.3
+networkx==3.6.1
+pillow==12.3.0
+pydantic==2.13.5
+pydantic-settings==2.15.0

@@ -296,6 +296,48 @@ solutions for levels 4–5 score correct against their gold answers.
 `fetch(args)` for data its loader does not pull itself. gsm8k's loader returns nothing at
 `--data_size 0` (it takes `head(data_size)`), which the script flags.
 
+### Agentic benchmarks
+
+A benchmark module is agentic when it declares `ANSWER_TYPE = "outcome"`, `ENVIRONMENT`
+(`factory(instance) -> Environment`) and `MAX_STEPS`; the registry refuses one without the other.
+`benchmarks/environment.py` defines the protocol: `task_prompt()`, `tools()` (OpenAI function
+schemas), `call(name, arguments) -> observation` (errors as text, never raised), `done`,
+`outcome() -> Outcome(success, fingerprint)`, `fork()`, and optionally `resume()`. An outcome becomes
+the prediction `"success|<fingerprint>"` / `"fail|<fingerprint>"`, so `OutcomeScorer` votes over
+end states and the winning state carries its verdict.
+
+`episode.run_episode` is the loop: generate with tools, run each call, append the observation; stop
+when the environment is done, after two replies in a row without a tool call (one nudge between),
+or at the turn cap. No wall-clock caps. `runner.run_question(..., environment=, max_steps=)` runs
+each stage as an episode. Where a stage starts:
+
+- reading nothing: fresh;
+- reading its own persona's earlier stage (debate): a fork of its own last state;
+- reading others as critic, reviser or checker: a fork of the last input's state, so a pipeline
+  builds on its predecessor. `resume()` lets it overrule a verdict (Plancraft: `impossible`) but
+  keeps a reached goal;
+- hub or synthesiser: fresh, with the attempts as advice.
+
+Stages read each other through `episode.report_text`: actions and final message, never the grade.
+`team_config.delegated(workers, hub)` (`--topology delegated`) gives the hub a `delegate(agent,
+instruction)` tool; workers run only when called, on the hub's environment, and a worker's text
+reply ends its turn. Agentic role wording is `roles.AGENT_ROLES`, versioned separately
+(`AGENT_ROLE_TEMPLATES_VERSION`). Each step goes to `*_traces.jsonl` beside the predictions file
+(`predictions.split_traces`); prediction rows keep the outcome, calls and tokens.
+`OpenAICompatChatWrapper.generate(..., tools=...)` returns `Completion.tool_calls`, with an `error`
+instead of a crash for arguments that are not JSON. The bare-model baseline runs one persona-less
+episode on agentic tasks.
+
+- `plancraft` — the package's text environment, with its image renderer stubbed out (0.2 ms to
+  build; `fork` copies only the inventory). Tools: search, move, smelt, impossible. Success: the
+  target in any slot but [0], or `impossible` on a truly impossible task. Default set: the first 100
+  test examples, as the paper ran (`--sub_data all` for 580). Install with
+  `requirements-agentic.txt` (`plancraft` itself with `--no-deps`). Replaying the package's optimal
+  plans through it succeeds on all 580.
+
+`tests/test_agentic.py` covers the loop, every topology on a toy environment, delegation and traces;
+the mock server answers requests that offer tools with deterministic tool calls.
+
 ### K\* analysis
 
 Consumes `out/history/*.jsonl` from `main.py`, outputs CSV summaries.
