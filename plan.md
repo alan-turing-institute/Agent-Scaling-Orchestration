@@ -645,6 +645,30 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
   - **What a real run still needs:** `POOL=hard DATA="gpqa_diamond mmlu_pro aime"
     ./scripts/build_pool.sh` against the 35B, then the bare-model screen. Both
     wait until E2 frees the servers.
+- **H2 in code (2026-10-07).**
+  - **C12, instances end to end:**
+    - Modules may define `load_instances`. An `Instance` has a stable `id`,
+      JSON `metadata` and structural tags (`"level: 5"`).
+    - The tagged pool keeps `id` and `metadata` columns; the 699 pool, which
+      has neither, still loads.
+    - `Scorer.correct` gets the `Instance`, and prediction rows carry
+      `question_id`.
+  - **C13, part one: the `math` scorer.**
+    - Reads the last `\boxed{}`, compares with math-verify and votes over
+      equivalence classes.
+    - Its signal-based timeouts are off on worker threads, with a length cap
+      instead.
+  - **`math500`:** levels 4–5 (262).
+  - **H1 modules** moved to `load_instances`, with ids, metadata and
+    structural tags. Their questions and labels are byte-identical.
+  - **Checked against the 262 MATH-500 reference solutions** in place of the 50
+    hand-checked model responses, which need the servers:
+    - every boxed answer scores correct against its gold answer;
+    - one cross-problem pair matches (`5` against `x=5`);
+    - `math-verify` is pinned in `requirements.txt`.
+  - **Stand-in server runs:** `tests/mock_e2e.sh` passes on a math500+aime
+    pool, and the 699 pool still runs its arms, canonical included.
+  - **Still to do with the servers:** hand-check 50 real responses.
 - **Waits:** tagging the new pool, the bare-model screens and every arm. Tagging
   uses the 35B, which the E2 sweep is using as its orchestrator on :8002. Any
   extra load on :8001/:8002 changes the sweep's answers, because the servers'

@@ -100,6 +100,41 @@ def test_extend_mapping():
     check("without a model, unmatched tags stay themselves", offline["multi-step reasoning"], "multi-step reasoning")
 
 
+def test_instances_carry_ids_and_metadata():
+    """Rows from the 699 pool predate ids and metadata; new pools carry both."""
+    old = {"question": "What is 2+2?", "answer": "4", "dataset": "gsm8k", "tags": ["arithmetic"]}
+    inst = benchmarks.instance_of(old)
+    check("old row: id from benchmark and text", inst.id, benchmarks.question_id("gsm8k", "What is 2+2?"))
+    check("old row: no metadata", inst.metadata, {})
+    new = dict(old, id="math500:test/x.json", metadata='{"level": 5}')
+    check("new row: id kept", benchmarks.instance_of(new).id, "math500:test/x.json")
+    check("new row: metadata parsed", benchmarks.instance_of(new).metadata, {"level": 5})
+    check("ids are stable", benchmarks.question_id("a", "q"), benchmarks.question_id("a", "q"))
+
+
+def test_tag_dataset_carries_ids_metadata_and_structural_tags():
+    import json
+    import subprocess
+    import tempfile
+    from datasets import load_from_disk
+    root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory() as tmp:
+        tags_file = Path(tmp) / "tags.jsonl"
+        rows = [{"dataset": "math500", "id": f"math500:{i}", "question": f"q{i}", "answer": "1",
+                 "tags": ["algebra"] if i % 2 else ["geometry"], "structural_tags": ["level: 5"],
+                 "metadata": {"level": 5, "i": i}} for i in range(12)]
+        tags_file.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        out = Path(tmp) / "pool"
+        subprocess.run([sys.executable, str(root / "src" / "tag_dataset.py"), "--tags_file", str(tags_file),
+                        "--tag_mapping", "", "--threshold", "1", "--structural_tags", "--plot_path", "",
+                        "--out_dir", str(out)], check=True, capture_output=True)
+        pool = load_from_disk(str(out))
+        check("columns", pool.column_names, ["dataset", "id", "question", "answer", "tags", "metadata"])
+        check("structural tag added", "level: 5" in pool[0]["tags"], True)
+        check("metadata round-trips", json.loads(pool[3]["metadata"]), {"level": 5, "i": 3})
+        check("id kept", pool[3]["id"], "math500:3")
+
+
 def test_parse_assignments():
     existing = {"arithmetic", "algebra"}
     got = canonicalise_tags.parse_assignments(

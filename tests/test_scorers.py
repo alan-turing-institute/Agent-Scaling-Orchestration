@@ -204,6 +204,27 @@ def test_answer_type_comes_from_the_registry():
         del registry["exact_bench"]
 
 
+def test_math_scorer():
+    """Boxed LaTeX answers, compared by equivalence; the team votes over classes."""
+    strict, lenient = get_scorer("math"), get_scorer("math", mode=LENIENT)
+    check("reads the last box", strict.extract("try \\boxed{1} then \\boxed{\\frac{a}{b^{2}}}").value,
+          "\\frac{a}{b^{2}}")
+    check("strict needs a box", strict.extract("final answer: 5").parsed, False)
+    check("lenient falls back to a final-answer line", lenient.extract("final answer: 5").value, "5")
+    check("lenient falls back to the last $...$", lenient.extract("so $x = 3$ and $7$").value, "7")
+    for gold, text, want in [
+        ("\\frac{7}{4}", "\\boxed{1.75}", True),
+        ("\\left( 3, \\frac{\\pi}{2} \\right)", "\\boxed{(3, \\pi/2)}", True),
+        ("12", "\\boxed{13}", False),
+        ("\\text{even}", "\\boxed{\\text{even}}", True),
+    ]:
+        check(f"equivalence {gold} vs {text}", score_responses(strict, {"a": text}, gold).correct, want)
+    team = score_responses(strict, {"a": "\\boxed{0.5}", "b": "\\boxed{\\frac{1}{2}}", "c": "\\boxed{7}"}, "\\frac12")
+    check("vote over equivalence classes", (team.aggregate.value, team.correct), ("0.5", True))
+    check("nothing parsed, no team answer", score_responses(strict, {"a": "", "b": "no"}, "1").aggregate.parsed, False)
+    check("math500 is math", benchmarks.answer_type_of("math500"), "math")
+
+
 def test_gold_normalisation():
     """The tagged dataset stores every answer as a string, numeric ones included."""
     check("numeric gold coerced", get_scorer("numeric").normalise_gold("8"), 8.0)

@@ -94,7 +94,7 @@ def answer_one(agent, sample, scorers, args):
         print(f"[warn] call failed: {error!r}; scoring as incorrect")
         text, error_text = "", repr(error)
 
-    result = score_responses(scorer, {AGENT_NAME: text}, answer)
+    result = score_responses(scorer, {AGENT_NAME: text}, answer, instance=benchmarks.instance_of(sample))
     prediction = result.predictions[0]
 
     # With one respondent the majority answer is that respondent's, so the team

@@ -22,6 +22,8 @@ import random
 import pandas as pd
 from datasets import load_dataset
 
+from benchmarks.base import Instance
+
 LETTERS = "ABCD"
 
 
@@ -33,20 +35,23 @@ def _options(row):
     return options, LETTERS[options.index(correct)]
 
 
-def load_data(args, split='test'):
+def load_instances(args, split='test'):
     # GPQA ships one split, `train`; every split here is that one set of 198.
     dataset = load_dataset('Idavidrein/gpqa', 'gpqa_diamond', cache_dir=args.data_dir)['train']
     dataset = pd.DataFrame(dataset).sample(frac=1, random_state=0).reset_index(drop=True)
     if args.data_size and args.data_size > 0:
         dataset = dataset.head(args.data_size)
 
-    questions, labels = [], []
+    instances = []
     for _, row in dataset.iterrows():
         options, letter = _options(row)
         body = "\n".join(f"({LETTERS[i]}) {text}" for i, text in enumerate(options))
-        questions.append(f"{str(row['Question']).strip()}\n{body}\n\n")
-        labels.append(f"({letter})")
-    return questions, labels
-
-
-load = load_data
+        domain, subdomain = str(row['High-level domain']).strip(), str(row['Subdomain']).strip()
+        instances.append(Instance(
+            question=f"{str(row['Question']).strip()}\n{body}\n\n",
+            answer=f"({letter})",
+            id=f"{NAME}:{row['Record ID']}",
+            tags=[f"benchmark: {NAME}", f"domain: {domain.lower()}", f"subdomain: {subdomain.lower()}"],
+            metadata={"record_id": row['Record ID'], "domain": domain, "subdomain": subdomain},
+        ))
+    return instances

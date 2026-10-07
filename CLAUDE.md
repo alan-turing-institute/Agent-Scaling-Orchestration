@@ -273,6 +273,24 @@ own pool, never in the 699-question one:
 - `mmlu_pro` — law, engineering, physics, chemistry by default (`--sub_data` to change), 50 each;
   up to ten options (A–J). Not `pro_medicine`, which is MMLU's four-option professional medicine.
 - `aime` — 2022–2025, 120 problems, integer answers, numeric scorer. Needs a large token budget.
+- `math500` — MATH-500 levels 4–5 by default (262; `--sub_data 3,4,5` to change), LaTeX answers,
+  `math` scorer.
+
+A module may define `load_instances(args, split) -> list[Instance]` instead of `load`; the registry
+derives `load` from it. An `Instance` carries a stable `id`, JSON-serialisable `metadata` and
+structural `tags` (the benchmark's own labels as `"key: value"`, e.g. `level: 5`). Modules that
+only define `load` get ids from `question_id(benchmark, text)`. `tag_questions.py` writes ids,
+metadata and structural tags; `tag_dataset.py` keeps `id` and `metadata` (a JSON string) as columns
+and, under `--structural_tags`, adds the structural tags to `tags` past the mapping and filter.
+Readers default both columns for the 699 pool, which has neither (`benchmarks.instance_of(row)`).
+`Scorer.correct(prediction, gold, instance=None)` receives that `Instance` from the runner and the
+bare-model baseline, for scorers that read more than the gold answer.
+
+The `math` scorer reads the last `\boxed{}` (strict) or falls back to a `final answer:` line and
+then the last `$...$` (lenient), compares with math-verify, and votes over equivalence classes.
+math-verify's timeouts use `signal.alarm`, which fails off the main thread, so on worker threads the
+scorer disables them and refuses to hand sympy anything over `MATH_MAX_CHARS`. All 262 reference
+solutions for levels 4–5 score correct against their gold answers.
 
 `scripts/fetch_benchmarks.py` downloads every registered set and reports counts; a module may define
 `fetch(args)` for data its loader does not pull itself. gsm8k's loader returns nothing at

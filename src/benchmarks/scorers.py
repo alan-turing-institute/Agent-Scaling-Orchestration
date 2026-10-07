@@ -107,7 +107,7 @@ class NumericScorer:
             return Prediction.unparsed(raw=text or "")
         return Prediction(value=np.round(value, 1), parsed=True, raw=str(value))
 
-    def correct(self, prediction: Prediction, gold: Any) -> bool:
+    def correct(self, prediction: Prediction, gold: Any, instance=None) -> bool:
         if not prediction.parsed:
             return False
         return bool(prediction.value == np.round(gold, 1))
@@ -181,7 +181,7 @@ class MCQScorer:
             return Prediction(value=f"({matches[-1].upper()})", parsed=True, raw=matches[-1])
         return Prediction.unparsed(raw=text or "")
 
-    def correct(self, prediction: Prediction, gold: Any) -> bool:
+    def correct(self, prediction: Prediction, gold: Any, instance=None) -> bool:
         if not prediction.parsed:
             return False
         return bool(prediction.value == gold)
@@ -215,13 +215,132 @@ class BaseNumericScorer(NumericScorer):
                 continue
         return Prediction.unparsed(raw=text or "")
 
-    def correct(self, prediction: Prediction, gold: Any) -> bool:
+    def correct(self, prediction: Prediction, gold: Any, instance=None) -> bool:
         if not prediction.parsed:
             return False
         return bool(prediction.value == np.round(gold, 1))
 
 
-def score_responses(scorer, responses: dict, gold: Any, rng=None) -> ScoreResult:
+# The longest answer `MathScorer` will hand to sympy. math-verify's own timeouts
+# use signal.alarm, which only works on the main thread, and questions are
+# scored on worker threads; capping the length is what stops a pathological
+# expression from stalling a worker instead.
+MATH_MAX_CHARS = 400
+
+
+def last_boxed(text: str):
+    """The contents of the last `\\boxed{...}` (or `\\fbox{...}`), braces balanced."""
+    text = text or ""
+    for marker in ("\\boxed", "\\fbox"):
+        start = text.rfind(marker)
+        while start != -1:
+            open_at = text.find("{", start)
+            if open_at != -1 and text[start + len(marker):open_at].strip() == "":
+                depth = 0
+                for i in range(open_at, len(text)):
+                    if text[i] == "{":
+                        depth += 1
+                    elif text[i] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            return text[open_at + 1:i].strip()
+            start = text.rfind(marker, 0, start)
+    return None
+
+
+class MathScorer:
+    """Free-form maths answers (MATH-style LaTeX), compared by symbolic equivalence.
+
+    Asks for the answer in `\\boxed{}`, because answers like `\\frac{7}{4}` contain
+    braces that the `{final answer: ...}` format cannot hold. Two answers match
+    when math-verify finds them equivalent: `\\frac{7}{4}` and `1.75`, or
+    `(3, \\pi/2)` and `\\left( 3, \\frac{\\pi}{2} \\right)`.
+
+    `strict` reads only the last `\\boxed{}`. `lenient` falls back to a
+    `final answer:` line and then the last `$...$`. This shape has no earlier
+    results to reproduce, so the two modes differ only in that fallback.
+
+    A team's answer is a vote over equivalence classes, not over strings, so
+    three agents writing `0.5`, `\\frac{1}{2}` and `1/2` agree.
+
+    Needs `math-verify` (pinned in requirements.txt), imported only when a
+    maths answer is scored.
+    """
+
+    name = "math"
+
+    def __init__(self, mode: str = STRICT):
+        self.mode = mode
+
+    def instruction_suffix(self, style: str = "plain") -> str:
+        if style == "bae":
+            return " Make sure to state your answer at the end of the response."
+        if style == "cot":
+            return (" Make sure to state your final answer in a LaTeX box at the very end of your"
+                    " response, just like: '\\boxed{\\frac{1}{2}}'. Let's think step by step.")
+        return (" Make sure to state your final answer in a LaTeX box at the very end of your"
+                " response, just like: \"\\boxed{\\frac{1}{2}}\".")
+
+    def normalise_gold(self, gold: Any) -> Any:
+        return str(gold).strip()
+
+    def _parse(self, latex: str):
+        import logging
+        import threading
+        from math_verify import parse
+        # It warns on every call made without its signal-based timeout, which is
+        # every call on a worker thread; the length cap above stands in for it.
+        logging.getLogger("math_verify").setLevel(logging.ERROR)
+        timeout = 5 if threading.current_thread() is threading.main_thread() else None
+        return parse(f"${latex}$", parsing_timeout=timeout)
+
+    def _equivalent(self, gold_latex: str, answer_latex: str) -> bool:
+        if len(gold_latex) > MATH_MAX_CHARS or len(answer_latex) > MATH_MAX_CHARS:
+            return gold_latex == answer_latex
+        import threading
+        from math_verify import verify
+        gold, answer = self._parse(gold_latex), self._parse(answer_latex)
+        if not gold or not answer:
+            return gold_latex.replace(" ", "") == answer_latex.replace(" ", "")
+        timeout = 5 if threading.current_thread() is threading.main_thread() else None
+        return bool(verify(gold, answer, timeout_seconds=timeout))
+
+    def extract(self, text: str) -> Prediction:
+        answer = last_boxed(text)
+        if answer is None and self.mode == LENIENT:
+            line = re.findall(r"final answer\s*:?\s*(.+)", text or "", re.IGNORECASE)
+            dollars = re.findall(r"\$([^$]+)\$", text or "")
+            answer = (line[-1].strip().strip("$. ") if line else None) or (dollars[-1].strip() if dollars else None)
+        if not answer:
+            return Prediction.unparsed(raw=text or "")
+        return Prediction(value=answer, parsed=True, raw=answer)
+
+    def correct(self, prediction: Prediction, gold: Any, instance=None) -> bool:
+        if not prediction.parsed:
+            return False
+        return self._equivalent(str(gold), str(prediction.value))
+
+    def aggregate(self, predictions: Sequence[Prediction], rng=None) -> Prediction:
+        """Majority over equivalence classes; ties broken as `_majority` breaks them."""
+        classes = []  # [representative value, count]
+        for prediction in predictions:
+            if not prediction.parsed:
+                continue
+            for cls in classes:
+                if self._equivalent(cls[0], str(prediction.value)):
+                    cls[1] += 1
+                    break
+            else:
+                classes.append([str(prediction.value), 1])
+        if not classes:
+            return Prediction.unparsed()
+        top = max(count for _, count in classes)
+        tied = [value for value, count in classes if count == top]
+        winner = (rng or random).choice(tied)
+        return Prediction(value=winner, parsed=True, raw=winner)
+
+
+def score_responses(scorer, responses: dict, gold: Any, rng=None, instance=None) -> ScoreResult:
     """Score one question across a team.
 
     `responses` is `{agent_name: text}`; ordering is the caller's contract, as
@@ -234,7 +353,7 @@ def score_responses(scorer, responses: dict, gold: Any, rng=None) -> ScoreResult
     return ScoreResult(
         predictions=predictions,
         aggregate=aggregate,
-        correct=scorer.correct(aggregate, gold),
+        correct=scorer.correct(aggregate, gold, instance=instance),
         gold=gold,
     )
 
@@ -242,12 +361,14 @@ def score_responses(scorer, responses: dict, gold: Any, rng=None) -> ScoreResult
 SCORERS = {
     "numeric": NumericScorer,
     "mcq": MCQScorer,
+    "math": MathScorer,
 }
 
 # Which scorer the `--bae` flag swaps in for each answer type.
 BAE_SCORERS = {
     "numeric": BaseNumericScorer,
     "mcq": BaseMCQScorer,
+    "math": MathScorer,
 }
 
 

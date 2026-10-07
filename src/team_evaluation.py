@@ -130,11 +130,13 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
             config, sample["question"], gold, scorer=scorer, personas=personas,
             registry=registry, max_tokens=max_tokens, tie_break=tie_break,
             request_seed=None if request_seed is None or request_seed < 0 else request_seed,
+            instance=benchmarks.instance_of(sample),
         )
         by_id = {r["id"]: r for r in result["stages"]}
         result.update({
             "tags": sample.get("tags") or [],
             "dataset": sample.get("dataset"),
+            "question_id": benchmarks.instance_of(sample).id,
             "answer_type": answer_type,
             "question": sample["question"],
             "gold": str(gold),

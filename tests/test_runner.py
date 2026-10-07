@@ -283,6 +283,35 @@ check("report answer types", report["answer_types"], {"numeric": 1, "mcq": 1})
 check("report calls", report["calls"], 6)
 check("report config id", report["config_id"], team_config.vote([A, B, C]).config_id)
 
+# Every question reaches its scorer as an Instance, with its id and metadata.
+from benchmarks import scorers as scorer_module  # noqa: E402
+seen = []
+
+
+class RecordingScorer(scorer_module.NumericScorer):
+    name = "recording_test"
+
+    def correct(self, prediction, gold, instance=None):
+        seen.append(instance)
+        return super().correct(prediction, gold)
+
+
+scorer_module.SCORERS["recording_test"] = RecordingScorer
+benchmarks._load_registry()["recording_bench"] = benchmarks.ModuleBenchmark(
+    name="recording_bench", answer_type="recording_test", persona_set=[], _load=None)
+team_evaluation.registry_for = lambda args: FakeRegistry(FakeClient(answers, []))
+try:
+    row = {"question": QUESTION, "answer": "8", "dataset": "recording_bench", "tags": [],
+           "id": "recording_bench:q1", "metadata": '{"level": 5}'}
+    recorded = team_evaluation.run_team_evaluation([A, B], [row], Args())
+finally:
+    team_evaluation.registry_for = original
+    del scorer_module.SCORERS["recording_test"]
+    del benchmarks._load_registry()["recording_bench"]
+check("scorer sees the instance id", {i.id for i in seen}, {"recording_bench:q1"})
+check("scorer sees the metadata", seen[0].metadata, {"level": 5})
+check("sample records the question id", recorded["samples"][0]["question_id"], "recording_bench:q1")
+
 # A question nobody can score stops the batch before the first call.
 for label, bad, exc in [
     ("a question with no dataset field", {"question": QUESTION, "answer": "8", "tags": []}, ValueError),

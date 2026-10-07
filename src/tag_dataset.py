@@ -216,6 +216,12 @@ def parse_args():
         help="Drop tags occurring fewer than this many times",
     )
     parser.add_argument(
+        "--structural_tags",
+        action="store_true",
+        help="Add each question's structural tags (the labels its benchmark ships with, such as "
+             "'level: 5') to its tags, past the mapping and the frequency filter",
+    )
+    parser.add_argument(
         "--plot_path",
         default="data-claude/tag_frequencies.png",
         help="Where to write the tag frequency chart; empty string skips the plot",
@@ -242,8 +248,23 @@ def main():
         lambda tag_list: [tag for tag in tag_list if tag in valid_tags]
     )
 
-    # Select only needed columns
-    df_clean = df[["dataset", "question", "answer", "tags"]].copy()
+    # Structural tags are the benchmark's own labels: kept verbatim, never
+    # mapped or filtered, since their vocabulary is fixed by the benchmark.
+    if args.structural_tags and "structural_tags" in df.columns:
+        df["tags"] = [
+            tags + [t for t in (extra if isinstance(extra, list) else []) if t not in tags]
+            for tags, extra in zip(df["tags"], df["structural_tags"])
+        ]
+
+    # Select only needed columns. Pools built before ids and metadata existed
+    # (the 699-question one) have neither; readers default both.
+    columns = ["dataset", "question", "answer", "tags"]
+    if "id" in df.columns:
+        columns.insert(1, "id")
+    df_clean = df[columns].copy()
+    if "metadata" in df.columns:
+        df_clean["metadata"] = [json.dumps(m if isinstance(m, dict) else {}, ensure_ascii=False)
+                                for m in df["metadata"]]
 
     # Create datasets.Dataset from dataframe
     dataset = Dataset.from_pandas(df_clean)

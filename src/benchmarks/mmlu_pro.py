@@ -19,6 +19,8 @@ PERSONA_SET = []
 import pandas as pd
 from datasets import load_dataset
 
+from benchmarks.base import Instance
+
 LETTERS = "ABCDEFGHIJ"
 DEFAULT_CATEGORIES = ("law", "engineering", "physics", "chemistry")
 DEFAULT_PER_CATEGORY = 50
@@ -29,7 +31,7 @@ def categories(args):
     return tuple(chosen) or DEFAULT_CATEGORIES
 
 
-def load_data(args, split='test'):
+def load_instances(args, split='test'):
     split = 'validation' if split == 'train' else 'test'
     dataset = pd.DataFrame(load_dataset('TIGER-Lab/MMLU-Pro', cache_dir=args.data_dir)[split])
     chosen = categories(args)
@@ -46,12 +48,15 @@ def load_data(args, split='test'):
     ]
     picked = pd.concat(parts).sample(frac=1, random_state=0).reset_index(drop=True)
 
-    questions, labels = [], []
-    for question, options, answer in zip(picked['question'], picked['options'], picked['answer']):
-        body = "\n".join(f"({LETTERS[i]}) {str(text).strip()}" for i, text in enumerate(options))
-        questions.append(f"{str(question).strip()}\n{body}\n\n")
-        labels.append(f"({answer})")
-    return questions, labels
-
-
-load = load_data
+    instances = []
+    for _, row in picked.iterrows():
+        body = "\n".join(f"({LETTERS[i]}) {str(text).strip()}" for i, text in enumerate(row['options']))
+        instances.append(Instance(
+            question=f"{str(row['question']).strip()}\n{body}\n\n",
+            answer=f"({row['answer']})",
+            id=f"{NAME}:{row['question_id']}",
+            tags=[f"benchmark: {NAME}", f"subject: {row['category']}"],
+            metadata={"question_id": int(row['question_id']), "category": row['category'],
+                      "n_options": len(row['options']), "src": row['src']},
+        ))
+    return instances

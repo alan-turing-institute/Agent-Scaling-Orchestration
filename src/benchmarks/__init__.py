@@ -14,17 +14,20 @@ A module here declares:
     PERSONA_SET  the personas the paper assigned it
     load(args, split) -> (questions, labels)
 
-and optionally `fetch(args)`, for data its loader does not download itself.
+or, instead of `load`, `load_instances(args, split) -> list[Instance]` to attach
+ids, metadata and structural tags (the registry derives `load` from it). And
+optionally `fetch(args)`, for data its loader does not download itself.
 """
 
 from __future__ import annotations
 
 import importlib
+import json
 import threading
 from dataclasses import dataclass
 from typing import Any
 
-from benchmarks.base import Instance, Prediction, ScoreResult, load_instances
+from benchmarks.base import Instance, Prediction, ScoreResult, load_instances, question_id
 from benchmarks.scorers import LENIENT, STRICT, get_scorer, score_responses
 
 # module path -> imported lazily, so one benchmark's optional dependency cannot
@@ -41,6 +44,7 @@ _MODULES = [
     "benchmarks.gpqa_diamond",
     "benchmarks.mmlu_pro",
     "benchmarks.aime",
+    "benchmarks.math500",
 ]
 
 
@@ -54,11 +58,18 @@ class ModuleBenchmark:
     _load: Any
     # Optional: downloads the loader does not do itself (scripts/fetch_benchmarks.py).
     fetch: Any = None
+    # Optional: the module's own `load_instances`, with ids, metadata and structural tags.
+    _instances: Any = None
 
     def load(self, args, split: str = "test"):
+        if self._load is None:
+            instances = self._instances(args, split=split)
+            return [i.question for i in instances], [i.answer for i in instances]
         return self._load(args, split=split)
 
     def instances(self, args, split: str = "test") -> list[Instance]:
+        if self._instances is not None:
+            return self._instances(args, split=split)
         return load_instances(self, args, split=split)
 
     def scorer(self, mode: str = STRICT, bae: bool = False):
@@ -80,9 +91,12 @@ def _load_registry() -> dict[str, ModuleBenchmark]:
             name=module.NAME,
             answer_type=module.ANSWER_TYPE,
             persona_set=list(module.PERSONA_SET),
-            _load=module.load,
+            _load=getattr(module, "load", None),
             fetch=getattr(module, "fetch", None),
+            _instances=getattr(module, "load_instances", None),
         )
+        if benchmark._load is None and benchmark._instances is None:
+            raise TypeError(f"{path} defines neither load nor load_instances")
         _REGISTRY[benchmark.name] = benchmark
     return _REGISTRY
 
@@ -158,6 +172,30 @@ class ScorerSet:
         return answer_type, self.get(answer_type)
 
 
+def metadata_of(sample) -> dict:
+    """A tagged row's metadata: stored as a JSON string, absent in older pools."""
+    raw = sample.get("metadata") if hasattr(sample, "get") else None
+    if not raw:
+        return {}
+    return raw if isinstance(raw, dict) else json.loads(raw)
+
+
+def instance_of(sample) -> Instance:
+    """A tagged row as an `Instance`, for scorers that read more than the gold answer.
+
+    Rows from the 699-question pool predate ids and metadata; they get the id
+    the registry would have given them and empty metadata.
+    """
+    question = sample["question"]
+    return Instance(
+        question=question,
+        answer=sample["answer"],
+        tags=list(sample.get("tags") or []),
+        metadata=metadata_of(sample),
+        id=sample.get("id") or question_id(sample.get("dataset") or "", question),
+    )
+
+
 def persona_set(name: str) -> list[str]:
     return list(get(name).persona_set)
 
@@ -178,8 +216,11 @@ __all__ = [
     "answer_type_of_sample",
     "get",
     "get_scorer",
+    "instance_of",
     "list_names",
+    "metadata_of",
     "persona_set",
+    "question_id",
     "score_responses",
     "scorer_for",
 ]

@@ -103,13 +103,15 @@ def _transition(previous_correct: Optional[bool], correct: bool) -> Optional[str
 
 def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, personas: Dict,
                  registry, max_tokens: int, tie_break: str = "seeded", tie_break_seed: int = 0,
-                 request_seed: Optional[int] = 0) -> Dict:
+                 request_seed: Optional[int] = 0, instance=None) -> Dict:
     """Run `config` on one question and return a record of every stage.
 
     `gold` must already be normalised by `scorer.normalise_gold`. Connection and
     timeout errors propagate, so the caller's retry can wait out a restarting
     server; any other failure in a stage is recorded and scores as unanswered,
-    as a failed agent call always has.
+    as a failed agent call always has. `instance` is the question as a
+    `benchmarks.Instance`, handed to `scorer.correct` for scorers that read
+    more than the gold answer.
     """
     if tie_break not in TIE_BREAKS:
         raise ValueError(f"unknown tie_break {tie_break!r}; known: {TIE_BREAKS}")
@@ -188,7 +190,7 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
             prediction = scorer.extract(record["response"])
             record["prediction"] = str(prediction.legacy)
             record["parsed"] = prediction.parsed
-            record["correct"] = bool(scorer.correct(prediction, gold))
+            record["correct"] = bool(scorer.correct(prediction, gold, instance=instance))
             results[record["id"]] = record
             predictions[record["id"]] = prediction
 
@@ -215,7 +217,7 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
             reference = "vote"
             rng = random.Random(_stable_int(tie_break_seed, qkey, stage.id))
             theirs = scorer.aggregate([predictions[i.source] for i in stage.inputs], rng=rng)
-            their_correct = bool(scorer.correct(theirs, gold))
+            their_correct = bool(scorer.correct(theirs, gold, instance=instance))
         else:
             reference = stage.inputs[-1].source
             theirs, their_correct = predictions[reference], results[reference]["correct"]
@@ -238,7 +240,7 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
         "answer_stages": answer_ids,
         "aggregate": config.aggregate,
         "team_answer": str(team_prediction.legacy),
-        "team_correct": bool(scorer.correct(team_prediction, gold)),
+        "team_correct": bool(scorer.correct(team_prediction, gold, instance=instance)),
         "calls": len(stage_records),
         "depth": len(config.layers()),
         "prompt_tokens": sum(r["prompt_tokens"] or 0 for r in stage_records),

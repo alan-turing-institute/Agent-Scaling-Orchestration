@@ -6,7 +6,9 @@
 #   2. canonicalise_tags.py --extend grows data-claude/tag_mapping.json to cover
 #      the new tags without changing any existing entry, so the 699-question pool
 #      keeps its tags exactly and the new pool reuses them where they overlap.
-#   3. tag_dataset.py applies the mapping, drops rare tags and saves the pool.
+#   3. tag_dataset.py applies the mapping, drops rare tags, adds each question's
+#      structural tags (the labels its benchmark ships with, e.g. "level: 5")
+#      and saves the pool, with question ids and metadata.
 #
 #   POOL=hard DATA="gpqa_diamond mmlu_pro aime" ./scripts/build_pool.sh
 #
@@ -44,6 +46,6 @@ $PYTHON src/canonicalise_tags.py --tags_file "$TAGS" --extend "$BASE_MAPPING" \
     --out_file "$MAPPING" --model "$MODEL" --api_base_url "$API" | tail -4
 
 echo "=== 3/3 saving the pool ==="
-$PYTHON src/tag_dataset.py --tags_file "$TAGS" --tag_mapping "$MAPPING" --threshold "$THRESHOLD" \
+$PYTHON src/tag_dataset.py --tags_file "$TAGS" --tag_mapping "$MAPPING" --threshold "$THRESHOLD" --structural_tags \
     --out_dir "$OUT" --plot_path "data-claude/tag_frequencies_${POOL}.png" | grep -E "Total number|Unique tags|^  - [a-z_]+: [0-9]+$" | head -12
 echo "pool written to $OUT"
