@@ -716,6 +716,49 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
     - doing nothing passes 124 tasks, upstream's figure;
     - forks are independent;
     - on the stand-in server, all four arms and all six topologies run.
+- **H5 in code (2026-10-07).**
+  - **`judge.Judge` (the rest of C13):**
+    - BrowseComp-Plus's own grader prompt and parser;
+    - rubric lines one at a time, with the contradiction line asked as "does
+      it contradict?", fixing the paper's inversion;
+    - verdicts cached;
+    - `--judge_model` passed by both drivers, defaulting to the
+      orchestrator's model.
+  - **`browsecomp_plus`:**
+    - the paper's 100 questions over the 100,195-page corpus (downloaded,
+      1.7 GB);
+    - BM25 via `bm25s`, which runs on ARM; the paper's dense retriever
+      does not;
+    - `scripts/build_browsecomp_index.py`.
+  - **`finance_agent`:**
+    - the 50 public questions;
+    - EDGAR full-text search, page store, sandboxed Python;
+    - everything online gated by `FINANCE_AGENT_ONLINE=1`, cached on disk,
+      rate-limited.
+  - **Checked:**
+    - a 2,568-document evidence index builds in 13 s at 0.6 GB;
+    - BM25 on the raw question text puts an evidence document in the top 5
+      for 35/100;
+    - on the stand-in server, all four arms run on both;
+    - the offline tests cover the judge, both environments, stubbed network
+      calls and the rubric scoring.
+  - **Waiting on decisions or until E2 ends:**
+    - **Full index.** The full BrowseComp-Plus build (8–10 GB peak) waits for E2.
+    - **External access.** Finance-Agent's online tools wait for a decision on
+      external calls; without them it can only be answered from memory.
+    - **Web search.** It needs a Tavily key and is not implemented beyond its
+      schema.
+
+**All of H1–H5 is now in code.** SWE-bench and Terminal-Bench stay out, per
+§6.2. Before the first real sweep, once E2 frees the servers:
+
+1. Add the tool-calling flags to the serve scripts.
+2. Build the full BrowseComp-Plus index.
+3. Build the pools with `scripts/build_pool.sh` (`hard`: gpqa_diamond mmlu_pro
+   aime math500; `agentic`: plancraft workbench browsecomp_plus
+   [finance_agent]).
+4. Run bare-model screens and the tool-calling screen.
+5. Hand-check 50 MATH responses.
 - **Waits:** tagging the new pool, the bare-model screens and every arm. Tagging
   uses the 35B, which the E2 sweep is using as its orchestrator on :8002. Any
   extra load on :8001/:8002 changes the sweep's answers, because the servers'

@@ -21,6 +21,7 @@ optionally `fetch(args)`, for data its loader does not download itself.
 
 from __future__ import annotations
 
+import functools
 import importlib
 import json
 import threading
@@ -48,6 +49,8 @@ _MODULES = [
     # Agentic (H3 onwards): graded on the environment's outcome.
     "benchmarks.plancraft",
     "benchmarks.workbench",
+    "benchmarks.browsecomp_plus",
+    "benchmarks.finance_agent",
 ]
 
 
@@ -67,6 +70,19 @@ class ModuleBenchmark:
     # cap on an agent's turns (see benchmarks.environment).
     environment: Any = None
     max_steps: Any = None
+    # Graded by an LLM judge: its environment takes `judge=` (see judge.py).
+    judged: bool = False
+
+    def environment_for(self, judge=None):
+        """This benchmark's environment factory, given the run's judge when it needs one."""
+        if self.environment is None:
+            return None
+        if not self.judged:
+            return self.environment
+        if judge is None:
+            raise ValueError(f"{self.name} is graded by an LLM judge: pass --judge_model "
+                             f"(and --judge_api_base_url)")
+        return functools.partial(self.environment, judge=judge)
 
     def load(self, args, split: str = "test"):
         if self._load is None:
@@ -103,6 +119,7 @@ def _load_registry() -> dict[str, ModuleBenchmark]:
             _instances=getattr(module, "load_instances", None),
             environment=getattr(module, "ENVIRONMENT", None),
             max_steps=getattr(module, "MAX_STEPS", None),
+            judged=bool(getattr(module, "JUDGED", False)),
         )
         if (benchmark.answer_type == "outcome") != (benchmark.environment is not None):
             raise TypeError(f"{path}: answer type 'outcome' and ENVIRONMENT go together")

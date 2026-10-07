@@ -56,6 +56,9 @@ LABEL=${LABEL:?set LABEL, used as the output directory name}
 API=${API:-http://127.0.0.1:8001/v1}
 ORCH_MODEL=${ORCH_MODEL:-nvidia/Qwen3.6-35B-A3B-NVFP4}
 ORCH_API=${ORCH_API:-http://127.0.0.1:8002/v1}
+# The LLM judge for judged benchmarks (BrowseComp-Plus, Finance-Agent); unused by the rest.
+JUDGE_MODEL=${JUDGE_MODEL:-$ORCH_MODEL}
+JUDGE_API=${JUDGE_API:-$ORCH_API}
 ITERATIONS=${ITERATIONS:-30}
 ARMS=${ARMS:-"bare_model random no_memory continual"}
 TEAM_SIZE=${TEAM_SIZE:-4}
@@ -96,13 +99,14 @@ run_arm() {  # arm split out log
     echo "=== $out starting $(date -u +%FT%TZ) ==="
     loop="--dataset_path $DATASET --model_name $MODEL --api_base_url $API $split \
         --num_samples 5 --team_size $TEAM_SIZE --seed 0 --test_batch_size 5 --eval_workers 5 \
-        --max_new_tokens $MAX_TOKENS"
+        --max_new_tokens $MAX_TOKENS --judge_model $JUDGE_MODEL --judge_api_base_url $JUDGE_API"
     orch="--orchestrator_model $ORCH_MODEL --orchestrator_api_base_url $ORCH_API"
     # shellcheck disable=SC2086
     case $arm in
         bare_model)
             $PYTHON -u scripts/bare_model_baseline.py --dataset_path "$DATASET" \
                 --model_name "$MODEL" --api_base_url "$API" $split --max_tokens "$MAX_TOKENS" \
+                --judge_model "$JUDGE_MODEL" --judge_api_base_url "$JUDGE_API" \
                 --out_dir "$out" > "$log" 2>&1 ;;
         random)
             $PYTHON -u src/train_orchestrator.py $loop --iterations 0 \

@@ -346,6 +346,25 @@ episode on agentic tasks.
   all` for 690, `v1` for the 2024 wording. Replaying all 690 ground truths as tool calls grades
   690/690; doing nothing passes the 124 tasks upstream reports.
 
+- `browsecomp_plus` — the paper's 100 questions over BrowseComp-Plus's fixed 100,195-page corpus,
+  searched with BM25 (`bm25s`; the paper's dense retriever needs flash-attn, which has no ARM build,
+  so numbers are BM25 numbers). Tools: search (top 5, ~2,000-char snippets), get_document (clipped
+  at 12,000 chars), done. Graded by the judge with BrowseComp-Plus's own grader. `fetch` downloads
+  questions, qrels and corpus; the index is separate: `scripts/build_browsecomp_index.py` (full
+  build 8–10 GB peak, so not while a sweep runs), or `--subset evidence` (2,568 docs, 0.6 GB) for
+  tests, selected with `BROWSECOMP_INDEX`.
+- `finance_agent` — Vals AI's 50 public questions. Tools: edgar_search (EDGAR's free full-text
+  search), parse_html_page / read_page / search_page, python (separate interpreter, CPU and
+  memory capped, not network-isolated), submit_final_result. Everything that goes online is off
+  unless `FINANCE_AGENT_ONLINE=1` (plus `SEC_USER_AGENT`), cached on disk, and rate-limited to
+  5/s. Graded per rubric line by the judge; correct at ≥ 0.5, with the contradiction line asked as
+  "does it contradict?" (the paper's grader inverted it).
+
+Judged benchmarks (`JUDGED = True`) take `judge=` in their environment factory;
+`ModuleBenchmark.environment_for(judge)` supplies it and refuses to run without one. `judge.Judge`
+(from `--judge_model`/`--judge_api_base_url`; the drivers default it to the orchestrator's model)
+caches verdicts per prompt and counts its tokens apart from the agents'.
+
 `tests/test_agentic.py` covers the loop, every topology on a toy environment, delegation and traces;
 the mock server answers requests that offer tools with deterministic tool calls.
 

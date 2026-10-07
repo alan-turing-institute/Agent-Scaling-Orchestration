@@ -157,6 +157,9 @@ def reply_for(messages):
         return assign_reply(prompt)
     if "orchestrator agent responsible for assembling teams" in everything:
         return selection_reply(prompt)
+    if "Judge whether the following [response]" in everything:
+        verdict = "yes" if digest(prompt, "judge") % 3 == 0 else "no"
+        return f"extracted_final_answer: mock\nreasoning: mock\ncorrect: {verdict}\nconfidence: 100"
     return answer_reply(prompt)
 
 

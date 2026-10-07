@@ -7,6 +7,9 @@
 #   pip install -r requirements-agentic.txt
 #   pip install --no-deps plancraft==0.4.9
 #
+# BrowseComp-Plus retrieval (BM25, pure Python; PyStemmer has an aarch64 wheel)
+bm25s==0.3.13
+PyStemmer==3.1.0
 loguru==0.7.3
 networkx==3.6.1
 pillow==12.3.0

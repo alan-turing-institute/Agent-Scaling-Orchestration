@@ -36,6 +36,7 @@ import benchmarks
 from benchmarks import score_responses
 from holdout_evaluation import _batch_indices, with_server_retry
 from episode import run_episode
+from judge import judge_from_args
 from predictions import SCHEMA_VERSION, split_traces, traces_path, write_predictions
 from runner import question_key
 from model.openai_compat import OpenAICompatChatWrapper
@@ -58,6 +59,8 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--max_tokens", type=int, default=4096)
+    parser.add_argument("--judge_model", default=None, help="LLM judge for judged benchmarks (BrowseComp-Plus, Finance-Agent)")
+    parser.add_argument("--judge_api_base_url", default=None)
     parser.add_argument("--max_inflight", type=int, default=0,
                         help="Cap on requests in flight; 1 makes greedy output reproducible")
     parser.add_argument("--parse_mode", choices=["strict", "lenient"], default="strict",
@@ -77,7 +80,7 @@ def attempt_task(agent, sample, scorer, answer_type, args):
     """
     benchmark = benchmarks.get(sample["dataset"])
     instance = benchmarks.instance_of(sample)
-    env = benchmark.environment(instance)
+    env = benchmark.environment_for(judge_from_args(args))(instance)
     episode, error_text = None, None
     try:
         episode = run_episode(agent, env, system="You are a helpful assistant.", user=env.task_prompt(),
@@ -236,6 +239,9 @@ def main():
     scorers = benchmarks.ScorerSet(mode=args.parse_mode)
     for sample in test_dataset:
         scorers.for_sample(sample)
+    judge = judge_from_args(args)
+    for name in set(test_dataset["dataset"]):
+        benchmarks.get(name).environment_for(judge)  # a judged benchmark without a judge stops here
 
     batches = _batch_indices(len(test_dataset), args.test_batch_size, args.split_seed)
     records_path = out_dir / "holdout_records.jsonl"

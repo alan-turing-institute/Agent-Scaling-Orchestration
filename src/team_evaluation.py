@@ -18,6 +18,7 @@ import team_config
 from model.model_utils import DEFAULT_MAX_NEW_TOKENS
 from personas import chosen_persona_bank
 from model.registry import ModelRegistry
+from judge import judge_from_args
 from runner import run_question
 
 
@@ -117,6 +118,11 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
     scorers = benchmarks.ScorerSet(mode=parse_mode)
     samples = [s if isinstance(s, dict) else dict(s) for s in sampled_questions]
     looked_up = [scorers.for_sample(sample) for sample in samples]
+    # Agentic benchmarks get their environment factory, with the judge for the
+    # judged ones; a judged benchmark without a judge stops here, before any call.
+    judge = judge_from_args(args)
+    environments = {name: benchmarks.get(name).environment_for(judge)
+                    for name in {sample["dataset"] for sample in samples}}
     tie_break = getattr(args, "tie_break", "seeded")
     request_seed = getattr(args, "request_seed", 0)
     max_tokens = getattr(args, "max_new_tokens", None) or DEFAULT_MAX_NEW_TOKENS
@@ -131,7 +137,7 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
             registry=registry, max_tokens=max_tokens, tie_break=tie_break,
             request_seed=None if request_seed is None or request_seed < 0 else request_seed,
             instance=benchmarks.instance_of(sample),
-            environment=benchmarks.get(sample["dataset"]).environment,
+            environment=environments[sample["dataset"]],
             max_steps=benchmarks.get(sample["dataset"]).max_steps,
         )
         by_id = {r["id"]: r for r in result["stages"]}

@@ -51,6 +51,10 @@ def add_runner_args(parser):
                              "global: the old behaviour, drawn from the global random state")
     parser.add_argument("--request_seed", type=int, default=0,
                         help="Base for the per-request seed sent with every call; -1 sends none")
+    parser.add_argument("--judge_model", default=None,
+                        help="Served name of the LLM judge, for benchmarks graded by one (BrowseComp-Plus, "
+                             "Finance-Agent). Never the agent model")
+    parser.add_argument("--judge_api_base_url", default=None, help="The judge's endpoint (default 8002)")
     parser.add_argument("--max_inflight", type=int, default=0,
                         help="Cap on agent requests in flight per server; 0 = no cap. 1 makes greedy "
                              "output reproducible: the servers' output depends on what else is in the batch")

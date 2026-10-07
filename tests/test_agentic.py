@@ -337,6 +337,115 @@ def test_workbench():
     check("unknown tools are an error message", env.call("email_nuke", {}).startswith("ERROR"), True)
 
 
+class FakeJudge:
+    """Says yes when the response contains `accept`; records every question it was asked."""
+
+    def __init__(self, accept):
+        self.accept, self.asked = accept, []
+
+    def answer_matches(self, question, response, correct_answer):
+        self.asked.append(("answer", response))
+        return self.accept in response, "correct: yes" if self.accept in response else "correct: no"
+
+    def criterion(self, question, response, criterion, operator):
+        self.asked.append((operator, criterion))
+        if operator == "contradiction":
+            return "WRONG" not in response, ""
+        return criterion in response, ""
+
+
+def test_judge():
+    import judge
+    check("bold verdict", judge.parse_verdict("**correct:** yes"), True)
+    check("plain verdict", judge.parse_verdict("reasoning: x\ncorrect: no\nconfidence: 90"), False)
+    check("no verdict", judge.parse_verdict("I think so"), None)
+    calls = []
+
+    class Client:
+        def generate(self, messages, **kwargs):
+            calls.append(messages)
+            return Completion(content="reasoning: fine\ncorrect: yes", prompt_tokens=3, completion_tokens=2)
+
+    j = judge.Judge(Client())
+    first = j.answer_matches("q", "Exact Answer: 4", "4")
+    again = j.answer_matches("q", "Exact Answer: 4", "4")
+    check("verdict", first[0], True)
+    check("the same question is judged once", (len(calls), again[0]), (1, True))
+    check("contradiction asks the right question", "does NOT contradict" in judge.CRITERION_TEMPLATES["contradiction"], True)
+    raises("unknown rubric operator", lambda: j.criterion("q", "r", "c", "vibes"), ValueError)
+    raises("a judged benchmark with no judge", lambda: benchmarks.get("finance_agent").environment_for(None), ValueError)
+    check("unjudged benchmarks ignore the judge", benchmarks.get("plancraft").environment_for(None) is not None, True)
+
+
+def test_browsecomp_environment():
+    from benchmarks.browsecomp_plus import BrowseCompTask
+
+    class FakeRetriever:
+        index_dir = "fake"
+
+        def search(self, query, k=5):
+            return [("d1", 3.0), ("d2", 1.0)] if "curie" in query.lower() else []
+
+        def text(self, docid):
+            return {"d1": ("Marie Curie won two Nobel prizes. " * 10, "https://x/1"),
+                    "d2": ("Pierre", "https://x/2")}.get(docid)
+
+    metadata = {"question": "Who won two Nobel prizes?", "answer": "Marie Curie"}
+    fake = FakeJudge("Marie Curie")
+    env = BrowseCompTask(metadata, fake, retriever=FakeRetriever())
+    check("search returns hits with snippets", json.loads(env.call("search", {"query": "Curie"}))[0]["docid"], "d1")
+    check("a search with no hits says so", env.call("search", {"query": "zebra"}), "No documents matched.")
+    check("an unknown docid is an error", env.call("get_document", {"docid": "nope"}).startswith("ERROR"), True)
+    check("no answer fails without asking the judge", (env.outcome().success, fake.asked), (False, []))
+    env.call("done", {"answer": "Marie Curie", "confidence": 90})
+    outcome = env.outcome()
+    check("the judge grades the submitted answer", (outcome.success, outcome.fingerprint), (True, "answer:marie curie"))
+    twin = env.fork()
+    twin.resume()
+    check("resume lets the next agent revise the answer", (twin.done, twin.answer, env.answer), (False, None, "Marie Curie"))
+
+
+def test_finance_environment():
+    import os
+    from benchmarks import finance_agent
+    metadata = {"question": "What was revenue?", "answer": "$5B",
+                "rubric": [{"operator": "correctness", "criteria": "$5B"},
+                           {"operator": "correctness", "criteria": "2024"},
+                           {"operator": "contradiction", "criteria": "$5B"}], "root": tempfile.mkdtemp()}
+    env = finance_agent.FinanceTask(metadata, FakeJudge(""))
+    os.environ.pop("FINANCE_AGENT_ONLINE", None)
+    check("offline, EDGAR is refused", env.call("edgar_search", {"query": "x"}), finance_agent.OFFLINE)
+    check("no web_search without a key", "web_search" in [t["function"]["name"] for t in env.tools()], False)
+
+    pages = {"https://efts.sec.gov": json.dumps({"hits": {"hits": [{"_id": "0001-23-000001:doc.htm", "_source": {
+        "ciks": ["0000320193"], "display_names": ["Apple"], "form": "10-K", "file_date": "2024-11-01"}}]}}),
+             "https://www.sec.gov/page": "<html><body><p>Revenue was $5B in 2024.</p><script>x</script></body></html>"}
+    original = finance_agent.http_get
+    finance_agent.http_get = lambda url, root, headers=None: (200, next(v for k, v in pages.items() if url.startswith(k)))
+    os.environ["FINANCE_AGENT_ONLINE"] = "1"
+    try:
+        hits = json.loads(env.call("edgar_search", {"query": "revenue", "end_date": "2030-01-01"}))
+        check("EDGAR hits become filing URLs", hits[0]["url"], "https://www.sec.gov/Archives/edgar/data/320193/000123000001/doc.htm")
+        env.call("parse_html_page", {"url": "https://www.sec.gov/page", "key": "k"})
+        check("stored page text, without the script", env.pages["k"], "Revenue was $5B in 2024.")
+        check("search_page finds a phrase", "[12]" in env.call("search_page", {"key": "k", "query": "$5b"}), True)
+        check("read_page reads from a position", env.call("read_page", {"key": "k", "start": 12}).split("\n")[1], "$5B in 2024.")
+    finally:
+        finance_agent.http_get = original
+        os.environ.pop("FINANCE_AGENT_ONLINE", None)
+
+    env.call("submit_final_result", {"final_result": "Revenue was $5B in 2024."})
+    outcome = env.outcome()
+    check("all criteria pass", (outcome.success, outcome.detail["rubric_score"]), (True, 1.0))
+    wrong = finance_agent.FinanceTask(metadata, FakeJudge(""))
+    wrong.call("submit_final_result", {"final_result": "WRONG: revenue was $5B in 2024"})
+    check("a contradiction fails its line; 2 of 3 still passes", (wrong.outcome().success, wrong.outcome().detail["rubric_score"]),
+          (True, 0.667))
+    bad = finance_agent.FinanceTask(metadata, FakeJudge(""))
+    bad.call("submit_final_result", {"final_result": "WRONG"})
+    check("below half fails", bad.outcome().success, False)
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

@@ -45,6 +45,8 @@ PORTS=${PORTS:-"8001 8001"}
 MAX_INFLIGHT=${MAX_INFLIGHT:-0}
 ORCH_MODEL=${ORCH_MODEL:-nvidia/Qwen3.6-35B-A3B-NVFP4}
 ORCH_API=${ORCH_API:-http://127.0.0.1:8002/v1}
+JUDGE_MODEL=${JUDGE_MODEL:-$ORCH_MODEL}   # for judged benchmarks only
+JUDGE_API=${JUDGE_API:-$ORCH_API}
 ITERATIONS=${ITERATIONS:-30}
 FOLDS=${FOLDS:-"0 1 2 3 4"}
 SELECTIONS=${SELECTIONS:-"continual no_memory random"}
@@ -98,6 +100,7 @@ run_job() {  # port fold selection topology
     echo "=== $(date -u +%FT%TZ) :$port $out starting ==="
 
     common="--dataset_path $DATASET --model_name $MODEL --api_base_url $api --max_new_tokens $MAX_TOKENS \
+        --judge_model $JUDGE_MODEL --judge_api_base_url $JUDGE_API \
         --split_seed 0 --n_folds 5 --fold $fold --num_samples 5 --team_size 4 --seed 0 \
         --test_batch_size 5 --eval_workers 5 --summary_every 1 \
         --topology $topology --rounds 1 --handoff full --max_inflight $MAX_INFLIGHT"
