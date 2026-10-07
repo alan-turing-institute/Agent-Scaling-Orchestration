@@ -355,10 +355,13 @@ episode on agentic tasks.
   tests, selected with `BROWSECOMP_INDEX`.
 - `finance_agent` — Vals AI's 50 public questions. Tools: edgar_search (EDGAR's free full-text
   search), parse_html_page / read_page / search_page, python (separate interpreter, CPU and
-  memory capped, not network-isolated), submit_final_result. External calls are on by default
-  (`FINANCE_AGENT_ONLINE=0` turns them off), need `SEC_USER_AGENT` ("Org name contact@email",
-  which the SEC requires), are cached on disk under `finance-agent/http-cache/`, and rate-limited
-  to 5/s. Graded per rubric line by the judge; correct at ≥ 0.5, with the contradiction line asked as
+  memory capped, not network-isolated), web_search, submit_final_result. External calls are on by
+  default (`FINANCE_AGENT_ONLINE=0` turns them off), cached on disk under `finance-agent/http-cache/`
+  and rate-limited to 5/s. The SEC's required contact comes from `SEC_USER_AGENT`, else
+  `data-claude/benchmarks/finance-agent/sec_user_agent.txt` (git-ignored, so no address is
+  committed). `web_search` queries a local SearXNG (`scripts/searxng/run.sh`: self-hosted
+  metasearch, no key or quota, 127.0.0.1:8888 or `SEARXNG_URL`), offered only when it answers;
+  unlike EDGAR it cannot cap results at 2025-04-07. Graded per rubric line by the judge; correct at ≥ 0.5, with the contradiction line asked as
   "does it contradict?" (the paper's grader inverted it).
 
 Judged benchmarks (`JUDGED = True`) take `judge=` in their environment factory;

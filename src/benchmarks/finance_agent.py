@@ -17,7 +17,11 @@ turns every tool that leaves the machine off, for an offline run. Online:
   upstream's does; `read_page` and `search_page` then read slices of it.
   Upstream reads stored pages with an LLM call (`retrieve_information`); here
   the agent reads them itself, so no model call hides outside its own budget.
-- `web_search` exists only when `TAVILY_API_KEY` is set, as upstream's does.
+- `web_search` queries a local SearXNG (`scripts/searxng/run.sh`, at
+  `SEARXNG_URL`, default http://127.0.0.1:8888), a self-hosted metasearch
+  engine with no key and no quota, standing in for upstream's Tavily. The
+  tool is offered only when that server answers. SearXNG cannot cap results
+  at a date, so unlike EDGAR, web results can postdate 2025-04-07.
 
 Every response from the network is cached on disk under
 `<data_dir>/finance-agent/http-cache/`, so a rerun asks the SEC nothing new.
@@ -89,15 +93,47 @@ OFFLINE = ("ERROR: external access is off for this run (FINANCE_AGENT_ONLINE=0).
            "you know.")
 
 
-def http_get(url, root, headers=None):
-    """GET with an on-disk cache and the SEC's rate limit. Returns (status, text)."""
+def sec_user_agent(root):
+    """The declared contact the SEC requires: `SEC_USER_AGENT`, else `<root>/sec_user_agent.txt`.
+
+    The file lives under the git-ignored data directory, so a contact address
+    is set once per machine and never committed.
+    """
+    if os.environ.get("SEC_USER_AGENT"):
+        return os.environ["SEC_USER_AGENT"]
+    path = Path(root) / "sec_user_agent.txt"
+    return path.read_text().strip() if path.exists() else None
+
+
+SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://127.0.0.1:8888").rstrip("/")
+_SEARXNG = {}
+
+
+def searxng_available():
+    """Whether the local SearXNG answers; asked once per process."""
+    if "up" not in _SEARXNG:
+        try:
+            with urllib.request.urlopen(f"{SEARXNG_URL}/healthz", timeout=3) as response:
+                _SEARXNG["up"] = response.status == 200
+        except Exception:
+            _SEARXNG["up"] = False
+    return _SEARXNG["up"]
+
+
+def http_get(url, root, headers=None, needs_contact=True):
+    """GET with an on-disk cache and the SEC's rate limit. Returns (status, text).
+
+    `needs_contact`: the request goes to the SEC, which requires a declared
+    contact in the User-Agent; the local SearXNG does not.
+    """
     cache = Path(root) / "http-cache" / (hashlib.sha1(url.encode("utf-8")).hexdigest() + ".json")
     if cache.exists():
         cached = json.loads(cache.read_text())
         return cached["status"], cached["text"]
-    agent = os.environ.get("SEC_USER_AGENT")
+    agent = sec_user_agent(root) or ("" if needs_contact else "agent-scaling-orchestration")
     if not agent:
-        return 0, "ERROR: set SEC_USER_AGENT to an organisation and contact email; the SEC requires it"
+        return 0, ("ERROR: set SEC_USER_AGENT (or write <data_dir>/finance-agent/sec_user_agent.txt) "
+                   "to an organisation and contact email; the SEC requires it")
     with _RATE_LOCK:
         wait = 0.2 - (time.monotonic() - _LAST_REQUEST[0])
         if wait > 0:
@@ -204,8 +240,9 @@ class FinanceTask:
                                                  "end the task.",
                           {"final_result": {"type": "string"}}, ["final_result"]),
         ]
-        if os.environ.get("TAVILY_API_KEY") and online():
-            tools.insert(0, function_tool("web_search", "Search the web.",
+        if online() and searxng_available():
+            tools.insert(0, function_tool("web_search", "Search the web. Returns titles, URLs and snippets; "
+                                                        "store a page with parse_html_page to read it.",
                                           {"query": {"type": "string"}}, ["query"]))
         return tools
 
@@ -267,7 +304,13 @@ class FinanceTask:
         return f"Stored {len(self.pages[key])} characters under {key!r}. Stored pages: {sorted(self.pages)}"
 
     def _web_search(self, args):
-        return "ERROR: web_search is not implemented beyond its schema yet"
+        query = urllib.parse.urlencode({"q": str(args.get("query", "")), "format": "json", "language": "en"})
+        status, text = http_get(f"{SEARXNG_URL}/search?{query}", self.root, needs_contact=False)
+        if status != 200:
+            return text if text.startswith("ERROR") else f"ERROR: web search returned {status}"
+        results = [{"title": r.get("title"), "url": r.get("url"), "snippet": (r.get("content") or "")[:300],
+                    "published": r.get("publishedDate")} for r in json.loads(text).get("results", [])[:8]]
+        return json.dumps(results, indent=1, ensure_ascii=False) if results else "No results."
 
     def resume(self):
         """The next agent may revise a submitted answer; stored pages stay."""
