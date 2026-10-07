@@ -47,6 +47,7 @@ _MODULES = [
     "benchmarks.math500",
     # Agentic (H3 onwards): graded on the environment's outcome.
     "benchmarks.plancraft",
+    "benchmarks.workbench",
 ]
 
 

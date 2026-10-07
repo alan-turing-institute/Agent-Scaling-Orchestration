@@ -300,6 +300,43 @@ def test_plancraft():
     check("search answers with a recipe", "recipe" in env.call("search", {"recipe_name": possible.metadata["target"]}).lower(), True)
 
 
+def test_workbench():
+    import ast
+    import re
+    from benchmarks import workbench
+    if not (workbench.upstream_root() / "src" / "tools" / "state.py").exists():
+        print("  (WorkBench not fetched; skipping its checks: scripts/fetch_benchmarks.py workbench)")
+        return
+    bench = benchmarks.get("workbench")
+    instances = bench.instances(SimpleNamespace(data_dir=str(workbench.upstream_root().parent), data_size=0,
+                                                sub_data=""), "test")
+    check("the paper's 100", len(instances), 100)
+
+    def replay(instance, stopped="reply"):
+        env = bench.environment(instance)
+        for action in instance.metadata["ground_truth"]:
+            tree = ast.parse(action, mode="eval").body
+            parts, node = [], tree.func
+            while isinstance(node, ast.Attribute):
+                parts.append(node.attr)
+                node = node.value
+            parts = [node.id] + parts[::-1]
+            env.call(re.sub(r"[^a-zA-Z0-9_-]", "_", ".".join(parts[:-1])),
+                     {k.arg: ast.literal_eval(k.value) for k in tree.keywords})
+        env.close(stopped)
+        return env
+
+    writing = next(i for i in instances if i.metadata["ground_truth"])
+    check("ground truth, replayed as tool calls, grades correct", replay(writing).outcome().success, True)
+    check("the same calls at the turn cap grade wrong, as upstream", replay(writing, "max_steps").outcome().success, False)
+    env = bench.environment(writing)
+    env.close("reply")
+    check("doing nothing on a task that needs a change fails", env.outcome().success, False)
+    env = replay(writing)
+    check("a fork keeps the actions so far", env.fork().actions, env.actions)
+    check("unknown tools are an error message", env.call("email_nuke", {}).startswith("ERROR"), True)
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

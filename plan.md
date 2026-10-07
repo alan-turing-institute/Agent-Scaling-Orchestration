@@ -701,6 +701,21 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
       mistral` for Ministral. Don't edit `vllm/qwen3.5-0.8b/run_docker.sh`
       now: E2's server-config trials relaunch the server from it.
     - **Tool-calling screen.** 20 Plancraft items per agent model.
+- **H4 in code (2026-10-07): `workbench`.**
+  - **Upstream's own code.** Tools, sandbox data and `is_correct` grader come
+    from olly-styles/WorkBench, pinned at `49c7dfd`, fetched by
+    `scripts/fetch_benchmarks.py workbench`. Not the paper harness's stub.
+  - **Separate state per episode.** Each episode binds its own `ToolState` into
+    the thread only for a tool call, and grading runs unbound.
+  - **Ending.** A reply ends the task; the turn cap (20) grades wrong, as
+    upstream does.
+  - **Default set:** the paper's 100, reproduced from its sampling code and
+    matching its ids, on the current wording (`v1` for the 2024 wording).
+  - **Checked:**
+    - all 690 ground truths, replayed as tool calls on 8 threads, grade correct;
+    - doing nothing passes 124 tasks, upstream's figure;
+    - forks are independent;
+    - on the stand-in server, all four arms and all six topologies run.
 - **Waits:** tagging the new pool, the bare-model screens and every arm. Tagging
   uses the 35B, which the E2 sweep is using as its orchestrator on :8002. Any
   extra load on :8001/:8002 changes the sweep's answers, because the servers'

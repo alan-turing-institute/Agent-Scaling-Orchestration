@@ -79,6 +79,12 @@ class Environment(Protocol):
     # declaration that the task is impossible, a submitted answer - so a critic
     # can overrule them, while a state that is itself the goal (an item crafted)
     # stays done. Without it, a finished environment stays finished.
+    #
+    # Optional: `text_reply_ends = True` for tasks that end with a final message
+    # rather than a tool call (WorkBench): a reply without a tool call then ends
+    # the episode at once instead of drawing a nudge. And `close(stopped)`,
+    # called before `outcome()` with why the episode stopped ("done", "reply",
+    # "max_steps", ...), for tasks whose grade depends on it.
 
 
 def function_tool(name: str, description: str, properties: dict, required: Sequence[str] = ()) -> dict:

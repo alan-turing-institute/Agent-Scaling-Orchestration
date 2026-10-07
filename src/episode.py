@@ -72,6 +72,9 @@ def run_episode(client, env, *, system: str, user: str, max_steps: int, max_toke
         if not completion.tool_calls:
             steps.append({"turn": turn, "tool": None, "text": _clip(completion.text),
                           "completion_tokens": completion.completion_tokens})
+            if getattr(env, "text_reply_ends", False):
+                stopped = "reply"  # a task that ends with a final message (WorkBench)
+                break
             if nudged or not nudge:
                 stopped = "no_tool_call"
                 break
@@ -100,6 +103,8 @@ def run_episode(client, env, *, system: str, user: str, max_steps: int, max_toke
             stopped = "token_budget"
             break
 
+    if hasattr(env, "close"):
+        env.close(stopped)
     outcome = env.outcome()
     return {
         "response": final_text,

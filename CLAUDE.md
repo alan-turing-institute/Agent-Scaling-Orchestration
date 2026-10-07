@@ -335,6 +335,17 @@ episode on agentic tasks.
   `requirements-agentic.txt` (`plancraft` itself with `--no-deps`). Replaying the package's optimal
   plans through it succeeds on all 580.
 
+- `workbench` — upstream's own 27 tools, sandbox CSVs and grader (`is_correct`: replay the agent's
+  calls and the ground truth on fresh sandboxes, compare tables), fetched at a pinned commit into
+  `data-claude/benchmarks/workbench-upstream` (`scripts/fetch_benchmarks.py workbench`, or
+  `WORKBENCH_ROOT`). Upstream keeps the sandbox in a thread-local `ToolState`; each episode owns its
+  own and binds it only for the length of a tool call, and grading runs unbound so it can never
+  reset an episode's state. A reply without a tool call ends the task (`text_reply_ends`); hitting
+  the turn cap (20) grades wrong, as upstream does (`close(stopped)`). Default set: the paper's 100
+  (one `random.Random(42)` across domains in alphabetical order), current wording; `--sub_data
+  all` for 690, `v1` for the 2024 wording. Replaying all 690 ground truths as tool calls grades
+  690/690; doing nothing passes the 124 tasks upstream reports.
+
 `tests/test_agentic.py` covers the loop, every topology on a toy environment, delegation and traces;
 the mock server answers requests that offer tools with deterministic tool calls.
 
