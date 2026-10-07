@@ -8,17 +8,26 @@ This repository provides the codebase for studying **how scaling the number of h
 .
 ├── src/                          # Core source code
 │   ├── main.py                   # Main orchestration: debate/voting loop
-│   ├── evaluator.py              # Answer extraction & scoring (math, MCQ)
+│   ├── evaluator.py              # Backwards-compatible face of benchmarks/scorers.py
 │   ├── tag_questions.py          # Stage 1: LLM tags each question with capabilities
 │   ├── canonicalise_tags.py      # Stage 2: collapses near-duplicate tags into categories
 │   ├── tag_dataset.py            # Stage 3: applies the mapping, saves the tagged dataset
 │   ├── train_orchestrator.py     # Orchestrator loop: select team, score, summarise, repeat
 │   ├── team_evaluation.py        # Runs a selected team, scores per agent and per tag
+│   ├── team_config.py            # A team as a graph of stages: vote, debate, centralized, pipeline...
+│   ├── roles.py                  # Role templates and handoff formats, versioned
+│   ├── runner.py                 # Runs any team config on one question, scores every stage
+│   ├── holdout_evaluation.py     # Scores the frozen orchestrator on the held-out split
+│   ├── splits.py                 # Train/test split and k-fold partition, shared by every arm
+│   ├── predictions.py            # Per-question records (predictions.jsonl)
+│   ├── responses.py              # Text out of any model wrapper's return value
 │   ├── summariser.py             # Rewrites the per-tag performance scoreboard
 │   ├── orchestration/            # Orchestrator agent and team selection
 │   │   └── orchestrator.py       # OrchestratorAgent, tag sampling, team selection prompt
-│   ├── data/                     # Dataset loaders
-│   │   ├── data_utils.py         # Central data router
+│   ├── benchmarks/               # Benchmark registry: one module per dataset
+│   │   ├── __init__.py           # Registry: get(name), answer_type_of, scorer_for
+│   │   ├── base.py               # Benchmark and Scorer protocols, Instance, Prediction
+│   │   ├── scorers.py            # One scorer per answer shape (numeric, mcq), strict and lenient
 │   │   ├── gsm8k.py              # Grade School Math 8K
 │   │   ├── arc.py                # ARC-Challenge / ARC-Easy
 │   │   ├── hellaswag.py          # HellaSwag
@@ -28,6 +37,7 @@ This repository provides the codebase for studying **how scaling the number of h
 │   │   └── mmlu_formal_logic.py  # MMLU Formal Logic
 │   └── model/                    # Model wrappers
 │       ├── model_utils.py        # Agent factory, persona definitions, unified engine
+│       ├── registry.py           # Model key -> served name and endpoint; in-flight cap
 │       ├── llama.py              # LLaMA (v2/v3) wrapper via HuggingFace
 │       ├── qwen.py               # Qwen wrapper via HuggingFace
 │       ├── openai_compat.py      # OpenAI-compatible API client (vLLM, etc.)
@@ -35,7 +45,12 @@ This repository provides the codebase for studying **how scaling the number of h
 ├── scripts/                      # Experiment runner scripts
 │   ├── add*.sh                   # Heterogeneous multi-agent experiments
 │   ├── add*_noperspn.sh          # Same experiments without personas
-│   └── ablation*.sh              # Ablation studies (persona impact, agent count)
+│   ├── ablation*.sh              # Ablation studies (persona impact, agent count)
+│   ├── crossval.sh, small_model_arms.sh, e2_topology_arms.sh  # Orchestrator experiment drivers
+│   ├── run_config.py             # Runs one fixed team config over the held-out split
+│   ├── rescore.py                # Re-scores a predictions file under another parser
+│   └── compare_runs.py           # Pairs arms question by question; McNemar / sign-flip
+├── tests/                        # Offline tests, run as scripts (PYTHONPATH=src)
 ├── K_star_analysis/              # K* diversity metric computation
 │   ├── analysis.py               # Core N* (effective diversity) from embeddings
 │   ├── analysis_improved.py      # Extended metrics: N*_conditioned, N*_weighted, Delta-N*

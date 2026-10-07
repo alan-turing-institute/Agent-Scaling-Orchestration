@@ -655,8 +655,19 @@ whose outputs do not depend on the batch; which vLLM setting causes it
 ### Next
 
 Experiments E2, E10 and E12 can run now: E2 through `train_orchestrator.py
---topology`, E10 and E12 through `scripts/run_config.py`. Run them with
-`--max_inflight 1`, one arm at a time per server. Still
+--topology` (driver: `scripts/e2_topology_arms.sh`), E10 and E12 through
+`scripts/run_config.py`.
+
+On concurrency, updated 2026-10-06: `--max_inflight 1` is reproducible only on a
+single server. Separate copies of the 0.8B server disagree with each other even
+with identical flags, and copies sharing the GPU gave no speed-up. For E2 that
+would take about 4 days, so `e2_topology_arms.sh` defaults to full concurrency
+(`MAX_INFLIGHT=1` restores the reproducible mode). Several arms can then share one
+server, as in `PORTS="8001 8001"`. Reruns then differ by about 15% of team verdicts. That adds variance, not
+bias between arms, so compare arms with paired tests across folds
+(`scripts/compare_runs.py`).
+
+Still
 open from the list below: §4.3, §2, §5 (now a re-read, since gate runs carry
 predictions), §3.4, §6.
 

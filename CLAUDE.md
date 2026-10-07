@@ -10,7 +10,7 @@ Research code for paper *Understanding Agent Scaling in LLM-Based Multi-Agent Sy
 Collection of experiment entry points, not a library. No lint, no packaging, no `__init__.py`.
 Offline tests in `tests/` run directly as scripts.
 
-Two pipelines share `src/model` and `src/data`:
+Two pipelines share `src/model` and `src/benchmarks`:
 
 1. **Benchmark harness** — `src/main.py`. N agents answer, optionally debate R rounds, majority-vote.
    Sweeps via `scripts/*.sh`. Histories then scored by `K_star_analysis/`.
@@ -238,12 +238,16 @@ occurrences, saves the HF dataset. Now argparse behind a `main()` guard (`--tags
 
 ### Data layer
 
-`data/data_utils.load_data` is an if/elif router to one module per dataset, each returning
-`(questions, labels)` — shuffled `head(data_size)` for test splits. `truthfulqa` and `winogrande`
-load `truthfulqa/truthful_qa` and `allenai/winogrande`; the bare ids they used before are rejected
-by current `huggingface_hub`. Both remap `test` to `validation` internally. `base_ds.format_ds` is leftover
-from an earlier perturbation study, references args (`reverse_landmark`, `synonym_replacement`, …)
-no current entry point defines. Imported, unused.
+`src/benchmarks/` is a registry with one module per dataset. Each module declares `NAME` (the
+`--data` value and the tagged dataset's `dataset` column), `ANSWER_TYPE` (a key into
+`benchmarks/scorers.py`'s `SCORERS`), `PERSONA_SET` (the paper's per-dataset personas) and
+`load(args, split) -> (questions, labels)`, which returns a shuffled `head(data_size)` for test
+splits. Adding a benchmark means one module plus one line in `_MODULES` in
+`benchmarks/__init__.py`; the tagger, splits and baselines read the registry. Look one up with
+`benchmarks.get(name)`; `benchmarks.scorer_for(name)` builds its scorer. `truthfulqa` and
+`winogrande` load `truthfulqa/truthful_qa` and `allenai/winogrande`, because current
+`huggingface_hub` rejects the bare ids they used before. Both remap `test` to `validation`
+internally.
 
 ### K\* analysis
 
