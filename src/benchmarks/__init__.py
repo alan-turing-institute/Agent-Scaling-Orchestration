@@ -18,6 +18,7 @@ A module here declares:
 from __future__ import annotations
 
 import importlib
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -102,6 +103,52 @@ def answer_type_of(name: str) -> str:
     return get(name).answer_type
 
 
+def answer_type_of_sample(sample) -> str:
+    """Which scorer reads this question: the answer type its benchmark declared.
+
+    Read from the `dataset` field every tagged row carries, per question, since
+    a batch can mix benchmarks. A row without one, or naming a benchmark that
+    is not registered, is an error. The old fallback guessed from the gold
+    answer's shape, and anything non-numeric went to the multiple-choice parser,
+    which reads a letter out of any text and reports a number.
+    """
+    source = sample.get("dataset") if hasattr(sample, "get") else None
+    if not source:
+        question = str(sample.get("question", "") if hasattr(sample, "get") else sample)
+        raise ValueError(
+            f"question has no 'dataset' field, so its scorer is unknown: {question[:80]!r}"
+        )
+    return answer_type_of(source)
+
+
+class ScorerSet:
+    """The scorers one run needs, each built the first time a question asks for it.
+
+    Replaces a dict built up front for `("numeric", "mcq")` in every entry point,
+    which meant a benchmark with any other answer type needed edits in each of
+    them. Kept for the life of a run, so a scorer that holds state (a judge's
+    verdict cache, say) keeps it across questions. Safe to share between the
+    threads that score questions concurrently.
+    """
+
+    def __init__(self, mode: str = STRICT, bae: bool = False):
+        self.mode = mode
+        self.bae = bae
+        self._scorers = {}
+        self._lock = threading.Lock()
+
+    def get(self, answer_type: str):
+        with self._lock:
+            if answer_type not in self._scorers:
+                self._scorers[answer_type] = get_scorer(answer_type, mode=self.mode, bae=self.bae)
+            return self._scorers[answer_type]
+
+    def for_sample(self, sample):
+        """`(answer_type, scorer)` for one question."""
+        answer_type = answer_type_of_sample(sample)
+        return answer_type, self.get(answer_type)
+
+
 def persona_set(name: str) -> list[str]:
     return list(get(name).persona_set)
 
@@ -117,7 +164,9 @@ __all__ = [
     "Prediction",
     "STRICT",
     "ScoreResult",
+    "ScorerSet",
     "answer_type_of",
+    "answer_type_of_sample",
     "get",
     "get_scorer",
     "list_names",

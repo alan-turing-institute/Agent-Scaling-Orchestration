@@ -604,8 +604,8 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
 - **Data.** MMLU-Pro (12,032 test questions, 14 categories), AIME (90 from
   2022–24, plus 30 from 2025, integer answers) and MATH-500 (262 at levels 4–5)
   all load. All three are public.
-- **GPQA-Diamond** returns 403. The HF account must accept the dataset's terms
-  once on its page; approval is automatic.
+- **GPQA-Diamond** returned 403 until the HF account accepted the dataset's
+  terms. Done the same day; see below.
 - **Equivalence checking.** `math-verify` installs on aarch64 and gets the MATH
   answer shapes right (fractions against decimals, tuples, a wrong integer).
 - **Plancraft.** `plancraft` 0.4.9 resolves on aarch64 (dry run).
@@ -614,6 +614,17 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
 
 - **Starts now:** C11, the H1 benchmark modules, the fetch scripts and the
   offline tests. None of this calls a model.
+- **C11 done (2026-10-07).** `benchmarks.answer_type_of_sample` and
+  `benchmarks.ScorerSet` replace the fixed `("numeric", "mcq")` dicts in
+  `team_evaluation.py` and `bare_model_baseline.py`, and the guess from the gold
+  answer's shape. A question with no `dataset` or an unregistered one raises
+  before the batch's first call. `rescore.py` keeps the shape guess only for rows
+  written before the registry.
+  - On the 699-row pool, every answer type matches the old guess.
+  - Re-scoring a finished E2 file gives the same result under old and new code
+    (74/140).
+  - The new tests fail on the old code.
+- **GPQA terms accepted (2026-10-07).** `gpqa_diamond.csv` downloads.
 - **Waits:** tagging the new pool, the bare-model screens and every arm. Tagging
   uses the 35B, which the E2 sweep is using as its orchestrator on :8002. Any
   extra load on :8001/:8002 changes the sweep's answers, because the servers'

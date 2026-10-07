@@ -152,7 +152,11 @@ the iteration is skipped and recorded, rather than falling back to agents that n
 `team_evaluation.py` — `run_team_evaluation(selected_team, questions, args, config=None)` runs a
 team on each question (questions in parallel, `--eval_workers`) and adds up the results. With only
 `selected_team` it runs `team_config.vote(selected_team)`; pass a `TeamConfig` for anything else.
-Answer type comes from the question's `dataset` column via the benchmark registry, per question.
+Answer type comes from the question's `dataset` column via the benchmark registry, per question
+(`benchmarks.answer_type_of_sample`). A question with no `dataset`, or naming an unregistered
+benchmark, raises before the batch's first call; nothing guesses from the answer's shape. Entry
+points build scorers lazily through `benchmarks.ScorerSet`, so a benchmark with a new answer type
+needs a scorer in `SCORERS` and its module, and no edit to any entry point.
 Returns accuracies **and** raw counts (`per_agent_correct`, `per_agent_correct_by_tag`,
 `per_tag_counts`, `team_correct`) keyed by **stage id** — for a vote the stage ids are the persona
 names, so the scoreboard keys are unchanged — plus `config_id`, call and token totals, and

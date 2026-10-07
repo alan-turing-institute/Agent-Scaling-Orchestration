@@ -283,6 +283,20 @@ check("report answer types", report["answer_types"], {"numeric": 1, "mcq": 1})
 check("report calls", report["calls"], 6)
 check("report config id", report["config_id"], team_config.vote([A, B, C]).config_id)
 
+# A question nobody can score stops the batch before the first call.
+for label, bad, exc in [
+    ("a question with no dataset field", {"question": QUESTION, "answer": "8", "tags": []}, ValueError),
+    ("a question from an unregistered benchmark",
+     {"question": QUESTION, "answer": "8", "dataset": "humaneval", "tags": []}, KeyError),
+]:
+    calls = []
+    team_evaluation.registry_for = lambda args: FakeRegistry(FakeClient(answers, calls))
+    try:
+        raises(f"{label} raises", lambda: team_evaluation.run_team_evaluation([A, B], samples + [bad], Args()), exc)
+    finally:
+        team_evaluation.registry_for = original
+    check(f"{label}: no call was made", len(calls), 0)
+
 team_evaluation.registry_for = lambda args: FakeRegistry(BrokenClient({}, []))
 try:
     raises("a batch where every call failed raises",

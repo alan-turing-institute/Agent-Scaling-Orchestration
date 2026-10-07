@@ -150,6 +150,56 @@ def test_registry():
         FAILURES.append("registry: an unregistered benchmark should raise, not fall back")
 
 
+def test_answer_type_comes_from_the_registry():
+    """A question is scored as its benchmark declared, and only that way.
+
+    The scorer lookup used to fall back to the gold answer's shape, sending any
+    non-numeric answer to the multiple-choice parser. Entry points also built
+    scorers from a fixed `("numeric", "mcq")` list, so a new answer type needed
+    an edit in each of them.
+    """
+    check("per-question type, numeric",
+          benchmarks.answer_type_of_sample({"dataset": "gsm8k", "answer": "(A)"}), "numeric")
+    check("per-question type, mcq",
+          benchmarks.answer_type_of_sample({"dataset": "arc", "answer": "8"}), "mcq")
+    for label, sample, exc in [
+        ("no dataset field raises", {"question": "q", "answer": "8"}, ValueError),
+        ("empty dataset field raises", {"question": "q", "answer": "8", "dataset": ""}, ValueError),
+        ("unregistered dataset raises", {"question": "q", "answer": "def f(): pass", "dataset": "humaneval"}, KeyError),
+    ]:
+        try:
+            benchmarks.answer_type_of_sample(sample)
+        except exc:
+            pass
+        else:
+            FAILURES.append(f"{label}: did not raise {exc.__name__}")
+
+    scorers = benchmarks.ScorerSet(mode=LENIENT)
+    answer_type, scorer = scorers.for_sample({"dataset": "arc"})
+    check("scorer set: type", answer_type, "mcq")
+    check("scorer set: built in the run's mode", scorer.mode, LENIENT)
+    check("scorer set: one scorer per type per run", scorers.get("mcq") is scorer, True)
+
+    # A benchmark with an answer type no entry point has heard of is scored
+    # without editing any of them: register a scorer and a benchmark, look it up.
+    from benchmarks import scorers as scorer_module
+
+    class ExactScorer(scorer_module.MCQScorer):
+        name = "exact_test"
+
+    registry = benchmarks._load_registry()
+    scorer_module.SCORERS["exact_test"] = ExactScorer
+    registry["exact_bench"] = benchmarks.ModuleBenchmark(
+        name="exact_bench", answer_type="exact_test", persona_set=[], _load=None)
+    try:
+        answer_type, scorer = benchmarks.ScorerSet().for_sample({"dataset": "exact_bench"})
+        check("new answer type: looked up", answer_type, "exact_test")
+        check("new answer type: its own scorer", type(scorer).__name__, "ExactScorer")
+    finally:
+        del scorer_module.SCORERS["exact_test"]
+        del registry["exact_bench"]
+
+
 def test_gold_normalisation():
     """The tagged dataset stores every answer as a string, numeric ones included."""
     check("numeric gold coerced", get_scorer("numeric").normalise_gold("8"), 8.0)

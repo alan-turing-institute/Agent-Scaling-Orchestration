@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import benchmarks  # noqa: E402
 from runner import _stable_int, question_key  # noqa: E402
-from team_evaluation import _infer_answer_type  # noqa: E402
 
 
 def stages_of(row):
@@ -42,12 +41,30 @@ def stages_of(row):
     return stages, "vote", [sid for sid, _ in stages]
 
 
+def _legacy_answer_type(row):
+    """The answer type of a row written without one.
+
+    Asks the registry about the row's benchmark when it names one. Otherwise it
+    guesses from the gold answer's shape. That guess is safe only here: rows
+    without an answer type predate the registry, when every benchmark was
+    numeric or multiple choice. Scoring new questions never guesses
+    (`benchmarks.answer_type_of_sample`).
+    """
+    if row.get("dataset") in benchmarks.list_names():
+        return benchmarks.answer_type_of(row["dataset"])
+    try:
+        float(row.get("gold"))
+        return "numeric"
+    except (TypeError, ValueError):
+        return "mcq"
+
+
 def rescore_row(row, parse_mode, tie_break_seed=0):
     answer_type = row.get("answer_type")
     if answer_type == "gsm8k":
         answer_type = "numeric"  # what pre-registry rows called it
     elif answer_type is None:
-        answer_type = _infer_answer_type(row.get("gold"))
+        answer_type = _legacy_answer_type(row)
     scorer = benchmarks.get_scorer(answer_type, mode=parse_mode)
     gold = scorer.normalise_gold(row["gold"])
     stages, rule, over = stages_of(row)

@@ -38,7 +38,6 @@ from holdout_evaluation import _batch_indices, with_server_retry
 from predictions import SCHEMA_VERSION, write_predictions
 from runner import question_key
 from model.openai_compat import OpenAICompatChatWrapper
-from team_evaluation import answer_type_of
 
 # Named so the report tables read sensibly: it occupies the slot a persona would.
 AGENT_NAME = "bare_model"
@@ -73,8 +72,7 @@ def answer_one(agent, sample, scorers, args):
     """Ask the model one question and score it exactly as a team agent is scored."""
     question = sample["question"]
     answer = sample["answer"]
-    answer_type = answer_type_of(sample)
-    scorer = scorers[answer_type]
+    answer_type, scorer = scorers.for_sample(sample)
     # The tagged dataset stores every answer as a string, numeric ones included.
     answer = scorer.normalise_gold(answer)
 
@@ -182,12 +180,13 @@ def main():
         limiter=threading.BoundedSemaphore(args.max_inflight) if args.max_inflight > 0 else None,
     )
 
-    # Each scorer states the answer format it can read, so a split that mixes
+    # Each question is scored as its own benchmark declared, so a split that mixes
     # numeric and multiple-choice questions asks each one for the right thing.
-    scorers = {
-        answer_type: benchmarks.get_scorer(answer_type, mode=args.parse_mode)
-        for answer_type in ("numeric", "mcq")
-    }
+    # Every question is looked up before the first call, so one nobody can score
+    # stops the run at the start.
+    scorers = benchmarks.ScorerSet(mode=args.parse_mode)
+    for sample in test_dataset:
+        scorers.for_sample(sample)
 
     batches = _batch_indices(len(test_dataset), args.test_batch_size, args.split_seed)
     records_path = out_dir / "holdout_records.jsonl"
