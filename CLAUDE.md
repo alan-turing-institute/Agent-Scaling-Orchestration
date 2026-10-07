@@ -7,9 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Research code for paper *Understanding Agent Scaling in LLM-Based Multi-Agent Systems via Diversity*.
 `README.md` has paper story, persona table, K\* definition, full flag list.
 
-Collection of experiment entry points, not a library. No tests, no lint, no packaging, no `__init__.py`.
+Collection of experiment entry points, not a library. No lint, no packaging, no `__init__.py`.
+Offline tests in `tests/` run directly as scripts.
 
-Two pipelines share `src/model` and `src/data`:
+Two pipelines share `src/model` and `src/benchmarks`:
 
 1. **Benchmark harness** — `src/main.py`. N agents answer, optionally debate R rounds, majority-vote.
    Sweeps via `scripts/*.sh`. Histories then scored by `K_star_analysis/`.
@@ -78,26 +79,31 @@ rounds + saved histories + analysis together.
 
 ### Personas
 
-Two builders, both return `{name: {prompt, temperature, top_p, style, [nvidia_persona]}}`:
+All in `src/personas.py`. Every persona is defined once, in `chosen_persona_bank()`: a flat bank of
+50, each `{prompt, temperature, top_p, style, [nvidia_persona]}`. Each call returns fresh dicts, so a
+caller may edit them. Everything else selects from that bank:
 
-- `_build_enhanced_personas(args)` — paper personas, **selected by `args.data`**, one hand-written
-  set per dataset, ~600 lines. Returns single no-op `{"None": {...}}` unless one of `multi_persona`
-  / `baseline_a` / `baseline_b` set.
-- `_build_chosen_personas(args)` — selects by name from `args.chosen_personas` (comma-separated) out
-  of `chosen_persona_bank()`, a flat 50-persona bank: the union of the per-dataset sets plus the
-  default set. Orchestrator path. `build_agent_pool()` renders that bank as the orchestrator's
-  candidate list (`name`, `specialty`, `strengths`, `style`), derived from the bank rather than
-  hand-maintained.
+- `_build_enhanced_personas(args)` — the paper's set for `args.data`. A registered benchmark names
+  it in its module's `PERSONA_SET` (`src/benchmarks/`); `_UNREGISTERED_PERSONA_SETS` covers
+  `--data` values with no module yet (humaneval, mbpp, piqa, arc_easy), and anything else gets
+  `_DEFAULT_PERSONA_SET`. Returns a single no-op `{"None": {...}}` unless one of `multi_persona` /
+  `baseline_a` / `baseline_b` is set. The paper used `Elimination_Specialist` for two different
+  personas; the bank carries the winogrande one as `Elimination_Based_Solver` and `_PAPER_NAMES`
+  renames it back under winogrande, so old histories still match.
+- `_build_chosen_personas(args)` — selects by name from `args.chosen_personas` (comma-separated).
+  Orchestrator path. `build_agent_pool()` renders the bank as the orchestrator's candidate list
+  (`name`, `specialty`, `strengths`, `style`), derived from the bank rather than hand-maintained.
 
-Three traps:
+Role instructions (solver, critic, hub, ...) are a separate layer in `roles.py`, appended after
+the persona prompt.
 
-- `get_agents` dispatches on `getattr(args, 'chosen_agents', True)` — **defaults True**. New entry
-  point lacking `chosen_agents` silently takes chosen-personas branch, then fails on missing
-  `chosen_personas`. Set both explicitly.
-- `_add_nvidia_personas` gated on `getattr(args, "persona_prompt", True)` — also **defaults True** —
-  and reads `persona_data['nvidia_persona']` unconditionally. Only gsm8k set and chosen-persona pool
-  define that key, so `--persona_prompt` on any other dataset raises KeyError.
-- `_build_enhanced_personas` has two `elif args.data in ['truthfulqa']` branches. Second is dead.
+Two traps:
+
+- `get_agents` (`model_utils.py`) dispatches on `getattr(args, 'chosen_agents', True)` —
+  **defaults True**. New entry point lacking `chosen_agents` silently takes chosen-personas branch,
+  then fails on missing `chosen_personas`. Set both explicitly.
+- `_add_nvidia_personas` appends the `nvidia_persona` block under `--persona_prompt`. Only the five
+  gsm8k personas define one; the rest are left unchanged.
 
 Per-persona `temperature`/`top_p` reach the model as `persona_configs`, passed alongside `messages`
 into `engine`, built by `get_persona_config`. Personas cycle `i % len(personas)` when `num_agents`
@@ -143,13 +149,60 @@ dropped and the selection retried once with the rejected names quoted back, so a
 no longer reaches `_build_chosen_personas` as a KeyError. A parse failure returns an empty team and
 the iteration is skipped and recorded, rather than falling back to agents that never existed.
 
-`team_evaluation.py` — `run_team_evaluation` rebuilds args for `get_agents` (sets `chosen_agents`,
-`chosen_personas`, `num_agents`), infers gsm8k-vs-MCQ from answer shape, one thread per agent,
-results placed by index so responses stay aligned with agent names. `vllm_base_url` falls back to
-`args.api_base_url` before the 8001 default. MCQ batches borrow `args.data = 'arc'` so
-`get_instruction_suffix` asks for `(A)` rather than its numeric fallback, and gsm8k answers are
-coerced to float because the tagged dataset stores them as strings. Returns accuracies **and** raw
-counts (`per_agent_correct`, `per_agent_correct_by_tag`, `per_tag_counts`, `team_correct`).
+`team_evaluation.py` — `run_team_evaluation(selected_team, questions, args, config=None)` runs a
+team on each question (questions in parallel, `--eval_workers`) and adds up the results. With only
+`selected_team` it runs `team_config.vote(selected_team)`; pass a `TeamConfig` for anything else.
+Answer type comes from the question's `dataset` column via the benchmark registry, per question.
+Returns accuracies **and** raw counts (`per_agent_correct`, `per_agent_correct_by_tag`,
+`per_tag_counts`, `team_correct`) keyed by **stage id** — for a vote the stage ids are the persona
+names, so the scoreboard keys are unchanged — plus `config_id`, call and token totals, and
+`samples` (per-question detail; callers write it with `predictions.save_report` and drop it).
+
+### Team configs and the runner
+
+The orchestrator path no longer goes through `engine`/`get_agents`. Four modules replace that:
+
+- `team_config.py` — `TeamConfig`: an ordered tuple of `Stage(id, persona, role, model, inputs,
+  max_tokens)`, each reading only earlier stages via `Input(source, handoff)`, plus an aggregate
+  (`vote` over `voters()`, or `stage` = the `final` stage's answer). Builders: `vote`, `debate`,
+  `centralized`, `synthesis`, `pipeline`, `parallel`, and `split_budget` for matched compute.
+  `config_id` hashes everything behavioural, including the role-template version.
+- `roles.py` — role templates (`solver`, `debater`, `critic`, `reviser`, `planner`, `checker`,
+  `hub`, `synthesiser`) and handoff rendering (`answer`, `rationale` = last 600 chars, `full`).
+  A solver with no inputs gets the exact legacy prompt (persona, blank line, question + suffix);
+  bump `ROLE_TEMPLATES_VERSION` on any template change.
+- `runner.py` — `run_question` executes a config layer by layer (stages in a layer run together),
+  scores **every** stage, records each stage's transition from the stage it read (`kept_right`,
+  `fixed`, `broke`, `kept_wrong`) and whether it copied that answer, and aggregates. Ties break with
+  a per-question seeded RNG by default (`--tie_break global` restores the old global-RNG
+  behaviour). A per-request `seed` is sent unless `--request_seed -1`. Connection/timeout errors
+  propagate to the caller's retry; other stage failures score as unanswered. `add_runner_args`
+  holds the shared flags (`--models_file`, `--parse_mode`, `--tie_break`, `--request_seed`,
+  `--max_inflight`); `add_topology_args` the team-arrangement flags the training loop takes.
+- `model/registry.py` — model key -> served name and endpoint. `default` is `--model_name` at
+  `--vllm_base_url`/`--api_base_url`/8001; `--models_file` adds more (see
+  `configs/models.example.json`). `OpenAICompatChatWrapper.generate` returns a `Completion` with
+  tokens, finish reason, latency and reasoning; `complete` still returns the text.
+
+A team chosen by name (orchestrator or random selector) is arranged by `--topology`
+(`team_config.for_team`): `vote` (default), `debate --rounds N`, `centralized`/`synthesis` (the
+**last** selected agent leads, the rest work), `pipeline --roles ...` (names take roles in
+order). Each persona is credited with its **last** stage's answer (`credited_stage` in the
+report), so the scoreboard keeps persona keys whatever the topology.
+
+**Serving noise.** The vLLM servers return different greedy text for the same request depending
+on what else is in the batch: two runs of the same arm at `--eval_workers 5` flip ~20% of agent
+answers and ~15% of team verdicts. Not caused by speculative decoding (tested), and vLLM's
+batch-invariant mode does not support Qwen3.5's GDN layers. `--max_inflight 1` (per-server
+semaphore in `model/registry.py`) runs every request alone: two runs of the same 80 calls gave
+80/80 identical responses, cold prefix cache included. It costs ~2.5-3x the wall-clock (0.8B:
+~5.8 s per call, so a 560-call arm takes ~55 min instead of ~20). It only governs this process: never run two arms against one server at once.
+
+`scripts/run_config.py` runs one fixed config over the held-out split in the same batches as the
+orchestrator arms. `scripts/rescore.py` re-scores a predictions file under another parser without
+calling a model. `scripts/compare_runs.py` pairs arms question by question across folds and
+repeats (McNemar / sign-flip, Holm-corrected) and prints each arm's repeat-to-repeat flip rate. Offline tests: `PYTHONPATH=src python tests/test_runner.py` and
+`tests/test_scorers.py` (no pytest in the pinned env).
 
 `summariser.py` — two modes. `save_evaluation_summary` (default, `--summariser counts`) folds those
 counts into `agent_performance_state.json` and renders the markdown from it: agent totals, per-tag
@@ -163,13 +216,16 @@ after it with the scoreboard frozen: the split is shuffled and chunked (`--split
 `--test_batch_size`), each batch's tag profile drives one selection, every test question is answered
 exactly once. `--random_baseline` scores a randomly drawn team on the same batches for reference.
 
-Answer type is decided **per question** (`_infer_answer_type`), not per batch: a tag spans gsm8k and
+Answer type is decided **per question** (`answer_type_of`, from the `dataset` column), not per batch: a tag spans gsm8k and
 MCQ sets, and judging a batch by its first answer silently mis-scores or drops the rest.
 
 Outputs default under `data-claude/orchestrator/`: `agent_performance_by_tag.md`,
 `agent_performance_state.json`, `run_records.jsonl` (one record per iteration),
 `team_selection_results.csv` (header written once, not per row), plus `holdout_records.jsonl` and
-`holdout_summary.json` when a test split is held out.
+`holdout_summary.json` when a test split is held out. `predictions.jsonl` (training) and
+`holdout_predictions.jsonl` hold one row per question (schema 2: every stage's response, answer,
+parsed flag, correctness, transition, tokens), and `configs.json` maps each `config_id` to its
+stages.
 
 ### Question tagging
 
@@ -187,12 +243,16 @@ occurrences, saves the HF dataset. Now argparse behind a `main()` guard (`--tags
 
 ### Data layer
 
-`data/data_utils.load_data` is an if/elif router to one module per dataset, each returning
-`(questions, labels)` — shuffled `head(data_size)` for test splits. `truthfulqa` and `winogrande`
-load `truthfulqa/truthful_qa` and `allenai/winogrande`; the bare ids they used before are rejected
-by current `huggingface_hub`. Both remap `test` to `validation` internally. `base_ds.format_ds` is leftover
-from an earlier perturbation study, references args (`reverse_landmark`, `synonym_replacement`, …)
-no current entry point defines. Imported, unused.
+`src/benchmarks/` is a registry with one module per dataset. Each module declares `NAME` (the
+`--data` value and the tagged dataset's `dataset` column), `ANSWER_TYPE` (a key into
+`benchmarks/scorers.py`'s `SCORERS`), `PERSONA_SET` (the paper's per-dataset personas) and
+`load(args, split) -> (questions, labels)`, which returns a shuffled `head(data_size)` for test
+splits. Adding a benchmark means one module plus one line in `_MODULES` in
+`benchmarks/__init__.py`; the tagger, splits and baselines read the registry. Look one up with
+`benchmarks.get(name)`; `benchmarks.scorer_for(name)` builds its scorer. `truthfulqa` and
+`winogrande` load `truthfulqa/truthful_qa` and `allenai/winogrande`, because current
+`huggingface_hub` rejects the bare ids they used before. Both remap `test` to `validation`
+internally.
 
 ### K\* analysis
 

@@ -1,4 +1,20 @@
-from data.base_ds import format_ds
+"""MMLU formal logic.
+
+Declares what the registry needs to know about this benchmark; `load`
+is the loader that used to live in `src/data/`, unchanged.
+"""
+NAME = 'formal_logic'
+ANSWER_TYPE = 'mcq'
+# The set this dataset was assigned in the paper. Names index into
+# personas.chosen_persona_bank().
+PERSONA_SET = [
+    'Logical_Formalist',
+    'Commonsense_Reasoner',
+    'Critical_Analyzer',
+    'Eliminative_Reasoner',
+    'Analogical_Thinker',
+]
+
 from datasets import load_dataset
 import pandas as pd
 
@@ -20,3 +36,6 @@ def load_data(args, split='validation'):
         labels.append(label)
 
     return questions, labels
+
+
+load = load_data

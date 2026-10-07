@@ -15,15 +15,15 @@ when reading the number:
 
 - The paper's sets have five personas; the arms select four. `--team_size 4` runs a
   truncated version, so the two effects can be separated.
-- The per-dataset definitions are not the same objects as the 50-persona bank the
-  orchestrator selects from. Most names are shared and identical, but
-  `Elimination_Specialist` is written twice in the paper - a science-MCQ solver for
-  `arc`, a pronoun-resolution solver for `winogrande` - and the bank kept the `arc`
-  one. This script passes the per-dataset definitions explicitly so each dataset gets
-  the prompt written for it.
-- The bank personas also carry an extra NVIDIA-format block that `_add_nvidia_personas`
-  appends and the per-dataset sets mostly lack, so the arms' prompts are slightly
-  longer than these. `--nvidia_persona` appends it where a set defines one.
+- The per-dataset sets are drawn from the same 50-persona bank the orchestrator
+  selects from, with one naming wrinkle: `Elimination_Specialist` is written twice in
+  the paper - a science-MCQ solver for `arc`, a pronoun-resolution solver for
+  `winogrande`. The bank kept the `arc` one under that name and carries the
+  `winogrande` one as `Elimination_Based_Solver`. Under `winogrande` this script gets
+  it back under the paper's name, and passes the definitions explicitly so each
+  dataset gets the prompt written for it.
+- Only the five gsm8k personas define an extra NVIDIA-format block.
+  `--nvidia_persona` appends it to those; the orchestrator arms never append it.
 
 Output is written in the shape `scripts/report_run.py` reads.
 """
@@ -40,10 +40,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from datasets import load_from_disk
 
+from runner import add_runner_args
 from splits import add_split_args, make_split, split_label
 
 from holdout_evaluation import _batch_indices, with_server_retry
-from model.model_utils import _build_enhanced_personas
+from predictions import save_report
+from personas import _build_enhanced_personas
 from team_evaluation import run_team_evaluation
 
 
@@ -54,6 +56,7 @@ def parse_args():
     parser.add_argument("--api_base_url", default="http://127.0.0.1:8001/v1")
     parser.add_argument("--api_key", default="EMPTY")
     add_split_args(parser)
+    add_runner_args(parser)
     parser.add_argument("--test_batch_size", type=int, default=5)
     parser.add_argument("--eval_workers", type=int, default=5)
     parser.add_argument("--team_size", type=int, default=0,
@@ -62,6 +65,8 @@ def parse_args():
     parser.add_argument("--nvidia_persona", action="store_true",
                         help="Append the NVIDIA-format block where a persona defines one, as the orchestrator arms do")
     parser.add_argument("--limit", type=int, default=0, help="Answer only the first N held-out questions; 0 means all")
+    parser.add_argument("--response_chars", type=int, default=0,
+                        help="Clip stored responses to this many characters; 0 keeps them whole")
     parser.add_argument("--out_dir", default="data-claude/orchestrator/paper_personas")
     return parser.parse_args()
 
@@ -104,6 +109,8 @@ def main():
 
     records_path = out_dir / "holdout_records.jsonl"
     records_path.unlink(missing_ok=True)
+    predictions_path = out_dir / "holdout_predictions.jsonl"
+    predictions_path.unlink(missing_ok=True)
 
     total = team_correct = 0
     agent_totals = defaultdict(lambda: {"correct": 0, "questions": 0, "selected": 0})
@@ -134,6 +141,10 @@ def main():
                                          "question_indices": indices, "selected_team": team,
                                          "status": "evaluation_error", "error": repr(error)}) + "\n")
                 continue
+
+            save_report(predictions_path, report, batch=batch_number,
+                        arm=f"paper_personas:{name}", team=team,
+                        question_indices=indices, response_chars=args.response_chars)
 
             n = report["n_samples"]
             total += n

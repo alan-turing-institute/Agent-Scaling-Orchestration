@@ -1,283 +1,258 @@
-"""Evaluate a selected team of agent personas on a batch of questions.
+"""Evaluate a team on a batch of questions.
 
-Provides `run_team_evaluation(selected_team, sampled_questions, args)` which:
-- Instantiates agents using existing `model_utils.get_agents`
-- Runs each agent on every question using `model_utils.engine`
-- Uses the repository `evaluator` voting logic to compute the team's final answer
-- Computes per-agent accuracies and returns a report dict
+`run_team_evaluation(selected_team, sampled_questions, args)` runs a team on each
+question and returns per-agent and team accuracy plus the raw counts the
+scoreboard folds in. With only `selected_team` it runs a vote of those personas,
+which is what every orchestrator arm so far has done; pass `config` to run any
+`TeamConfig` instead (a debate, a hub, a pipeline). The work itself is done by
+`runner.run_question`; this module decides each question's answer type, runs the
+questions concurrently and adds up the results.
 """
-from collections import Counter
-from copy import deepcopy
-import re
-from typing import List, Dict
-
-import numpy as np
-
-from openai import APIConnectionError, APITimeoutError
-
-from model.model_utils import get_agents, engine, get_persona_config
 import concurrent.futures
-from evaluator import get_instruction_suffix, evaluate_gsm8k, evaluate_mcq, base_evaluate_gsm8k, base_evaluate_mcq
+from collections import Counter
+from functools import lru_cache
+from typing import Dict, List, Optional
+
+import benchmarks
+import team_config
+from model.model_utils import DEFAULT_MAX_NEW_TOKENS
+from personas import chosen_persona_bank
+from model.registry import ModelRegistry
+from runner import run_question
 
 
-def _response_text(resp):
-    """Extract text content from various response shapes returned by `engine`."""
-    # OpenAI-like response objects
-    try:
-        return resp.choices[0].message.content
-    except Exception:
-        pass
-    try:
-        return resp.choices[0].text
-    except Exception:
-        pass
-    # Already a plain string
-    if isinstance(resp, str):
-        return resp
-    # Fallback to str()
-    return str(resp)
 
 
 def _infer_answer_type(answer) -> str:
-    """Numeric answer -> gsm8k scoring, anything else -> MCQ scoring.
+    """Guess an answer type from the answer's shape. Last resort only.
 
-    Decided per question, not per batch: a tag like "step-by-step reasoning"
-    pulls questions from gsm8k and from the multiple-choice sets at once, and
-    judging the batch by its first answer silently mis-scores the rest.
+    Numeric-looking -> numeric scoring, anything else -> MCQ scoring. That
+    second branch is why this is a last resort: a coding benchmark's answer is
+    a string, so it lands on the MCQ letter parser, which reads a character out
+    of it and reports a number rather than failing. Prefer `answer_type_of`,
+    which asks the registry what the benchmark declared.
     """
     if answer is None:
         return "mcq"
     try:
         float(answer)
-        return "gsm8k"
+        return "numeric"
     except (TypeError, ValueError):
         return "mcq"
 
 
-def run_team_evaluation(selected_team: List[str], sampled_questions, args,
-                        personas_override=None) -> Dict:
-    """Run the selected team on the sampled questions and return accuracies.
+def answer_type_of(sample) -> str:
+    """Which scorer reads this question's answers.
+
+    Decided per question, not per batch: a tag like "step-by-step reasoning"
+    pulls questions from gsm8k and from the multiple-choice sets at once, and
+    judging a batch by its first answer silently mis-scores the rest.
+
+    Taken from the `dataset` column the tagged dataset already carries, so a
+    benchmark declares its own answer shape once and every scoring path agrees.
+    Falls back to sniffing the answer only when that column is absent or names
+    something unregistered.
+    """
+    source = sample.get("dataset") if isinstance(sample, dict) else None
+    if source:
+        try:
+            return benchmarks.answer_type_of(source)
+        except KeyError:
+            print(f"[warn] {source!r} is not a registered benchmark; "
+                  f"guessing its answer type from the answer's shape")
+
+    answer = sample.get("answer") if isinstance(sample, dict) else None
+    return _infer_answer_type(answer)
+
+
+@lru_cache(maxsize=8)
+def _registry(model_name, base_url, models_file, api_key, max_inflight):
+    """One registry, and so one client per model, for the life of the process.
+
+    `get_agents` built fresh clients for every batch; nothing about a client is
+    batch-specific, and reusing it keeps connections open between batches.
+    """
+    class _Args:
+        pass
+    a = _Args()
+    a.model_name, a.vllm_base_url, a.models_file, a.vllm_api_key = model_name, base_url, models_file, api_key
+    a.max_inflight = max_inflight
+    return ModelRegistry.from_args(a)
+
+
+def registry_for(args) -> ModelRegistry:
+    """The agents' model registry, resolved the way `run_team_evaluation` always did.
+
+    The agents run on `--vllm_base_url`, else `--api_base_url` (the endpoint the
+    orchestrator was pointed at unless it has its own), else port 8001.
+    """
+    base_url = (getattr(args, "vllm_base_url", "") or getattr(args, "api_base_url", "")
+                or "http://127.0.0.1:8001/v1")
+    model_name = getattr(args, "model_name", None) or getattr(args, "model", None)
+    return _registry(model_name, base_url, getattr(args, "models_file", None),
+                     getattr(args, "vllm_api_key", "EMPTY") or "EMPTY",
+                     getattr(args, "max_inflight", 0) or 0)
+
+
+def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, args,
+                        personas_override=None, config: Optional[team_config.TeamConfig] = None) -> Dict:
+    """Run a team on the sampled questions and return accuracies and counts.
 
     Args:
-        selected_team: list of persona names (strings)
-        sampled_questions: a HuggingFace Dataset or list-like with dicts containing at least `question` and `answer`
-        args: namespace with runtime options (model_name, api keys, etc.)
-        personas_override: use these persona definitions instead of the ones
-            `get_agents` builds from the shared bank. The paper's per-dataset sets
-            are not a subset of that bank: `Elimination_Specialist` names a
-            science-MCQ solver under `arc` and a pronoun-resolution solver under
-            `winogrande`, and the bank kept one of them. A caller reproducing those
-            sets has to supply the definitions it means.
+        selected_team: persona names to run as a vote. Ignored when `config` is given.
+        sampled_questions: a HuggingFace Dataset or list of dicts with at least
+            `question` and `answer`; `dataset` and `tags` are used when present.
+        args: runtime options: `model_name` and the agent endpoint, plus the
+            runner flags (`parse_mode`, `tie_break`, `request_seed`, `models_file`),
+            `max_new_tokens` and `eval_workers`.
+        personas_override: persona definitions to use instead of the shared bank.
+            The paper's per-dataset sets come from that bank, but
+            `Elimination_Specialist` names a science-MCQ solver under `arc` and a
+            pronoun-resolution solver under `winogrande` (the bank's
+            `Elimination_Based_Solver`), so a caller reproducing those sets under
+            the paper's names has to supply the definitions it means.
+        config: the team to run. Default: `team_config.vote(selected_team)`.
 
-    Returns:
-        dict with keys: `team_accuracy` (float), `per_agent_accuracy` (dict mapping persona->accuracy)
+    Per-agent counts are keyed by persona: each persona is credited with the
+    answer of the last stage it played (`credited_stage` in the report). For a
+    vote that is its only answer, so every saved record keeps its meaning.
     """
-    # Prepare args so get_agents builds the chosen personas
-    args = deepcopy(args)
-    # Normalize model fields expected by model_utils
-    if hasattr(args, 'model_name') and not hasattr(args, 'model'):
-        setattr(args, 'model', args.model_name)
-    # Ensure agent_models is supplied (repeat model_name to match number of agents)
-    n_agents = len(selected_team)
-    args.chosen_agents = True
-    args.chosen_personas = ",".join(selected_team)
-    args.num_agents = n_agents
-    args.agent_models = ",".join([getattr(args, 'model', getattr(args, 'model_name', ''))] * n_agents)
-    args.use_vllm = True
-    # The selected team runs on the same endpoint the orchestrator was pointed at,
-    # unless the caller set an agent-specific one.
-    args.vllm_base_url = (
-        getattr(args, 'vllm_base_url', '')
-        or getattr(args, 'api_base_url', '')
-        or "http://127.0.0.1:8001/v1"
-    )
+    if config is None:
+        if not selected_team:
+            raise ValueError("run_team_evaluation needs selected_team or config")
+        roles = getattr(args, "roles", None)
+        config = team_config.for_team(
+            list(selected_team), topology=getattr(args, "topology", "vote") or "vote",
+            rounds=getattr(args, "rounds", 1), handoff=getattr(args, "handoff", "full") or "full",
+            roles=[r.strip() for r in roles.split(",")] if roles else None,
+        )
 
-    agents, personas = get_agents(args)
+    # Credit: each agent (a persona, or a stage with none) is credited with the
+    # answer of the last stage it played - a debater's final round, the hub's
+    # verdict, a worker's own answer. Report keys are those agents, so for any
+    # team picked by name the scoreboard and the holdout accumulators keep the
+    # persona keys they have always used. Per-stage detail is in `samples`.
+    credit = {}
+    for stage in config.stages:
+        credit[stage.persona or stage.id] = stage.id
+    agents = list(credit)
+
     if personas_override is not None:
-        # The wrappers from get_agents are model clients and carry no persona
-        # state, so only the definitions need replacing.
         personas = personas_override
+    else:
+        bank = chosen_persona_bank()
+        unknown = [p for p in config.personas() if p not in bank]
+        if unknown:
+            raise KeyError(f"personas not in the bank: {unknown}")
+        personas = {p: bank[p] for p in config.personas()}
+    missing = [p for p in config.personas() if p not in personas]
+    if missing:
+        raise KeyError(f"no definition for personas {missing}")
 
-    # get_instruction_suffix keys off dataset names, and its fallback branch asks
-    # for a numeric answer, so MCQ questions borrow an MCQ dataset name or the
-    # agents are told the wrong answer format. Both suffixes are built up front
-    # and chosen per question.
-    numeric_args = deepcopy(args)
-    numeric_args.data = 'gsm8k'
-    mcq_args = deepcopy(args)
-    mcq_args.data = 'arc'
-    SUFFIXES = {
-        'gsm8k': get_instruction_suffix(numeric_args),
-        'mcq': get_instruction_suffix(mcq_args),
-    }
+    registry = registry_for(args)
+    for model in config.models():
+        registry.resolve(model)  # fail before the first call, not halfway through a batch
 
-    # Build per-agent counters
-    per_agent_correct = {name: 0 for name in selected_team}
-    total = 0
-    team_correct = 0
-
-    # Build tag set across samples
-    tag_set = set()
-    for s in sampled_questions:
-        tags = s.get('tags') if isinstance(s, dict) else s['tags']
-        if tags:
-            for t in tags:
-                tag_set.add(t)
-
-    per_agent_correct_by_tag = {t: {name: 0 for name in selected_team} for t in tag_set}
-    per_tag_counts = {t: 0 for t in tag_set}
-
-    # Persona configs and message prefix per agent (cycle if needed)
-    persona_list = list(personas.items())
+    # Each scorer states the format it can read, so a batch that mixes numeric and
+    # multiple-choice questions asks each one for the right thing.
+    parse_mode = getattr(args, "parse_mode", benchmarks.STRICT)
+    scorers = {answer_type: benchmarks.get_scorer(answer_type, mode=parse_mode)
+               for answer_type in ("numeric", "mcq")}
+    tie_break = getattr(args, "tie_break", "seeded")
+    request_seed = getattr(args, "request_seed", 0)
+    max_tokens = getattr(args, "max_new_tokens", None) or DEFAULT_MAX_NEW_TOKENS
 
     def _run_sample(sample):
-        """Run the team on one question and return what it got right."""
-        question = sample.get('question') if isinstance(sample, dict) else sample['question']
-        answer = sample.get('answer') if isinstance(sample, dict) else sample['answer']
-        answer_type = _infer_answer_type(answer)
-        # The tagged dataset stores answers as strings; the gsm8k evaluator rounds
-        # them with numpy, which raises on a string.
-        if answer_type == 'gsm8k':
-            answer = float(answer)
-        SUFFIX = SUFFIXES[answer_type]
-        sample_tags = sample.get('tags') if isinstance(sample, dict) else sample['tags']
-        if sample_tags is None:
-            sample_tags = []
-
-        # Build messages and persona configs in the same order as selected_team
-        messages = []
-        persona_configs = []
-        agent_names = []
-
-        for pname in selected_team:
-            p_data = personas.get(pname)
-            if isinstance(p_data, dict):
-                content = f"{p_data.get('prompt','')}\n\n{question + SUFFIX}"
-                persona_configs.append(get_persona_config(pname, personas))
-            else:
-                content = f"{p_data}\n\n{question + SUFFIX}" if p_data else f"{question + SUFFIX}"
-                persona_configs.append(None)
-
-            messages.append({"role": "user", "content": content})
-            agent_names.append(pname)
-
-        # If `agents` is a list we can call each agent separately in parallel.
-        if isinstance(agents, (list, tuple)) and len(agents) >= n_agents:
-            def _call_one(i, msg, cfg):
-                # engine returns a list for the given call; extract single element
-                res = engine([msg], agents[i % len(agents)], 1, persona_configs=[cfg])
-                if isinstance(res, (list, tuple)) and len(res) > 0:
-                    return _response_text(res[0])
-                return _response_text(res)
-
-            # Results are placed by index, not by completion order: agent_names is
-            # zipped against this list, so a response landing in the wrong slot
-            # would credit one agent's answer to another.
-            response_texts = [""] * n_agents
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(32, n_agents)) as ex:
-                futures = {
-                    ex.submit(_call_one, i, msg, cfg): i
-                    for i, (msg, cfg) in enumerate(zip(messages, persona_configs))
-                }
-                for fut in concurrent.futures.as_completed(futures):
-                    idx = futures[fut]
-                    try:
-                        response_texts[idx] = fut.result()
-                    except (APIConnectionError, APITimeoutError):
-                        # A server that is down is not a wrong answer. Swallowing
-                        # this scored a whole held-out split at 0% once, silently:
-                        # every agent returned "", every answer parsed as empty,
-                        # and nothing above ever saw an exception to retry on.
-                        # Let it reach the caller's retry instead.
-                        raise
-                    except Exception as error:
-                        print(f"[warn] agent {agent_names[idx]} failed on one question: {error!r}")
-                        response_texts[idx] = ""
-        else:
-            # Fallback: call engine in batch mode (synchronous)
-            responses = engine(messages, agents, n_agents, persona_configs=persona_configs)
-            response_texts = [_response_text(r) for r in responses]
-
-        # Preserve original agent order when zipping names -> responses
-        agent_responses = dict(zip(agent_names, response_texts))
-
-        # Use repository evaluator voting logic to get team decision and per-agent final answers
-        if answer_type == 'gsm8k':
-            final_answers, debate_answer, is_corr = evaluate_gsm8k(agent_responses, answer)
-        else:
-            final_answers, debate_answer, is_corr = evaluate_mcq(agent_responses, answer)
-
-        correct_by_agent = {}
-        for name, pred in zip(agent_names, final_answers):
-            try:
-                if answer_type == 'gsm8k':
-                    correct = (pred != "" and pred == np.round(answer, 1))
-                else:
-                    correct = (pred != "" and pred == answer)
-            except Exception:
-                # conservative: treat as incorrect on errors
-                correct = False
-            correct_by_agent[name] = bool(correct)
-
-        return {
-            "tags": sample_tags,
+        sample = sample if isinstance(sample, dict) else dict(sample)
+        answer_type = answer_type_of(sample)
+        scorer = scorers[answer_type]
+        # The tagged dataset stores every answer as a string, numeric ones
+        # included; the scorer knows what its own comparison needs.
+        gold = scorer.normalise_gold(sample["answer"])
+        result = run_question(
+            config, sample["question"], gold, scorer=scorer, personas=personas,
+            registry=registry, max_tokens=max_tokens, tie_break=tie_break,
+            request_seed=None if request_seed is None or request_seed < 0 else request_seed,
+        )
+        by_id = {r["id"]: r for r in result["stages"]}
+        result.update({
+            "tags": sample.get("tags") or [],
+            "dataset": sample.get("dataset"),
             "answer_type": answer_type,
-            "correct_by_agent": correct_by_agent,
-            "team_correct": bool(is_corr),
-            "responses": agent_responses,
-        }
+            "question": sample["question"],
+            "gold": str(gold),
+            # The per-agent views the counters below and older readers use.
+            # A response nobody could parse is kept apart from a wrong one.
+            "correct_by_agent": {a: by_id[credit[a]]["correct"] for a in agents},
+            "parsed_by_agent": {a: by_id[credit[a]]["parsed"] for a in agents},
+            "predictions": {a: by_id[credit[a]]["prediction"] for a in agents},
+            "responses": {a: by_id[credit[a]]["response"] for a in agents},
+        })
+        return result
 
     # Questions are independent, so run them together rather than one at a time:
     # a batch of 5 questions with 4 agents is 20 requests the server can overlap.
-    workers = max(1, min(int(getattr(args, 'eval_workers', 5) or 1), len(sampled_questions)))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        results = list(ex.map(_run_sample, list(sampled_questions)))
+    samples = list(sampled_questions)
+    workers = max(1, min(int(getattr(args, "eval_workers", 5) or 1), len(samples) or 1))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(_run_sample, samples))
 
-    answer_types = Counter(r["answer_type"] for r in results if r)
+    # A batch in which every call failed is a broken setup - a wrong served
+    # name in --models_file, a prompt over the context limit, a bad budget -
+    # not a team that got everything wrong. Raise, so the caller records an
+    # evaluation error instead of a zero.
+    stage_records = [stage for r in results for stage in r["stages"]]
+    if stage_records and all(stage["error"] for stage in stage_records):
+        raise RuntimeError(f"every call in this batch failed; first error: {stage_records[0]['error']}")
 
+    per_agent_correct = {sid: 0 for sid in agents}
+    per_agent_correct_by_tag: Dict[str, Dict[str, int]] = {}
+    per_tag_counts: Dict[str, int] = {}
+    team_correct = 0
     for result in results:
-        if result is None:
-            continue
-        total += 1
-
         print("\n" + "=" * 60)
         print("AGENT RESPONSES")
         print("=" * 60)
         print(f"{result['responses']}\n")
         print("=" * 60)
+        for sid, correct in result["correct_by_agent"].items():
+            per_agent_correct[sid] += int(correct)
+        for tag in result["tags"]:
+            per_tag_counts[tag] = per_tag_counts.get(tag, 0) + 1
+            row = per_agent_correct_by_tag.setdefault(tag, {sid: 0 for sid in agents})
+            for sid, correct in result["correct_by_agent"].items():
+                row[sid] += int(correct)
+        team_correct += int(result["team_correct"])
 
-        for name, correct in result["correct_by_agent"].items():
-            if correct:
-                per_agent_correct[name] += 1
-
-        for t in result["tags"]:
-            per_tag_counts[t] = per_tag_counts.get(t, 0) + 1
-            for name, correct in result["correct_by_agent"].items():
-                if correct:
-                    per_agent_correct_by_tag.setdefault(t, {})
-                    per_agent_correct_by_tag[t][name] = per_agent_correct_by_tag[t].get(name, 0) + 1
-
-        team_correct += 1 if result["team_correct"] else 0
-
-    # Compute accuracies
-    per_agent_accuracy = {name: (per_agent_correct[name] / total if total > 0 else 0.0) for name in selected_team}
-    # Compute per-agent accuracy per tag
-    per_agent_accuracy_by_tag = {}
-    for t in tag_set:
-        denom = per_tag_counts.get(t, 0) or 1
-        per_agent_accuracy_by_tag[t] = {name: (per_agent_correct_by_tag.get(t, {}).get(name, 0) / denom) for name in selected_team}
-    team_accuracy = (team_correct / total) if total > 0 else 0.0
-
+    total = len(results)
     return {
-        "team_accuracy": team_accuracy,
-        "per_agent_accuracy": per_agent_accuracy,
-        "per_agent_accuracy_by_tag": per_agent_accuracy_by_tag,
+        "team_accuracy": team_correct / total if total else 0.0,
+        "per_agent_accuracy": {sid: (per_agent_correct[sid] / total if total else 0.0) for sid in agents},
+        "per_agent_accuracy_by_tag": {
+            tag: {sid: counts[sid] / (per_tag_counts[tag] or 1) for sid in agents}
+            for tag, counts in per_agent_correct_by_tag.items()
+        },
         "n_samples": total,
         # Raw counts, so results from several iterations can be summed rather than
         # averaged over batches of different sizes.
         "team_correct": team_correct,
-        "per_agent_correct": dict(per_agent_correct),
-        "per_agent_correct_by_tag": {t: dict(v) for t, v in per_agent_correct_by_tag.items()},
-        "per_tag_counts": dict(per_tag_counts),
-        "answer_types": dict(answer_types),
+        "per_agent_correct": per_agent_correct,
+        "per_agent_correct_by_tag": per_agent_correct_by_tag,
+        "per_tag_counts": per_tag_counts,
+        "answer_types": dict(Counter(r["answer_type"] for r in results)),
+        # What was run and what it cost, so configurations can be compared at
+        # matched compute.
+        "agents": agents,
+        "credited_stage": credit,
+        "config_id": config.config_id,
+        "config": config.to_dict(),
+        "calls": sum(r["calls"] for r in results),
+        "prompt_tokens": sum(r["prompt_tokens"] for r in results),
+        "completion_tokens": sum(r["completion_tokens"] for r in results),
+        "parse_mode": parse_mode,
+        "tie_break": tie_break,
+        # Per-question detail, for the caller to write to predictions.jsonl and
+        # then drop with `predictions.strip_samples`, so `holdout_records.jsonl`
+        # keeps its schema.
+        "samples": results,
     }

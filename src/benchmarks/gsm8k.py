@@ -1,4 +1,20 @@
-from data.base_ds import format_ds
+"""Grade-school maths word problems.
+
+Declares what the registry needs to know about this benchmark; `load`
+is the loader that used to live in `src/data/`, unchanged.
+"""
+NAME = 'gsm8k'
+ANSWER_TYPE = 'numeric'
+# The set this dataset was assigned in the paper. Names index into
+# personas.chosen_persona_bank().
+PERSONA_SET = [
+    'Conservative_Verifier',
+    'Creative_Explorer',
+    'Rigorous_Formalist',
+    'Intuitive_Estimator',
+    'Systematic_Decomposer',
+]
+
 from datasets import load_dataset
 import pandas as pd
 import re
@@ -31,3 +47,6 @@ def load_data(args, split='validation'):
         labels.append(label)
 
     return questions, labels
+
+
+load = load_data

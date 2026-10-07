@@ -1,0 +1,18 @@
+{
+  "_comment": "Copy and pass with --models_file. Keys are what a stage's \"model\" field names; \"default\" here would replace --model_name at the agent endpoint. These match the servers the small-agent sweeps used: agents on 8001, the 35B on 8002.",
+  "qwen0.8b": {
+    "served_name": "Qwen/Qwen3.5-0.8B",
+    "base_url": "http://127.0.0.1:8001/v1",
+    "context_length": 32768
+  },
+  "ministral3b": {
+    "served_name": "mistralai/Ministral-3-3B-Instruct-2512",
+    "base_url": "http://127.0.0.1:8001/v1",
+    "context_length": 32768
+  },
+  "qwen35b": {
+    "served_name": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+    "base_url": "http://127.0.0.1:8002/v1",
+    "context_length": 32768
+  }
+}

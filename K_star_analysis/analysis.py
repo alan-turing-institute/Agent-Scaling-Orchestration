@@ -174,7 +174,10 @@ def extract_one_question_B(one_q: Dict[str, Any], file_id: str, q_idx: int) -> T
     for rk in rks:
         round_obj = one_q.get(rk, {})
         r_idx = int(rk) + 1
-        responses = round_obj.get("responses", {})
+
+        responses = round_obj.get("agent_responses")
+        if not isinstance(responses, dict):
+            responses = round_obj.get("responses", {})
         if isinstance(responses, dict):
             for agent_id, payload in responses.items():
                 t = get_text(payload)
@@ -193,8 +196,10 @@ def extract_one_question_B(one_q: Dict[str, Any], file_id: str, q_idx: int) -> T
                     final_answers_last = fa_clean
         if not gt_last:
             ans = round_obj.get("answer", None)
-            if isinstance(ans, str) and ans.strip():
-                gt_last = ans.strip()
+
+            # Numeric runs write a float here, not a string
+            if ans is not None and str(ans).strip():
+                gt_last = str(ans).strip()
         if final_answers_last and gt_last:
             break
 

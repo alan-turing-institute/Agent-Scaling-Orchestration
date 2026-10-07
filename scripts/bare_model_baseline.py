@@ -20,22 +20,25 @@ import argparse
 import concurrent.futures
 import json
 import sys
+import threading
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import numpy as np
 from datasets import load_from_disk
+from openai import APIConnectionError, APITimeoutError
 
 from splits import add_split_args, make_split, split_label
 
-from evaluator import evaluate_gsm8k, evaluate_mcq, get_instruction_suffix
-from holdout_evaluation import _batch_indices
+import benchmarks
+from benchmarks import score_responses
+from holdout_evaluation import _batch_indices, with_server_retry
+from predictions import SCHEMA_VERSION, write_predictions
+from runner import question_key
 from model.openai_compat import OpenAICompatChatWrapper
-from team_evaluation import _infer_answer_type
+from team_evaluation import answer_type_of
 
 # Named so the report tables read sensibly: it occupies the slot a persona would.
 AGENT_NAME = "bare_model"
@@ -55,46 +58,109 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--max_tokens", type=int, default=4096)
+    parser.add_argument("--max_inflight", type=int, default=0,
+                        help="Cap on requests in flight; 1 makes greedy output reproducible")
+    parser.add_argument("--parse_mode", choices=["strict", "lenient"], default="strict",
+                        help="strict reproduces the parsers every result so far used; lenient fixes them")
     parser.add_argument("--limit", type=int, default=0, help="Answer only the first N held-out questions; 0 means all")
+    parser.add_argument("--response_chars", type=int, default=0,
+                        help="Clip stored responses to this many characters; 0 keeps them whole")
     parser.add_argument("--out_dir", default="data-claude/orchestrator/bare_model")
     return parser.parse_args()
 
 
-def answer_one(agent, sample, suffixes, args):
+def answer_one(agent, sample, scorers, args):
     """Ask the model one question and score it exactly as a team agent is scored."""
     question = sample["question"]
     answer = sample["answer"]
-    answer_type = _infer_answer_type(answer)
-    # The tagged dataset stores answers as strings and the gsm8k evaluator rounds
-    # with numpy, which raises on a string.
-    if answer_type == "gsm8k":
-        answer = float(answer)
+    answer_type = answer_type_of(sample)
+    scorer = scorers[answer_type]
+    # The tagged dataset stores every answer as a string, numeric ones included.
+    answer = scorer.normalise_gold(answer)
 
-    prompt = question + suffixes[answer_type]
+    prompt = question + scorer.instruction_suffix()
+    completion, error_text = None, None
     try:
-        text = agent.complete(
+        completion = agent.generate(
             [{"role": "user", "content": prompt}],
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
         )
+        text = completion.text
+    except (APIConnectionError, APITimeoutError):
+        # A server that is down is not a wrong answer. Catching this scored a
+        # whole held-out split at 0% once; let the retry below wait it out.
+        raise
     except Exception as error:
         print(f"[warn] call failed: {error!r}; scoring as incorrect")
-        text = ""
+        text, error_text = "", repr(error)
 
-    responses = {AGENT_NAME: text}
-    if answer_type == "gsm8k":
-        final_answers, _, is_correct = evaluate_gsm8k(responses, answer)
-    else:
-        final_answers, _, is_correct = evaluate_mcq(responses, answer)
+    result = score_responses(scorer, {AGENT_NAME: text}, answer)
+    prediction = result.predictions[0]
 
     # With one respondent the majority answer is that respondent's, so the team
     # verdict and the agent verdict are the same fact recorded in both places.
     return {
         "tags": sample["tags"] or [],
         "answer_type": answer_type,
-        "correct": bool(is_correct),
-        "prediction": str(final_answers[0]) if final_answers else "",
+        "correct": bool(result.correct),
+        "parsed": prediction.parsed,
+        "prediction": str(prediction.legacy),
+        "gold": str(result.gold),
+        "question": question,
+        "response": text,
+        "dataset": sample.get("dataset"),
+        "completion": completion,
+        "error": error_text,
+    }
+
+
+def prediction_row(r, batch_index, question_index, args):
+    completion = r.get("completion")
+    usage = completion.usage() if completion else {}
+    response = r.get("response") or ""
+    reasoning = completion.reasoning if completion else ""
+    if args.response_chars:
+        response = response[:args.response_chars]
+        reasoning = reasoning[:args.response_chars]
+    stage = {
+        "id": AGENT_NAME, "persona": None, "role": "solver", "model": args.model_name,
+        "inputs": [], "max_tokens": args.max_tokens, "seed": None,
+        "response": response,
+        "reasoning": reasoning,
+        "used_reasoning": completion.used_reasoning if completion else False,
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "finish_reason": usage.get("finish_reason"),
+        "latency_s": usage.get("latency_s"),
+        "served_model": args.model_name,
+        "error": r.get("error"),
+        "prediction": r["prediction"], "parsed": r["parsed"], "correct": r["correct"],
+        "transition": None, "copied": None,
+    }
+    return {
+        "schema": SCHEMA_VERSION,
+        "arm": "bare_model",
+        "batch": batch_index,
+        "question_index": question_index,
+        "question_key": question_key(r.get("question")),
+        "dataset": r.get("dataset"),
+        "answer_type": r["answer_type"],
+        "tags": r["tags"],
+        "question": r.get("question"),
+        "gold": r.get("gold"),
+        "team": [AGENT_NAME],
+        "config_id": None,
+        "aggregation": {"rule": "stage", "over": [AGENT_NAME], "tie_break": None},
+        "team_answer": r["prediction"],
+        "team_correct": r["correct"],
+        "calls": 1,
+        "depth": 1,
+        "prompt_tokens": stage["prompt_tokens"] or 0,
+        "completion_tokens": stage["completion_tokens"] or 0,
+        "versions": {"parse_mode": args.parse_mode, "role_templates": None},
+        "stages": [stage],
     }
 
 
@@ -113,18 +179,21 @@ def main():
         base_url=args.api_base_url,
         model_name=args.model_name,
         api_key=args.api_key,
+        limiter=threading.BoundedSemaphore(args.max_inflight) if args.max_inflight > 0 else None,
     )
 
-    # get_instruction_suffix keys off dataset names and its fallback asks for a
-    # numeric answer, so both suffixes are built up front and chosen per question.
-    suffixes = {
-        "gsm8k": get_instruction_suffix(SimpleNamespace(data="gsm8k", bae=False, cot=False)),
-        "mcq": get_instruction_suffix(SimpleNamespace(data="arc", bae=False, cot=False)),
+    # Each scorer states the answer format it can read, so a split that mixes
+    # numeric and multiple-choice questions asks each one for the right thing.
+    scorers = {
+        answer_type: benchmarks.get_scorer(answer_type, mode=args.parse_mode)
+        for answer_type in ("numeric", "mcq")
     }
 
     batches = _batch_indices(len(test_dataset), args.test_batch_size, args.split_seed)
     records_path = out_dir / "holdout_records.jsonl"
     records_path.unlink(missing_ok=True)
+    predictions_path = out_dir / "holdout_predictions.jsonl"
+    predictions_path.unlink(missing_ok=True)
 
     total = correct = 0
     tag_counts, tag_correct = Counter(), Counter()
@@ -137,7 +206,8 @@ def main():
         # attributed to the wrong question.
         results = [None] * len(samples)
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(answer_one, agent, s, suffixes, args): i
+            futures = {pool.submit(with_server_retry,
+                                   lambda s=s: answer_one(agent, s, scorers, args), "bare model call"): i
                        for i, s in enumerate(samples)}
             for future in concurrent.futures.as_completed(futures):
                 results[futures[future]] = future.result()
@@ -172,6 +242,11 @@ def main():
         with records_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, default=str) + "\n")
 
+        # Same per-question detail the team arms write, in the same shape: one
+        # stage, no persona, so the arms can be compared question by question.
+        write_predictions(predictions_path, [prediction_row(r, batch_index, indices[position], args)
+                                             for position, r in enumerate(results)])
+
     summary = {
         "run": str(out_dir),
         "selection": "none (bare model)",
@@ -189,7 +264,7 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"BARE MODEL: {correct}/{total} = {correct / total:.1%}" if total else "BARE MODEL: no questions")
-    print(f"Written to {summary_path} and {records_path}")
+    print(f"Written to {summary_path}, {records_path} and {predictions_path}")
 
 
 if __name__ == "__main__":

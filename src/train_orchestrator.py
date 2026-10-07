@@ -16,9 +16,12 @@ from pathlib import Path
 from datasets import load_from_disk
 from openai import APIConnectionError, APITimeoutError
 
-from model.model_utils import build_agent_pool
+from model.model_utils import DEFAULT_MAX_NEW_TOKENS
+from personas import build_agent_pool
 from orchestration.orchestrator import OrchestratorAgent, RandomSelector, team_selection
 from holdout_evaluation import evaluate_holdout
+from predictions import save_report
+from runner import add_runner_args, add_topology_args
 from splits import add_split_args, make_split, split_label
 from team_evaluation import run_team_evaluation
 from summariser import save_evaluation_summary, save_evaluation_summary_with_llm
@@ -45,19 +48,23 @@ def parse_args():
     parser.add_argument("--iterations", type=int, default=10, help="Number of select-evaluate-summarise cycles")
     parser.add_argument("--num_samples", type=int, default=5, help="Number of questions to sample for team selection")
     parser.add_argument("--eval_workers", type=int, default=5, help="Questions evaluated concurrently within one batch")
+    parser.add_argument("--max_new_tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS,
+                        help="Generation budget per agent answer. Until now this could not be set from here at all, and the OpenAI-compatible wrapper pinned it to 4096 regardless")
     parser.add_argument("--team_size", type=int, default=4, help="Number of agents the orchestrator must select")
     parser.add_argument("--orchestrator_max_tokens", type=int, default=8192, help="Token budget for one selection. A reasoning model spends most of it thinking, and a long scoreboard leaves less room for the answer")
     parser.add_argument("--seed", type=int, default=None, help="Seed for tag and question sampling")
     parser.add_argument("--test_batch_size", type=int, default=None, help="Questions per held-out batch (default: --num_samples)")
     parser.add_argument("--random_baseline", action="store_true", help="Also score a randomly chosen team on every held-out batch")
     add_split_args(parser)
+    add_runner_args(parser)
+    add_topology_args(parser)
     parser.set_defaults(test_fraction=0.0)
-    parser.add_argument("--solver", choices=["vote", "debate"], default="vote", help="How to aggregate the selected team answers (only vote is implemented)")
     parser.add_argument("--out_dir", default="data-claude/orchestrator", help="Directory for the run's outputs")
     parser.add_argument("--output_path", default=None, help="Run record JSONL (default: {out_dir}/run_records.jsonl)")
     parser.add_argument("--md_file", default=None, help="Scoreboard markdown (default: {out_dir}/agent_performance_by_tag.md)")
     parser.add_argument("--state_file", default=None, help="Scoreboard counts JSON (default: {out_dir}/agent_performance_state.json)")
     parser.add_argument("--selection_csv", default=None, help="Team selection log (default: {out_dir}/team_selection_results.csv)")
+    parser.add_argument("--predictions_path", default=None, help="Per-question predictions and responses (default: {out_dir}/predictions.jsonl)")
     parser.add_argument(
         "--summary_every",
         type=int,
@@ -82,6 +89,10 @@ def parse_args():
         default="counts",
         help="counts: scoreboard rendered from recorded counts. llm: the model rewrites the markdown each iteration",
     )
+    parser.add_argument("--response_chars", type=int, default=0,
+                        help="Clip stored agent responses to this many characters. "
+                             "0 keeps them whole, which is what makes a run re-scorable "
+                             "without hitting the GPU again")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode for verbose output")
 
     args = parser.parse_args()
@@ -91,6 +102,7 @@ def parse_args():
     args.md_file = args.md_file or str(out_dir / "agent_performance_by_tag.md")
     args.state_file = args.state_file or str(out_dir / "agent_performance_state.json")
     args.selection_csv = args.selection_csv or str(out_dir / "team_selection_results.csv")
+    args.predictions_path = args.predictions_path or str(out_dir / "predictions.jsonl")
     args.orchestrator_model = args.orchestrator_model or args.model_name
     args.orchestrator_api_base_url = args.orchestrator_api_base_url or args.api_base_url
     return args
@@ -193,8 +205,6 @@ def main():
     if args.seed is not None:
         random.seed(args.seed)
 
-    if args.solver == "debate":
-        print("[warn] --solver debate is not implemented in team_evaluation; scoring by vote")
 
     print("📂 Loading dataset...")
     dataset_path = resolve_dataset_path(args.dataset_path)
@@ -324,7 +334,7 @@ def main():
         print("\n" + "=" * 60)
         print("TEAM EVALUATION")
         print("=" * 60)
-        print(f"Team accuracy ({args.solver}): {report['team_accuracy']:.2%}")
+        print(f"Team accuracy ({args.topology}): {report['team_accuracy']:.2%}")
         for agent_name, accuracy in report["per_agent_accuracy"].items():
             print(f"{agent_name}: {accuracy:.2%}")
 
@@ -335,6 +345,9 @@ def main():
                 parts = ", ".join(f"{name}: {acc:.2%}" for name, acc in accs.items())
                 print(f" - {tag}: {parts}")
         print("=" * 60)
+
+        save_report(args.predictions_path, report, batch=iteration, arm="train",
+                    team=selected_team, response_chars=args.response_chars)
 
         evaluation = {
             "iteration": iteration,
@@ -373,6 +386,7 @@ def main():
 
     print(f"\nRun records: {args.output_path}")
     print(f"Scoreboard:  {args.md_file}")
+    print(f"Predictions: {args.predictions_path}")
 
     if test_dataset is not None:
         # Read the finished scoreboard once: it stays frozen for every held-out
