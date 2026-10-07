@@ -6,7 +6,7 @@ is the loader that used to live in `src/data/`, unchanged.
 NAME = 'gsm8k'
 ANSWER_TYPE = 'numeric'
 # The set this dataset was assigned in the paper. Names index into
-# model_utils.chosen_persona_bank().
+# personas.chosen_persona_bank().
 PERSONA_SET = [
     'Conservative_Verifier',
     'Creative_Explorer',

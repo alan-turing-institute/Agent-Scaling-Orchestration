@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional
 
 from openai import APIConnectionError, APITimeoutError
 
-from model.model_utils import get_persona_config
+from personas import get_persona_config
 from roles import ROLE_TEMPLATES_VERSION, render_handoff, render_prompt
 from team_config import TeamConfig
 

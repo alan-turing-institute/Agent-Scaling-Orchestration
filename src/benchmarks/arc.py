@@ -6,7 +6,7 @@ is the loader that used to live in `src/data/`, unchanged.
 NAME = 'arc'
 ANSWER_TYPE = 'mcq'
 # The set this dataset was assigned in the paper. Names index into
-# model_utils.chosen_persona_bank().
+# personas.chosen_persona_bank().
 PERSONA_SET = [
     'Science_Exam_Solver',
     'Concept_to_Option_Matcher',

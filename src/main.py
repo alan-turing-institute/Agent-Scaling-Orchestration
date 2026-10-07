@@ -7,7 +7,8 @@ import pandas as pd
 from tqdm import tqdm
 from datetime import datetime
 import torch
-from model.model_utils import get_agents, engine, get_persona_config, DEFAULT_MAX_NEW_TOKENS
+from model.model_utils import get_agents, engine, DEFAULT_MAX_NEW_TOKENS
+from personas import get_persona_config
 import benchmarks
 from benchmarks import score_responses
 from evaluator import extract_number, get_instruction_suffix

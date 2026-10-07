@@ -132,7 +132,7 @@ class Benchmark(Protocol):
 
     name: str
     answer_type: str          # key into benchmarks.scorers.SCORERS
-    persona_set: list[str]    # names into model_utils.chosen_persona_bank()
+    persona_set: list[str]    # names into personas.chosen_persona_bank()
 
     def load(self, args, split: str = "test") -> tuple[list[str], list[Any]]:
         """Return `(questions, labels)`.

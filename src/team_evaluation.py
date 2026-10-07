@@ -15,7 +15,8 @@ from typing import Dict, List, Optional
 
 import benchmarks
 import team_config
-from model.model_utils import DEFAULT_MAX_NEW_TOKENS, chosen_persona_bank
+from model.model_utils import DEFAULT_MAX_NEW_TOKENS
+from personas import chosen_persona_bank
 from model.registry import ModelRegistry
 from runner import run_question
 

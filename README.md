@@ -21,6 +21,7 @@ This repository provides the codebase for studying **how scaling the number of h
 │   ├── splits.py                 # Train/test split and k-fold partition, shared by every arm
 │   ├── predictions.py            # Per-question records (predictions.jsonl)
 │   ├── responses.py              # Text out of any model wrapper's return value
+│   ├── personas.py               # The 50-persona bank and the paper's per-dataset sets
 │   ├── summariser.py             # Rewrites the per-tag performance scoreboard
 │   ├── orchestration/            # Orchestrator agent and team selection
 │   │   └── orchestrator.py       # OrchestratorAgent, tag sampling, team selection prompt
@@ -36,7 +37,7 @@ This repository provides the codebase for studying **how scaling the number of h
 │   │   ├── mmlu_pro_medicine.py  # MMLU-Pro Medicine
 │   │   └── mmlu_formal_logic.py  # MMLU Formal Logic
 │   └── model/                    # Model wrappers
-│       ├── model_utils.py        # Agent factory, persona definitions, unified engine
+│       ├── model_utils.py        # Agent factory and unified engine
 │       ├── registry.py           # Model key -> served name and endpoint; in-flight cap
 │       ├── llama.py              # LLaMA (v2/v3) wrapper via HuggingFace
 │       ├── qwen.py               # Qwen wrapper via HuggingFace

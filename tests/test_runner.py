@@ -23,7 +23,7 @@ from openai import APIConnectionError  # noqa: E402
 import benchmarks  # noqa: E402
 import team_config  # noqa: E402
 import team_evaluation  # noqa: E402
-from model.model_utils import chosen_persona_bank  # noqa: E402
+from personas import chosen_persona_bank  # noqa: E402
 from model.openai_compat import Completion  # noqa: E402
 from predictions import rows_from_report, save_report  # noqa: E402
 from roles import RATIONALE_CHARS, render_handoff, render_prompt  # noqa: E402

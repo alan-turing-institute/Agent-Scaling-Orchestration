@@ -79,26 +79,31 @@ rounds + saved histories + analysis together.
 
 ### Personas
 
-Two builders, both return `{name: {prompt, temperature, top_p, style, [nvidia_persona]}}`:
+All in `src/personas.py`. Every persona is defined once, in `chosen_persona_bank()`: a flat bank of
+50, each `{prompt, temperature, top_p, style, [nvidia_persona]}`. Each call returns fresh dicts, so a
+caller may edit them. Everything else selects from that bank:
 
-- `_build_enhanced_personas(args)` — paper personas, **selected by `args.data`**, one hand-written
-  set per dataset, ~600 lines. Returns single no-op `{"None": {...}}` unless one of `multi_persona`
-  / `baseline_a` / `baseline_b` set.
-- `_build_chosen_personas(args)` — selects by name from `args.chosen_personas` (comma-separated) out
-  of `chosen_persona_bank()`, a flat 50-persona bank: the union of the per-dataset sets plus the
-  default set. Orchestrator path. `build_agent_pool()` renders that bank as the orchestrator's
-  candidate list (`name`, `specialty`, `strengths`, `style`), derived from the bank rather than
-  hand-maintained.
+- `_build_enhanced_personas(args)` — the paper's set for `args.data`. A registered benchmark names
+  it in its module's `PERSONA_SET` (`src/benchmarks/`); `_UNREGISTERED_PERSONA_SETS` covers
+  `--data` values with no module yet (humaneval, mbpp, piqa, arc_easy), and anything else gets
+  `_DEFAULT_PERSONA_SET`. Returns a single no-op `{"None": {...}}` unless one of `multi_persona` /
+  `baseline_a` / `baseline_b` is set. The paper used `Elimination_Specialist` for two different
+  personas; the bank carries the winogrande one as `Elimination_Based_Solver` and `_PAPER_NAMES`
+  renames it back under winogrande, so old histories still match.
+- `_build_chosen_personas(args)` — selects by name from `args.chosen_personas` (comma-separated).
+  Orchestrator path. `build_agent_pool()` renders the bank as the orchestrator's candidate list
+  (`name`, `specialty`, `strengths`, `style`), derived from the bank rather than hand-maintained.
 
-Three traps:
+Role instructions (solver, critic, hub, ...) are a separate layer in `roles.py`, appended after
+the persona prompt.
 
-- `get_agents` dispatches on `getattr(args, 'chosen_agents', True)` — **defaults True**. New entry
-  point lacking `chosen_agents` silently takes chosen-personas branch, then fails on missing
-  `chosen_personas`. Set both explicitly.
-- `_add_nvidia_personas` gated on `getattr(args, "persona_prompt", True)` — also **defaults True** —
-  and reads `persona_data['nvidia_persona']` unconditionally. Only gsm8k set and chosen-persona pool
-  define that key, so `--persona_prompt` on any other dataset raises KeyError.
-- `_build_enhanced_personas` has two `elif args.data in ['truthfulqa']` branches. Second is dead.
+Two traps:
+
+- `get_agents` (`model_utils.py`) dispatches on `getattr(args, 'chosen_agents', True)` —
+  **defaults True**. New entry point lacking `chosen_agents` silently takes chosen-personas branch,
+  then fails on missing `chosen_personas`. Set both explicitly.
+- `_add_nvidia_personas` appends the `nvidia_persona` block under `--persona_prompt`. Only the five
+  gsm8k personas define one; the rest are left unchanged.
 
 Per-persona `temperature`/`top_p` reach the model as `persona_configs`, passed alongside `messages`
 into `engine`, built by `get_persona_config`. Personas cycle `i % len(personas)` when `num_agents`

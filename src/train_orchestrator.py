@@ -16,7 +16,8 @@ from pathlib import Path
 from datasets import load_from_disk
 from openai import APIConnectionError, APITimeoutError
 
-from model.model_utils import build_agent_pool, DEFAULT_MAX_NEW_TOKENS
+from model.model_utils import DEFAULT_MAX_NEW_TOKENS
+from personas import build_agent_pool
 from orchestration.orchestrator import OrchestratorAgent, RandomSelector, team_selection
 from holdout_evaluation import evaluate_holdout
 from predictions import save_report

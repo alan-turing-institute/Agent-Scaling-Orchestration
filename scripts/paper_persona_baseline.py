@@ -45,7 +45,7 @@ from splits import add_split_args, make_split, split_label
 
 from holdout_evaluation import _batch_indices, with_server_retry
 from predictions import save_report
-from model.model_utils import _build_enhanced_personas
+from personas import _build_enhanced_personas
 from team_evaluation import run_team_evaluation
 
 

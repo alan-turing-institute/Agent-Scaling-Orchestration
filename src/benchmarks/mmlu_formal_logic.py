@@ -6,7 +6,7 @@ is the loader that used to live in `src/data/`, unchanged.
 NAME = 'formal_logic'
 ANSWER_TYPE = 'mcq'
 # The set this dataset was assigned in the paper. Names index into
-# model_utils.chosen_persona_bank().
+# personas.chosen_persona_bank().
 PERSONA_SET = [
     'Logical_Formalist',
     'Commonsense_Reasoner',
