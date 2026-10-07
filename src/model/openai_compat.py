@@ -5,11 +5,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-# One place that decides how long a generation may be. `complete()` used to
-# overwrite whatever the caller asked for with a hardcoded 4096, so
-# --max_new_tokens and every persona's max_new_tokens were inert on every
-# vLLM run. The constant keeps the old effective value as the *default* while
-# letting a caller that passes a budget actually get it.
 DEFAULT_MAX_TOKENS = 4096
 
 
@@ -106,8 +101,7 @@ class OpenAICompatChatWrapper:
 
         Sharing one across every client of a server caps how many requests are
         in flight there. At 1, every request runs alone, which is what makes
-        greedy output reproducible: the vLLM servers here give different text
-        for the same request depending on what else is in the batch.
+        greedy output reproducible.
         """
         self.base_url = base_url.rstrip("/")
         self.limiter = limiter
