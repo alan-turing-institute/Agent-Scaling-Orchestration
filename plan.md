@@ -733,8 +733,9 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
   - **`finance_agent`:**
     - the 50 public questions;
     - EDGAR full-text search, page store, sandboxed Python;
-    - everything online gated by `FINANCE_AGENT_ONLINE=1`, cached on disk,
-      rate-limited.
+    - external calls allowed (decided 2026-10-07): on by default,
+      `FINANCE_AGENT_ONLINE=0` for offline, cached on disk, rate-limited.
+      Each run needs `SEC_USER_AGENT` set to an organisation and contact email.
   - **Checked:**
     - a 2,568-document evidence index builds in 13 s at 0.6 GB;
     - BM25 on the raw question text puts an evidence document in the top 5
@@ -744,8 +745,8 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
       calls and the rubric scoring.
   - **Waiting on decisions or until E2 ends:**
     - **Full index.** The full BrowseComp-Plus build (8–10 GB peak) waits for E2.
-    - **External access.** Finance-Agent's online tools wait for a decision on
-      external calls; without them it can only be answered from memory.
+    - **External access** is decided: allowed. Set `SEC_USER_AGENT` before a
+      run.
     - **Web search.** It needs a Tavily key and is not implemented beyond its
       schema.
 
@@ -756,7 +757,7 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
 2. Build the full BrowseComp-Plus index.
 3. Build the pools with `scripts/build_pool.sh` (`hard`: gpqa_diamond mmlu_pro
    aime math500; `agentic`: plancraft workbench browsecomp_plus
-   [finance_agent]).
+   finance_agent; set `SEC_USER_AGENT` first).
 4. Run bare-model screens and the tool-calling screen.
 5. Hand-check 50 MATH responses.
 - **Waits:** tagging the new pool, the bare-model screens and every arm. Tagging

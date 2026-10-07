@@ -6,8 +6,8 @@ a centralized team clearly beats a single agent. The agent searches EDGAR,
 reads filings, computes, and submits an answer; an LLM judge grades it one
 rubric line at a time (`judge.Judge.criterion`).
 
-External access is a decision for whoever runs it, so every tool that leaves
-the machine is off unless `FINANCE_AGENT_ONLINE=1`. Online:
+External calls are allowed (decided 2026-10-07); `FINANCE_AGENT_ONLINE=0`
+turns every tool that leaves the machine off, for an offline run. Online:
 
 - `edgar_search` uses EDGAR's free full-text search (efts.sec.gov), not
   upstream's paid sec-api.io. The SEC requires a declared contact in the
@@ -82,11 +82,11 @@ def fetch(args):
 
 
 def online():
-    return os.environ.get("FINANCE_AGENT_ONLINE") == "1"
+    return os.environ.get("FINANCE_AGENT_ONLINE", "1") != "0"
 
 
-OFFLINE = ("ERROR: external access is off for this run. Answer from what you know, or set "
-           "FINANCE_AGENT_ONLINE=1 (and SEC_USER_AGENT) to allow EDGAR and page fetches.")
+OFFLINE = ("ERROR: external access is off for this run (FINANCE_AGENT_ONLINE=0). Answer from what "
+           "you know.")
 
 
 def http_get(url, root, headers=None):

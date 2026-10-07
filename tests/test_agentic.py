@@ -413,16 +413,23 @@ def test_finance_environment():
                            {"operator": "correctness", "criteria": "2024"},
                            {"operator": "contradiction", "criteria": "$5B"}], "root": tempfile.mkdtemp()}
     env = finance_agent.FinanceTask(metadata, FakeJudge(""))
-    os.environ.pop("FINANCE_AGENT_ONLINE", None)
+    os.environ["FINANCE_AGENT_ONLINE"] = "0"
     check("offline, EDGAR is refused", env.call("edgar_search", {"query": "x"}), finance_agent.OFFLINE)
     check("no web_search without a key", "web_search" in [t["function"]["name"] for t in env.tools()], False)
+    agent = os.environ.pop("SEC_USER_AGENT", None)
+    try:
+        check("no SEC request without a declared contact",
+              finance_agent.http_get("https://efts.sec.gov/x", metadata["root"])[1].startswith("ERROR: set SEC_USER_AGENT"), True)
+    finally:
+        if agent is not None:
+            os.environ["SEC_USER_AGENT"] = agent
 
     pages = {"https://efts.sec.gov": json.dumps({"hits": {"hits": [{"_id": "0001-23-000001:doc.htm", "_source": {
         "ciks": ["0000320193"], "display_names": ["Apple"], "form": "10-K", "file_date": "2024-11-01"}}]}}),
              "https://www.sec.gov/page": "<html><body><p>Revenue was $5B in 2024.</p><script>x</script></body></html>"}
     original = finance_agent.http_get
     finance_agent.http_get = lambda url, root, headers=None: (200, next(v for k, v in pages.items() if url.startswith(k)))
-    os.environ["FINANCE_AGENT_ONLINE"] = "1"
+    os.environ.pop("FINANCE_AGENT_ONLINE")  # online is the default
     try:
         hits = json.loads(env.call("edgar_search", {"query": "revenue", "end_date": "2030-01-01"}))
         check("EDGAR hits become filing URLs", hits[0]["url"], "https://www.sec.gov/Archives/edgar/data/320193/000123000001/doc.htm")
@@ -432,7 +439,6 @@ def test_finance_environment():
         check("read_page reads from a position", env.call("read_page", {"key": "k", "start": 12}).split("\n")[1], "$5B in 2024.")
     finally:
         finance_agent.http_get = original
-        os.environ.pop("FINANCE_AGENT_ONLINE", None)
 
     env.call("submit_final_result", {"final_result": "Revenue was $5B in 2024."})
     outcome = env.outcome()
