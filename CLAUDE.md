@@ -8,7 +8,9 @@ Research code for paper *Understanding Agent Scaling in LLM-Based Multi-Agent Sy
 `README.md` has paper story, persona table, K\* definition, full flag list.
 
 Collection of experiment entry points, not a library. No lint, no packaging, no `__init__.py`.
-Offline tests in `tests/` run directly as scripts.
+Offline tests in `tests/` run directly as scripts. `tests/mock_openai_server.py` is a stand-in
+OpenAI-compatible server for running real entry points without a model, and `tests/mock_e2e.sh`
+builds a small pool and runs every arm against it. Never point tests at a server a sweep is using.
 
 Two pipelines share `src/model` and `src/benchmarks`:
 
@@ -205,8 +207,8 @@ semaphore in `model/registry.py`) runs every request alone: two runs of the same
 `scripts/run_config.py` runs one fixed config over the held-out split in the same batches as the
 orchestrator arms. `scripts/rescore.py` re-scores a predictions file under another parser without
 calling a model. `scripts/compare_runs.py` pairs arms question by question across folds and
-repeats (McNemar / sign-flip, Holm-corrected) and prints each arm's repeat-to-repeat flip rate. Offline tests: `PYTHONPATH=src python tests/test_runner.py` and
-`tests/test_scorers.py` (no pytest in the pinned env).
+repeats (McNemar / sign-flip, Holm-corrected) and prints each arm's repeat-to-repeat flip rate. Offline tests: `PYTHONPATH=src python tests/test_runner.py`,
+`tests/test_scorers.py` and `tests/test_benchmarks.py` (no pytest in the pinned env).
 
 `summariser.py` — two modes. `save_evaluation_summary` (default, `--summariser counts`) folds those
 counts into `agent_performance_state.json` and renders the markdown from it: agent totals, per-tag
@@ -240,6 +242,10 @@ whole `asyncio.gather`, so nothing is written — check every dataset loads befo
 `canonicalise_tags.py` builds the raw-tag → canonical-tag mapping from the data: lexical
 normalisation (case, punctuation, plurals, word order, filler) then LLM clustering in batches,
 re-clustering the batch canonicals until a round merges nothing. Writes `data-claude/tag_mapping.json`.
+`--extend <mapping>` grows an existing mapping for a new pool without changing any entry in it:
+new raw tags are matched to existing canonicals (lexically, then by the model), and only the rest
+are clustered. `scripts/build_pool.sh` runs tag → extend → save for a new pool (`POOL`, `DATA`),
+writing `data-claude/tagged_<POOL>`; the drivers take it as `DATASET=data-claude/tagged_<POOL>`.
 
 `tag_dataset.py` applies that mapping, then the hand-written `TAG_MAPPING`, drops tags under 5
 occurrences, saves the HF dataset. Now argparse behind a `main()` guard (`--tags_file`,
@@ -257,6 +263,20 @@ splits. Adding a benchmark means one module plus one line in `_MODULES` in
 `winogrande` load `truthfulqa/truthful_qa` and `allenai/winogrande`, because current
 `huggingface_hub` rejects the bare ids they used before. Both remap `test` to `validation`
 internally.
+
+Benchmarks added after the paper have `PERSONA_SET = []`: `paper_persona_names` gives them the
+default set, and `paper_persona_baseline.py` (the canonical arm) refuses them. They live in their
+own pool, never in the 699-question one:
+
+- `gpqa_diamond` — 198 four-option questions, gated (accept the terms on Hugging Face once).
+  Options are shuffled per question, seeded by its record id, so the order is fixed.
+- `mmlu_pro` — law, engineering, physics, chemistry by default (`--sub_data` to change), 50 each;
+  up to ten options (A–J). Not `pro_medicine`, which is MMLU's four-option professional medicine.
+- `aime` — 2022–2025, 120 problems, integer answers, numeric scorer. Needs a large token budget.
+
+`scripts/fetch_benchmarks.py` downloads every registered set and reports counts; a module may define
+`fetch(args)` for data its loader does not pull itself. gsm8k's loader returns nothing at
+`--data_size 0` (it takes `head(data_size)`), which the script flags.
 
 ### K\* analysis
 

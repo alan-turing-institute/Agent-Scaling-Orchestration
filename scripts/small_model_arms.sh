@@ -38,6 +38,13 @@
 #   MODEL=Qwen/Qwen3.5-0.8B LABEL=qwen3.5-0.8b ./scripts/small_model_arms.sh
 #   MODEL=mistralai/Ministral-3-3B-Instruct-2512 LABEL=ministral3-3b FOLDS="0 1 2 3 4" ./scripts/small_model_arms.sh
 #
+# DATASET (default data-claude/tagged_dataset) picks the question pool; any other
+# pool, e.g. DATASET=data-claude/tagged_hard from scripts/build_pool.sh, adds its
+# name to the output root (crossval-small-hard/...) so pools never mix. The
+# canonical arm needs the paper's persona sets, so it refuses pools whose
+# benchmarks have none. MAX_TOKENS (default 4096, what every run so far used)
+# is the agents' generation budget; long-solution sets such as AIME want more.
+#
 # Finished arms are skipped, so a stopped sweep resumes where it left off.
 set -u
 
@@ -52,8 +59,12 @@ ORCH_API=${ORCH_API:-http://127.0.0.1:8002/v1}
 ITERATIONS=${ITERATIONS:-30}
 ARMS=${ARMS:-"bare_model random no_memory continual"}
 TEAM_SIZE=${TEAM_SIZE:-4}
+DATASET=${DATASET:-data-claude/tagged_dataset}
+MAX_TOKENS=${MAX_TOKENS:-4096}
 SUFFIX=""
 [ "$TEAM_SIZE" != "4" ] && SUFFIX="-team$TEAM_SIZE"
+POOL=$(basename "$DATASET"); POOL=${POOL#tagged_}
+[ "$POOL" != "dataset" ] && SUFFIX="$SUFFIX-$POOL"
 FOLDS=${FOLDS:-}
 N_FOLDS=${N_FOLDS:-5}
 if [ -n "$FOLDS" ]; then
@@ -83,14 +94,15 @@ run_arm() {  # arm split out log
     wait_for "$API" "$MODEL"
     case $arm in no_memory|continual) wait_for "$ORCH_API" "$ORCH_MODEL" ;; esac
     echo "=== $out starting $(date -u +%FT%TZ) ==="
-    loop="--dataset_path data-claude/tagged_dataset --model_name $MODEL --api_base_url $API $split \
-        --num_samples 5 --team_size $TEAM_SIZE --seed 0 --test_batch_size 5 --eval_workers 5"
+    loop="--dataset_path $DATASET --model_name $MODEL --api_base_url $API $split \
+        --num_samples 5 --team_size $TEAM_SIZE --seed 0 --test_batch_size 5 --eval_workers 5 \
+        --max_new_tokens $MAX_TOKENS"
     orch="--orchestrator_model $ORCH_MODEL --orchestrator_api_base_url $ORCH_API"
     # shellcheck disable=SC2086
     case $arm in
         bare_model)
-            $PYTHON -u scripts/bare_model_baseline.py --dataset_path data-claude/tagged_dataset \
-                --model_name "$MODEL" --api_base_url "$API" $split \
+            $PYTHON -u scripts/bare_model_baseline.py --dataset_path "$DATASET" \
+                --model_name "$MODEL" --api_base_url "$API" $split --max_tokens "$MAX_TOKENS" \
                 --out_dir "$out" > "$log" 2>&1 ;;
         random)
             $PYTHON -u src/train_orchestrator.py $loop --iterations 0 \
@@ -105,7 +117,7 @@ run_arm() {  # arm split out log
                 --summary_every 1 \
                 --out_dir "$out" > "$log" 2>&1 ;;
         canonical)
-            $PYTHON -u scripts/paper_persona_baseline.py --dataset_path data-claude/tagged_dataset \
+            $PYTHON -u scripts/paper_persona_baseline.py --dataset_path "$DATASET" \
                 --model_name "$MODEL" --api_base_url "$API" $split \
                 --team_size "$TEAM_SIZE" --test_batch_size 5 --eval_workers 5 \
                 --out_dir "$out" > "$log" 2>&1 ;;

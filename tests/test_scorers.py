@@ -138,8 +138,12 @@ def test_registry():
     check("registry is populated", len(names) >= 7, True)
     check("gsm8k is numeric", benchmarks.answer_type_of("gsm8k"), "numeric")
     check("arc is mcq", benchmarks.answer_type_of("arc"), "mcq")
-    check("every benchmark has a persona set",
-          all(len(benchmarks.persona_set(n)) == 5 for n in names), True)
+    paper = ["gsm8k", "arc", "hellaswag", "truthfulqa", "winogrande", "pro_medicine", "formal_logic"]
+    check("every paper benchmark has its five-persona set",
+          all(len(benchmarks.persona_set(n)) == 5 for n in paper), True)
+    check("benchmarks added since the paper have none",
+          {n: benchmarks.persona_set(n) for n in names if n not in paper},
+          {n: [] for n in names if n not in paper})
     check("every benchmark has a scorer",
           all(benchmarks.get(n).scorer() is not None for n in names), True)
     try:

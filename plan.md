@@ -625,6 +625,26 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
     (74/140).
   - The new tests fail on the old code.
 - **GPQA terms accepted (2026-10-07).** `gpqa_diamond.csv` downloads.
+- **H1 in code (2026-10-07).**
+  - **Modules:** `gpqa_diamond` (198), `mmlu_pro` (law, engineering, physics and
+    chemistry, 50 each) and `aime` (120). They have no paper persona set, so they
+    get the default set; the canonical arm refuses them.
+  - **C18's tag extension:** `canonicalise_tags.py --extend` keeps every existing
+    entry; the code asserts it.
+  - **Pool builder:** `scripts/build_pool.sh` (tag, extend, save to
+    `data-claude/tagged_<POOL>`).
+  - **Drivers:** `DATASET` and `MAX_TOKENS` in `small_model_arms.sh` and
+    `e2_topology_arms.sh`; another pool gets its own output root.
+  - **Downloads:** `scripts/fetch_benchmarks.py`.
+  - **Testing tools:** `tests/mock_openai_server.py` and `tests/mock_e2e.sh`.
+  - **Checked against the stand-in server, never :8001/:8002:**
+    - the pool builds;
+    - all four arms and the E2 driver run on fold 0;
+    - every held-out question gets a row, and folds stay stratified;
+    - the lexical canonicaliser output is identical to the old code's.
+  - **What a real run still needs:** `POOL=hard DATA="gpqa_diamond mmlu_pro aime"
+    ./scripts/build_pool.sh` against the 35B, then the bare-model screen. Both
+    wait until E2 frees the servers.
 - **Waits:** tagging the new pool, the bare-model screens and every arm. Tagging
   uses the 35B, which the E2 sweep is using as its orchestrator on :8002. Any
   extra load on :8001/:8002 changes the sweep's answers, because the servers'

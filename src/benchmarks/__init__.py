@@ -13,6 +13,8 @@ A module here declares:
     ANSWER_TYPE  which scorer reads its answers (benchmarks.scorers.SCORERS)
     PERSONA_SET  the personas the paper assigned it
     load(args, split) -> (questions, labels)
+
+and optionally `fetch(args)`, for data its loader does not download itself.
 """
 
 from __future__ import annotations
@@ -35,6 +37,10 @@ _MODULES = [
     "benchmarks.winogrande",
     "benchmarks.mmlu_pro_medicine",
     "benchmarks.mmlu_formal_logic",
+    # Harder static sets (H1). No persona set from the paper.
+    "benchmarks.gpqa_diamond",
+    "benchmarks.mmlu_pro",
+    "benchmarks.aime",
 ]
 
 
@@ -46,6 +52,8 @@ class ModuleBenchmark:
     answer_type: str
     persona_set: list[str]
     _load: Any
+    # Optional: downloads the loader does not do itself (scripts/fetch_benchmarks.py).
+    fetch: Any = None
 
     def load(self, args, split: str = "test"):
         return self._load(args, split=split)
@@ -73,6 +81,7 @@ def _load_registry() -> dict[str, ModuleBenchmark]:
             answer_type=module.ANSWER_TYPE,
             persona_set=list(module.PERSONA_SET),
             _load=module.load,
+            fetch=getattr(module, "fetch", None),
         )
         _REGISTRY[benchmark.name] = benchmark
     return _REGISTRY
