@@ -411,52 +411,137 @@ Leave it. If it is ever revisited, it belongs on the `Benchmark` as a
 
 ---
 
-## 6. Phase 3 — agentic benchmarks (arXiv:2512.08296)
+## 6. Phase 3 — harder benchmarks (rewritten 2026-10-07)
 
-Do not start this before section 3 lands. Sketched in dependency order.
+The seven static sets cannot separate the arms. With the 35B as agent, every team
+scored above 90%. Ministral-3B alone scores 68.7%, well above the paper's 45%
+saturation line, and none of the sets use tools. This section replaces the earlier
+trajectory-layer sketch. It is the repo-side copy of the "Harder benchmarks" section
+of the research plan artifact ("Orchestration Meets Agent Scaling"), which also has
+the per-benchmark detail.
 
-1. **Trajectory layer.** The unit of work stops being a message and becomes an
-   episode: a loop of `(action, observation)` with a tool registry, an iteration cap,
-   and a terminal `submit`. The paper's parameters, for reference: single agent 10
-   iterations; independent 3 agents, synthesis only; centralized 3 sub-agents + 1
-   orchestrator, 5 rounds × 3 iterations; decentralized 3 agents × 3 debate rounds ×
-   3 iterations.
+### 6.1 Their harness: reference only, not the runner
 
-   Note this maps onto what the repo already has. `--centralized` is a star topology
-   and `--sparse`/default are the decentralized variants; what is missing is the tool
-   loop underneath them, not the topologies.
+`ybkim95/agent-scaling` was read at HEAD `6f3bfb7` (26 May 2026). Nothing in it was
+run, and HEAD was not diffed against the v2.1.3 tag. Four findings rule it out as
+the runner for our arms:
 
-2. **`Scorer` gains a non-text branch.** `correct(prediction, gold)` becomes
-   `verify(episode, instance) -> bool`, with the text scorers as the degenerate case
-   where the episode is one turn. This is why section 3.1 puts scoring behind a
-   protocol rather than a function.
+- **One model for every agent.** `LLMConfig.get_llm()` hands the same model to the
+  lead, every sub-agent and every role. E3, E8 and E14 cannot run in it.
+- **No personas.** All sub-agents share `prompts/multi-agent/subagent.yaml`, and the
+  lead invents `{objective, strategy}` subtasks at run time
+  (`multiagent_components/plan.py`). Persona selection, our whole experiment, has
+  nothing to act on.
+- **No matched budget.** Nothing does token accounting, despite the paper's ~4,800
+  tokens per trial. There is only an optional `llm.params.max_tokens`.
+- **Wall-clock caps.** `mas_lead_agent.py` stops at 600 s per instance and 300 s per
+  round, and a global semaphore allows 3 concurrent calls. Local inference would be
+  cut off mid-run.
 
-3. **Trace logging.** Turns, inter-agent messages, tool calls, tokens per role.
-   Without it none of the paper's secondary metrics (coordination efficiency, error
-   amplification, redundancy, message density, information gain) can be computed, and
-   they are most of what makes the paper's analysis more than an accuracy table.
-   Depends on section 4.7 recording `usage`.
+Several adapters also differ from the upstream benchmarks; see the table in 6.2.
 
-4. **Order of adoption.** Cheapest first:
-   - **BrowseComp-Plus** and **Finance-Agent** are closest to the current shape — one
-     final answer, graded by an LLM judge against a gold answer or a rubric. A
-     `judged` scorer plus a web-search tool gets most of the way. Budget extra
-     repeats on BrowseComp-Plus: the paper reports it as the noisiest benchmark
-     (σ/μ = 0.32).
-   - **WorkBench** and **Plancraft** need the environment hosted and the final state
-     asserted on. No sandbox, but real integration work.
-   - **SWE-bench Verified** and **Terminal-Bench** need Docker and test execution.
-     The paper used 20-instance subsets for exactly this reason, which is a sensible
-     first target here too. **Memory contention:** the serving container already
-     holds ~50% of the 121 GB. Plan to tear the server down, or to run evaluation
-     against a remote endpoint, rather than assume both fit.
+**Decision:** implement the benchmarks natively in `src/benchmarks/` and
+`runner.py`. Borrow their data files, the PyPI `plancraft` environment, upstream
+WorkBench's tools and their grader prompts. Their harness can still reach our
+servers (LiteLLM reads `HOSTED_VLLM_API_BASE`). Keep it as a reference check: a
+single agent on a Plancraft slice should score the same in both.
 
-5. **What not to inherit.** The paper's implementation is LiteLLM + LangChain. This
-   repo has its own wrapper layer that already handles Azure, OpenAI-compatible and
-   local HF. Do not pull LangChain in for the tool loop; the `Benchmark`/`Scorer`
-   protocols in section 3 plus a small tool dispatcher is less code than adapting to
-   someone else's agent abstraction, and it keeps the existing heterogeneous-model
-   support (`--vllm_base_urls`, agent *i* → URL *i % n*) working.
+Do not pull in LangChain or Hydra: the `Benchmark` and `Scorer` protocols plus a small
+tool dispatcher are less code, and keep per-stage models working.
+
+### 6.2 Which benchmarks
+
+| Stage | Benchmark | Items | Graded by | Notes |
+|---|---|---|---|---|
+| H1 | GPQA-Diamond (`Idavidrein/gpqa`) | 198 | existing `mcq` scorer | Gated: `HF_TOKEN` from the environment. Shuffle the options with a fixed seed when loading |
+| H1 | MMLU-Pro, hard categories (`TIGER-Lab/MMLU-Pro`) | 100–300 | existing `mcq` (A–J) | For example law, engineering, physics, chemistry |
+| H1 | AIME 2022–25 (`AI-MO/aimo-validation-aime`, `math-ai/aime25`) | 120 | existing `numeric` | Small n, so treat it as a stress test. Needs long outputs |
+| H2 | MATH-500, levels 4–5 (`HuggingFaceH4/MATH-500`) | ~250 | new `math` scorer | `math-verify` or sympy equivalence |
+| H3 | Plancraft | first 100 of 580 | environment state | PyPI `plancraft` 0.4.9, pure Python. 4 tools |
+| H4 | WorkBench | 100 of 690 | upstream state match | **Their adapter is a stub:** 4 tools whose searches always return nothing, graded on keyword names only. Port upstream's 16 tools instead |
+| H5 | BrowseComp-Plus | 100 of 830 | LLM judge (35B) | **Their adapter is broken as shipped:** the index path is hard-coded and torch, faiss and tevatron are undeclared. The dense retriever wants `flash-attn`, which has no ARM wheels. Use `faiss-cpu` with a vLLM embedding server, or BM25, and record the difference |
+| H5 | Finance-Agent | 50 | LLM judge on each rubric criterion | Needs a web-search API key. Their Python tool runs model code in-process on the host, so ours must sandbox it. They have no EDGAR search |
+| out | SWE-bench Verified | 20 of 500 | repository tests | Their code hard-codes `sweb.eval.x86_64.*` images. It grades fail-to-pass tests only, and the prompt leaks the test names |
+| out | Terminal-Bench | 20 of ~86 | pytest in the container | The repo never builds the images, and arm64 support is unknown |
+
+H1–H2 are not in the paper. They are harder sets with no tools: they put a single
+agent below 45% on non-agentic tasks, through the pipeline we already have.
+
+Screen each agent model with a bare-model run first. Choose a tier per benchmark so
+that a single agent scores roughly 20–45%: the 0.8B will sit near chance on GPQA.
+
+### 6.3 Changes on top of C1–C5
+
+Numbered to continue the research plan's C list. C9 there, an adapter onto their
+Hydra harness, is replaced by C14–C17.
+
+- **C11 — scorers from the registry.** `team_evaluation.py:158` and
+  `scripts/bare_model_baseline.py:188` build scorers only for `("numeric", "mcq")`.
+  `_infer_answer_type` still guesses from the gold answer when a source is not
+  registered. Build each scorer lazily from its benchmark, and make an unknown source
+  an error. *Needed by every new benchmark; moves nothing.*
+- **C12 — instances all the way through.** `load()` returns `Instance`s with a stable
+  `id` and `metadata`. Today `load_instances` (`benchmarks/base.py:147`) drops the
+  metadata, and `tag_dataset.py:246` keeps only `dataset, question, answer, tags`.
+  The tagged dataset gains `id` and `metadata` (a JSON string). Readers give both a
+  default, so the 699-row set still loads. Gate: `tests/test_runner.py` passes and a
+  rescore of a finished arm is unchanged.
+- **C13 — new answer shapes.** `correct(prediction, gold, instance=None)`. Three new
+  scorers:
+  - `math`: canonicalise, then vote over equivalence classes.
+  - `short_text`: normalised exact match.
+  - `judged`: built with a registry handle to a `judge` model key (the 35B on 8002).
+    Its prompt is versioned, its verdicts are cached, and judge tokens are logged
+    apart from the agents' budget.
+- **C14 — tool calling.** `generate()` accepts `tools` and returns `tool_calls` in the
+  `Completion`. The model registry gains a `tools` flag. The serve scripts need
+  `--enable-auto-tool-choice --tool-call-parser …`. Today only
+  `vllm/qwen3.6/run_docker.sh` has them (`qwen3_xml`). The NVFP4 35B and the
+  small-model scripts do not. Ministral uses the `mistral` parser.
+- **C15 — environments.** A protocol next to `Benchmark`: `reset(instance)`,
+  `tools()`, `step(call) -> observation`, `done`, `outcome()` and `fork()`. A module
+  that declares `ENVIRONMENT` is agentic, and its scorer grades `outcome()`, not text.
+- **C16 — episode stages.** `Stage` gains `max_steps`. On an agentic instance,
+  `run_question` (`runner.py:104`) runs the stage as a loop: generate with tools, run
+  the call, append the observation. It stops at submit, the step cap or the token
+  budget. There is no wall-clock cap.
+  - Stages that act in sequence share one environment.
+  - Voters each get a `fork()`, and the vote is over outcomes.
+  - The paper's centralized lead invents subtasks at run time, which a static graph
+    cannot express. Instead the hub gets a `delegate(agent, instruction)` tool that
+    runs a worker's episode, so the workers are still the agents the orchestrator
+    chose.
+  - Static instances keep the one-call path.
+- **C17 — traces.** Every step goes to `traces.jsonl`, keyed by `question_key` and
+  stage id: the tool call, a clipped observation and the tokens. `predictions.jsonl`
+  stays one line per question.
+- **C18 — data, tags, pools.**
+  - One `scripts/fetch_<name>.py` per benchmark. Tokens come only from the
+    environment, never from `vllm/*.sh`.
+  - Each tier gets its own tagged dataset (`tagged_hard`, `tagged_agentic`), never
+    mixed into the 699 pool. An episode costs 10–100× a question, and in a mixed
+    batch the benchmark tag alone would drive selection.
+  - Structural tags: benchmark, tool count, and the difficulty labels each set ships
+    with.
+  - The paper assigned no personas for these sets, so `PERSONA_SET` is empty, and
+    there is no canonical arm unless sets are written the same way.
+
+### 6.4 Order
+
+1. **H1:** C11 plus three modules. Run the four existing arms on 5 folds of
+   `tagged_hard`.
+2. **H2:** C12 and the `math` scorer. Hand-check 50 responses against the
+   equivalence checker before trusting it.
+3. **H3:** C14–C17, then a tool-calling screen. Take 20 Plancraft items per model
+   and measure valid tool calls and episodes that reach a submit. If the 0.8B and
+   Ministral-3B fail it, agentic work starts at the 4B tier. Then compare 10 items
+   against their harness.
+4. **H4:** WorkBench with upstream's tools and grader. Our numbers will not be
+   comparable with the paper's, since it is unclear which adapter produced theirs.
+5. **H5:** BrowseComp-Plus, then Finance-Agent if external APIs are allowed.
+
+Section 3.4's coding benchmarks (HumanEval/MBPP) still apply. They slot in after
+H2, once a sandbox exists, and Finance-Agent's Python tool needs that sandbox too.
 
 ---
 
@@ -487,7 +572,7 @@ Do not start this before section 3 lands. Sketched in dependency order.
 | 5 | §5 parser fixes, behind flags, re-score from §4.4 | needs a re-run |
 | 6 | §3.4 coding benchmark + sandbox | — |
 | 7 | §4.6–4.7 `main.py`/vLLM, token budget | needs a re-run |
-| 8 | §6 trajectory layer | — |
+| 8 | §6 harder benchmarks: H1–H2 static, then the agentic layer (C11–C18) | — |
 
 ---
 
@@ -574,6 +659,9 @@ Experiments E2, E10 and E12 can run now: E2 through `train_orchestrator.py
 `--max_inflight 1`, one arm at a time per server. Still
 open from the list below: §4.3, §2, §5 (now a re-read, since gate runs carry
 predictions), §3.4, §6.
+
+§6 was rewritten on 2026-10-07: harder benchmarks in stages H1–H5, the agentic
+layer built natively (C11–C18), and their harness kept only as a reference check.
 
 ## Status — 2026-10-01 (registry work)
 
