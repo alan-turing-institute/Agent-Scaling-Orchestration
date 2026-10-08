@@ -213,6 +213,15 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
         "config_id": config.config_id,
         "config": config.to_dict(),
         "calls": sum(r["calls"] for r in results),
+        # Questions where a stage hit a length limit, counted apart from wrong
+        # answers so the share lost to the serving setup is visible.
+        "context_limited": sum(r.get("limit") == "context" for r in results),
+        "context_limited_correct": sum(r.get("limit") == "context" and r["team_correct"] for r in results),
+        "max_tokens_limited": sum(r.get("limit") == "max_tokens" for r in results),
+        # The same per agent answer: a team question counts as limited when any one
+        # of its agents ran out, so this is the finer measure of how often it happens.
+        "stage_answers": sum(len(r["stages"]) for r in results),
+        "stage_answers_context_limited": sum(s.get("limit") == "context" for r in results for s in r["stages"]),
         "prompt_tokens": sum(r["prompt_tokens"] for r in results),
         "completion_tokens": sum(r["completion_tokens"] for r in results),
         "parse_mode": parse_mode,

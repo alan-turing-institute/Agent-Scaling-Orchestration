@@ -30,6 +30,7 @@ from episode import report_text, run_episode
 
 from openai import APIConnectionError, APITimeoutError
 
+from model.openai_compat import is_context_limit, limit_of
 from personas import get_persona_config
 from roles import (AGENT_ROLE_TEMPLATES_VERSION, RATIONALE_CHARS, ROLE_TEMPLATES_VERSION,
                    render_agent_prompt, render_handoff, render_prompt)
@@ -255,6 +256,8 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
         except Exception as error:
             print(f"[warn] stage {stage.id} failed on one question: {error!r}")
             record["error"] = repr(error)
+            if is_context_limit(error):
+                record["limit"] = "context"
         if instruction is None:
             envs[stage.id] = env
         return record
@@ -273,6 +276,7 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
             record["response"] = run.get("response") or record["response"]
             record["outcome"] = run.get("outcome")
             record["error"] = run.get("error") or record["error"]
+            record["limit"] = run.get("limit") or record.get("limit")
             if "_prediction" in run:
                 record["_prediction"] = run["_prediction"]
         return record
@@ -328,6 +332,7 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
                 "finish_reason": completion.finish_reason,
                 "latency_s": completion.latency_s,
                 "served_model": completion.model,
+                "limit": limit_of(completion.finish_reason),
             })
         except (APIConnectionError, APITimeoutError):
             # A server that is down is not a wrong answer; let the caller retry.
@@ -335,6 +340,8 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
         except Exception as error:
             print(f"[warn] stage {stage.id} failed on one question: {error!r}")
             record["error"] = repr(error)
+            if is_context_limit(error):
+                record["limit"] = "context"
         return index, record
 
     def settle(record):
@@ -400,7 +407,12 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
         team_prediction = scorer.aggregate([predictions[sid] for sid in answer_ids], rng=rng)
 
     stage_records = [results[sid] for sid in config.stage_ids]
+    stage_limits = {r.get("limit") for r in stage_records} - {None}
     return {
+        # Whether any stage ran into a length limit: "context" (the server refused
+        # the request as too long for the model) outranks "max_tokens" (a reply cut
+        # off by the generation budget). Reports count these apart from wrong answers.
+        "limit": "context" if "context" in stage_limits else ("max_tokens" if stage_limits else None),
         "question_key": qkey,
         "stages": stage_records,
         "answer_stages": answer_ids,

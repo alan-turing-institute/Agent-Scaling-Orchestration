@@ -369,6 +369,16 @@ Judged benchmarks (`JUDGED = True`) take `judge=` in their environment factory;
 (from `--judge_model`/`--judge_api_base_url`; the drivers default it to the orchestrator's model)
 caches verdicts per prompt and counts its tokens apart from the agents'.
 
+**Length limits are not wrong answers.** A request refused as longer than the model's context
+(vLLM's 400 "maximum context length", `openai_compat.is_context_limit`) is recorded as `limit:
+"context"` on the stage. An episode stops there (`stopped: "context_limit"`) and is graded on the
+state it left; a one-call stage scores as unanswered. A reply cut off by the generation budget
+(`finish_reason: "length"`) is `limit: "max_tokens"`. Each question row carries the worst stage
+`limit`. Batch reports, holdout summaries and `report_crossval.py` count questions and agent
+answers that hit the context, and give accuracy on the questions that fit, to judge whether
+`--max-model-len` needs raising. The mock server's `--context_chars N` refuses requests the same
+way (`MOCK_ARGS` in `tests/mock_e2e.sh`).
+
 `tests/test_agentic.py` covers the loop, every topology on a toy environment, delegation and traces;
 the mock server answers requests that offer tools with deterministic tool calls.
 

@@ -25,7 +25,9 @@ case $PORT in 8000|8001|8002) echo "port $PORT is a real model server's"; exit 1
 
 WORK=$(mktemp -d)
 API=http://127.0.0.1:$PORT/v1
-$PYTHON tests/mock_openai_server.py --port "$PORT" --log "$WORK/requests.jsonl" > "$WORK/server.log" 2>&1 &
+# MOCK_ARGS passes options to the server, e.g. MOCK_ARGS="--context_chars 30000".
+# shellcheck disable=SC2086
+$PYTHON tests/mock_openai_server.py --port "$PORT" --log "$WORK/requests.jsonl" ${MOCK_ARGS:-} > "$WORK/server.log" 2>&1 &
 SERVER=$!
 cleanup() {
     kill "$SERVER" 2>/dev/null || true
@@ -69,7 +71,10 @@ for arm in arms:
     if len(rows) != len(test):
         problems.append(f"{arm}: {len(rows)} prediction rows for {len(test)} held-out questions")
     unparsed = sum(1 for r in rows for s in (r.get("stages") or []) if not s.get("parsed"))
-    print(f"  {arm:11s} {len(rows)} rows, {unparsed} unparsed stage answers")
+    limits = json.loads(summary.read_text())
+    print(f"  {arm:11s} {len(rows)} rows, {unparsed} unparsed stage answers, "
+          f"{limits.get('context_limited_questions', 0)} hit the context limit, "
+          f"{limits.get('max_tokens_limited_questions', 0)} cut off by max_tokens")
 if problems:
     print("FAILED:\n  " + "\n  ".join(problems))
     raise SystemExit(1)

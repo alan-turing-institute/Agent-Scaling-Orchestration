@@ -40,6 +40,8 @@ def read_fold(path):
         return None
     correct = questions = 0
     zeroed = 0
+    limited = {"context_limited": 0, "context_limited_correct": 0, "max_tokens_limited": 0,
+               "stage_answers": 0, "stage_answers_context_limited": 0}
     with records.open(encoding="utf-8") as fh:
         for line in fh:
             record = json.loads(line)
@@ -48,9 +50,11 @@ def read_fold(path):
                 continue
             correct += report["team_correct"]
             questions += report["n_samples"]
+            for key in limited:
+                limited[key] += report.get(key, 0) or 0
             if all(v == 0 for v in report["per_agent_correct"].values()):
                 zeroed += 1
-    return correct, questions, zeroed
+    return correct, questions, zeroed, limited
 
 
 def main():
@@ -89,7 +93,7 @@ def main():
         correct = sum(v[0] for v in per_fold.values())
         questions = sum(v[1] for v in per_fold.values())
         low, high = wilson(correct, questions)
-        each = " ".join(f"{100 * c / n:.1f}" for c, n, _ in
+        each = " ".join(f"{100 * c / n:.1f}" for c, n, _, _ in
                         (per_fold[k] for k in sorted(per_fold)))
         folds = ",".join(sorted(per_fold))
         print(f"{arm:18s} {correct:4d}/{questions:<4d} {100 * correct / questions:5.1f}%  "
@@ -101,7 +105,7 @@ def main():
     for arm, per_fold in results.items():
         if len(per_fold) < 2:
             continue
-        rates = [100 * c / n for c, n, _ in per_fold.values()]
+        rates = [100 * c / n for c, n, _, _ in per_fold.values()]
         spreads.append((max(rates) - min(rates), arm))
     if spreads:
         print("\nFold-to-fold spread within one arm (the noise floor):")
@@ -110,8 +114,30 @@ def main():
         print(f"\n  Largest within-arm spread: {max(spreads)[0]:.1f} points. "
               "Treat any gap between arms smaller than this as unresolved.")
 
+    # Questions lost to the serving setup's length limits, not to the agents:
+    # the share that hit the context window says whether to raise --max-model-len.
+    rows = []
+    for arm, per_fold in results.items():
+        totals = {k: sum(v[3][k] for v in per_fold.values()) for k in per_fold[next(iter(per_fold))][3]}
+        questions = sum(v[1] for v in per_fold.values())
+        correct = sum(v[0] for v in per_fold.values())
+        if totals["context_limited"] or totals["max_tokens_limited"]:
+            fitting = questions - totals["context_limited"]
+            rest = 100 * (correct - totals["context_limited_correct"]) / fitting if fitting else 0.0
+            answers = totals["stage_answers"]
+            share = (f"{totals['stage_answers_context_limited']:5d}/{answers:<5d} "
+                     f"({100 * totals['stage_answers_context_limited'] / answers:4.1f}%)") if answers else f"{'-':>20s}"
+            rows.append(f"  {arm:18s} {totals['context_limited']:4d}/{questions:<4d} "
+                        f"({100 * totals['context_limited'] / questions:5.1f}%)  {share}  {rest:5.1f}%  "
+                        f"{totals['max_tokens_limited']:6d}")
+    if rows:
+        print("\nLength limits (counted apart from wrong answers). A question is limited when any of its")
+        print("agents ran out of context; the agent-answer share is the finer measure.")
+        print(f"  {'arm':18s} {'questions limited':>22s}  {'agent answers limited':>20s}  {'acc. rest':>9s}  {'max_tokens':>10s}")
+        print("\n".join(rows))
+
     zeroed = [(arm, fold) for arm, per_fold in results.items()
-              for fold, (_, _, z) in per_fold.items() if z]
+              for fold, (_, _, z, _) in per_fold.items() if z]
     if zeroed:
         print("\nBatches with every agent at zero (check for a wedged server, not a hard batch):")
         for arm, fold in zeroed:

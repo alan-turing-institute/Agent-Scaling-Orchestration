@@ -21,7 +21,9 @@ the plumbing works and the records add up, not that anything is right.
     python tests/mock_openai_server.py --port 18001
 
 Every request is appended to `--log` (one JSON line each) when given, so a test
-can count calls or inspect prompts.
+can count calls or inspect prompts. `--context_chars N` makes it refuse, as vLLM
+does, any request whose messages and tools exceed N characters, so the handling
+of a full context window can be tested.
 """
 
 import argparse
@@ -165,6 +167,7 @@ def reply_for(messages):
 
 class Handler(BaseHTTPRequestHandler):
     log_path = None
+    context_chars = 0
     lock = threading.Lock()
 
     def log_message(self, *args):  # keep test output readable
@@ -189,6 +192,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.rstrip("/").endswith("/chat/completions"):
             return self._send({"error": "not found"}, 404)
         messages = request.get("messages", [])
+        size = len(json.dumps(messages)) + len(json.dumps(request.get("tools") or []))
+        if Handler.context_chars and size > Handler.context_chars:
+            # vLLM's own wording, which is what clients match on.
+            return self._send({"object": "error", "type": "BadRequestError", "code": 400,
+                               "message": f"This model's maximum context length is {Handler.context_chars // 4} "
+                                          f"tokens. However, you requested {size // 4} tokens. Please reduce the "
+                                          f"length of the messages or completion."}, 400)
         if request.get("tools"):
             message, finish = tool_reply(messages, request["tools"])
         else:
@@ -208,8 +218,9 @@ class Handler(BaseHTTPRequestHandler):
         })
 
 
-def serve(port, log_path=None):
+def serve(port, log_path=None, context_chars=0):
     Handler.log_path = log_path
+    Handler.context_chars = context_chars
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     return server
 
@@ -218,9 +229,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=18001)
     parser.add_argument("--log", default=None, help="Append every request and reply here as JSON lines")
+    parser.add_argument("--context_chars", type=int, default=0,
+                        help="Refuse requests longer than this many characters, as vLLM refuses ones over its context")
     args = parser.parse_args()
     if args.port in (8000, 8001, 8002):
         raise SystemExit(f"port {args.port} is a real model server's; pick another")
-    server = serve(args.port, args.log)
+    server = serve(args.port, args.log, args.context_chars)
     print(f"mock OpenAI server on http://127.0.0.1:{args.port}/v1", flush=True)
     server.serve_forever()

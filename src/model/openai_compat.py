@@ -23,6 +23,27 @@ def thinking_budget_extra_body() -> Dict[str, int]:
     return {"thinking_token_budget": int(budget)} if budget else {}
 
 
+_CONTEXT_MARKERS = ("maximum context length", "max_model_len", "context length exceeded",
+                    "context_length_exceeded", "prompt is too long")
+
+
+def is_context_limit(error) -> bool:
+    """Whether a failed call was refused for exceeding the model's context window.
+
+    vLLM answers 400 with "This model's maximum context length is N tokens ..."
+    when the messages plus `max_tokens` do not fit. That is a limit of the
+    serving setup, not a wrong answer, so callers record it as `limit:
+    "context"` and reports count it apart.
+    """
+    text = str(getattr(error, "message", "") or error).lower()
+    return any(marker in text for marker in _CONTEXT_MARKERS)
+
+
+def limit_of(finish_reason) -> Optional[str]:
+    """`"max_tokens"` when a reply was cut off by the generation budget, else None."""
+    return "max_tokens" if finish_reason == "length" else None
+
+
 @dataclass
 class Completion:
     """One generation and what it cost.

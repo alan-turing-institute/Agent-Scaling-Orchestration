@@ -759,6 +759,22 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
     - **Web search.** It needs a Tavily key and is not implemented beyond its
       schema.
 
+- **Context limits counted, not scored wrong (2026-10-08).**
+  - **Context:** a request vLLM refuses as too long for the context window is
+    recorded as `limit: "context"`. Episodes stop there and are graded on
+    their state.
+  - **Generation budget:** a reply cut off by `max_tokens` is `limit:
+    "max_tokens"`.
+  - **Reports:**
+    - questions limited, where any one agent ran out;
+    - agent answers limited, the finer measure;
+    - accuracy on the questions that fit.
+    These appear in batch reports, holdout summaries and `report_crossval.py`,
+    to decide whether `--max-model-len` (32,768 now) needs raising.
+  - **Why it matters:** rough sizes put WorkBench's tool list at about 7k
+    tokens a turn, and a BrowseComp-Plus episode at up to about 90k tokens
+    over 30 turns.
+
 **All of H1–H5 is now in code.** SWE-bench and Terminal-Bench stay out, per
 §6.2. Before the first real sweep, once E2 frees the servers:
 

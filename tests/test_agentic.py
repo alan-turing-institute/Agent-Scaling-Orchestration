@@ -244,6 +244,64 @@ def test_delegation():
                                 max_tokens=10), ValueError)
 
 
+CONTEXT_ERROR = ("Error code: 400 - {'object': 'error', 'message': \"This model's maximum context length is "
+                 "32768 tokens. However, you requested 33250 tokens (29154 in the messages, 4096 in the "
+                 "completion). Please reduce the length of the messages or completion.\"}")
+
+
+class Overflowing(Scripted):
+    """Raises vLLM's context-length error once the conversation passes `after` messages."""
+
+    def __init__(self, scripts, after):
+        super().__init__(scripts)
+        self.after = after
+
+    def generate(self, messages, tools=None, **kwargs):
+        if len(messages) > self.after:
+            raise RuntimeError(CONTEXT_ERROR)
+        return super().generate(messages, tools=tools, **kwargs)
+
+
+def test_length_limits_are_not_wrong_answers():
+    from holdout_evaluation import limit_summary
+    from model.openai_compat import is_context_limit
+    check("vLLM's context error is recognised", is_context_limit(RuntimeError(CONTEXT_ERROR)), True)
+    check("its newer wording too", is_context_limit("'max_tokens' is too large: 4096. This model's maximum context "
+                                                     "length is 32768 tokens and your request has 30000 input tokens"), True)
+    check("other errors are not", is_context_limit(RuntimeError("Error code: 400 - invalid tool name")), False)
+
+    # An episode that outgrows the context stops there, graded on the state it left.
+    client = Overflowing({"go": [[call("inc", by=3)], [call("submit")]]}, after=3)
+    record = run_episode(client, Counter(3), system="s", user="go", max_steps=10, max_tokens=50)
+    check("episode stops at the context limit", (record["stopped"], record["limit"]), ("context_limit", "context"))
+    check("and is graded on what it did", record["prediction"].value, "fail|n=3")
+
+    # A one-call stage refused as too long: recorded as a context limit, not an answer.
+    static = run_question(team_config.vote(["A", "B"]), "q", "1", scorer=__import__("benchmarks").get_scorer("numeric"),
+                          personas=PERSONAS, registry=Registry(Overflowing({"<A>": ["{final answer: 1}"],
+                                                                             "<B>": ["{final answer: 1}"]}, after=0)),
+                          max_tokens=10)
+    check("each stage records the limit", [s["limit"] for s in static["stages"]], ["context", "context"])
+    check("the question does too", static["limit"], "context")
+
+    truncated = run_episode(Scripted({"go": ["thinking..."]}), Counter(3), system="s", user="go", max_steps=1,
+                            max_tokens=5)
+    check("no truncation, no limit", truncated["limit"], None)
+
+    class Cut(Scripted):
+        def generate(self, messages, tools=None, **kwargs):
+            completion = super().generate(messages, tools=tools, **kwargs)
+            completion.finish_reason = "length"
+            return completion
+    cut = run_episode(Cut({"go": [[call("submit")]]}), Counter(0), system="s", user="go", max_steps=3, max_tokens=5)
+    check("a turn cut off by max_tokens", (cut["limit"], cut["truncated_turns"]), ("max_tokens", 1))
+
+    summary = limit_summary({"questions": 10, "team_correct": 6, "context_limited": 2,
+                             "context_limited_correct": 0, "max_tokens_limited": 1})
+    check("accuracy on the questions that fit", summary["accuracy_without_context_limited"], 0.75)
+    check("counts", (summary["context_limited_questions"], summary["max_tokens_limited_questions"]), (2, 1))
+
+
 def test_new_stage_fields_keep_old_config_ids():
     stage = team_config.vote(["A", "B"]).stages[0].to_dict()
     check("unset max_steps and delegates are not serialised", "max_steps" in stage or "delegates" in stage, False)

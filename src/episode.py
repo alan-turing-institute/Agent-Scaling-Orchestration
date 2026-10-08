@@ -23,6 +23,8 @@ from typing import Callable, Dict, List, Optional
 
 from openai import APIConnectionError, APITimeoutError
 
+from model.openai_compat import is_context_limit
+
 NUDGE = ("You did not call a tool. Act with one of the tools you were given; "
          "if you believe the task is finished or cannot be done, call the tool for that.")
 OBSERVATION_CHARS = 4000  # what a trace keeps of each observation; the model sees it whole
@@ -58,13 +60,25 @@ def run_episode(client, env, *, system: str, user: str, max_steps: int, max_toke
         # Carrying on from a state that already meets the goal: nothing to do.
         max_steps, stopped = 0, "already_done"
 
+    limit, truncated_turns = None, 0
     for turn in range(max_steps):
-        completion = client.generate(messages, max_tokens=max_tokens, temperature=temperature,
-                                     top_p=top_p, seed=seed, tools=tools)
+        try:
+            completion = client.generate(messages, max_tokens=max_tokens, temperature=temperature,
+                                         top_p=top_p, seed=seed, tools=tools)
+        except Exception as error:
+            if not is_context_limit(error):
+                raise
+            # The conversation no longer fits the model's context. Stop here; the
+            # environment is graded as the agent left it, and the record says why.
+            limit, stopped = "context", "context_limit"
+            steps.append({"turn": turn, "tool": None, "text": f"[context limit: {_clip(str(error), 300)}]"})
+            break
         calls += 1
         prompt_tokens += completion.prompt_tokens or 0
         completion_tokens += completion.completion_tokens or 0
         finish_reason = completion.finish_reason
+        if finish_reason == "length":
+            truncated_turns += 1
         messages.append(completion.assistant_message())
         if completion.content.strip():
             final_text = completion.content
@@ -117,6 +131,10 @@ def run_episode(client, env, *, system: str, user: str, max_steps: int, max_toke
         "completion_tokens": completion_tokens,
         "finish_reason": finish_reason,
         "tool_calls": sum(1 for s in steps if s["tool"]),
+        # "context" when the conversation outgrew the model's context window,
+        # "max_tokens" when a turn was cut off by the generation budget.
+        "limit": limit or ("max_tokens" if truncated_turns else None),
+        "truncated_turns": truncated_turns,
     }
 
 

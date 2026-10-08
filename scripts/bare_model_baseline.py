@@ -34,12 +34,12 @@ from splits import add_split_args, make_split, split_label
 
 import benchmarks
 from benchmarks import score_responses
-from holdout_evaluation import _batch_indices, with_server_retry
+from holdout_evaluation import _batch_indices, limit_summary, with_server_retry
 from episode import run_episode
 from judge import judge_from_args
 from predictions import SCHEMA_VERSION, split_traces, traces_path, write_predictions
 from runner import question_key
-from model.openai_compat import OpenAICompatChatWrapper
+from model.openai_compat import OpenAICompatChatWrapper, is_context_limit, limit_of
 
 # Named so the report tables read sensibly: it occupies the slot a persona would.
 AGENT_NAME = "bare_model"
@@ -107,6 +107,7 @@ def attempt_task(agent, sample, scorer, answer_type, args):
         "completion": None,
         "episode": episode,
         "error": error_text,
+        "limit": (episode or {}).get("limit"),
     }
 
 
@@ -137,6 +138,10 @@ def answer_one(agent, sample, scorers, args):
     except Exception as error:
         print(f"[warn] call failed: {error!r}; scoring as incorrect")
         text, error_text = "", repr(error)
+    # A request too long for the model's context is the serving setup's limit,
+    # not an answer; a reply cut off by max_tokens is the generation budget's.
+    limit = "context" if error_text and is_context_limit(error_text) else (
+        limit_of(completion.finish_reason) if completion else None)
 
     result = score_responses(scorer, {AGENT_NAME: text}, answer, instance=benchmarks.instance_of(sample))
     prediction = result.predictions[0]
@@ -156,6 +161,7 @@ def answer_one(agent, sample, scorers, args):
         "dataset": sample.get("dataset"),
         "completion": completion,
         "error": error_text,
+        "limit": limit,
     }
 
 
@@ -180,7 +186,7 @@ def prediction_row(r, batch_index, question_index, args):
         "served_model": args.model_name,
         "error": r.get("error"),
         "prediction": r["prediction"], "parsed": r["parsed"], "correct": r["correct"],
-        "transition": None, "copied": None,
+        "transition": None, "copied": None, "limit": r.get("limit"),
     }
     episode = r.get("episode")
     if episode:
@@ -203,6 +209,7 @@ def prediction_row(r, batch_index, question_index, args):
         "team": [AGENT_NAME],
         "config_id": None,
         "aggregation": {"rule": "stage", "over": [AGENT_NAME], "tie_break": None},
+        "limit": r.get("limit"),
         "team_answer": r["prediction"],
         "team_correct": r["correct"],
         "calls": stage.get("calls") or 1,
@@ -250,6 +257,7 @@ def main():
     predictions_path.unlink(missing_ok=True)
 
     total = correct = 0
+    limits = {}
     tag_counts, tag_correct = Counter(), Counter()
 
     for batch_index, indices in enumerate(batches, start=1):
@@ -267,6 +275,12 @@ def main():
                 results[futures[future]] = future.result()
 
         batch_correct = sum(r["correct"] for r in results)
+        for key, hit in (("context_limited", lambda r: r.get("limit") == "context"),
+                         ("context_limited_correct", lambda r: r.get("limit") == "context" and r["correct"]),
+                         ("max_tokens_limited", lambda r: r.get("limit") == "max_tokens"),
+                         ("stage_answers", lambda r: True),
+                         ("stage_answers_context_limited", lambda r: r.get("limit") == "context")):
+            limits[key] = limits.get(key, 0) + sum(1 for r in results if hit(r))
         total += len(results)
         correct += batch_correct
         for r in results:
@@ -291,6 +305,11 @@ def main():
                 "per_agent_correct": {AGENT_NAME: batch_correct},
                 "per_agent_accuracy": {AGENT_NAME: batch_correct / len(results) if results else 0.0},
                 "answer_types": [r["answer_type"] for r in results],
+                "context_limited": sum(r.get("limit") == "context" for r in results),
+                "context_limited_correct": sum(r.get("limit") == "context" and r["correct"] for r in results),
+                "max_tokens_limited": sum(r.get("limit") == "max_tokens" for r in results),
+                "stage_answers": len(results),
+                "stage_answers_context_limited": sum(r.get("limit") == "context" for r in results),
             },
         }
         with records_path.open("a", encoding="utf-8") as fh:
@@ -309,6 +328,7 @@ def main():
         "test_questions": total,
         "batches": len(batches),
         "team_accuracy": correct / total if total else 0.0,
+        **limit_summary({"questions": total, "team_correct": correct, **limits}),
         # Keyed the way report_run.py reads an arm: "questions" answered,
         # "selected" batches it was picked for - here, every batch.
         "agents": {AGENT_NAME: {"correct": correct, "questions": total, "selected": len(batches)}},
@@ -319,6 +339,10 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"BARE MODEL: {correct}/{total} = {correct / total:.1%}" if total else "BARE MODEL: no questions")
+    if summary["context_limited_questions"] or summary["max_tokens_limited_questions"]:
+        print(f"Hit the context limit: {summary['context_limited_questions']}; accuracy on the rest: "
+              f"{summary['accuracy_without_context_limited']:.1%}. "
+              f"Cut off by max_tokens: {summary['max_tokens_limited_questions']}")
     print(f"Written to {summary_path}, {records_path} and {predictions_path}")
 
 
