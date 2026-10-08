@@ -42,6 +42,9 @@ def _accumulate(totals, team, report):
     totals["questions"] += n_samples
     totals["team_correct"] += report.get("team_correct", 0) or 0
     totals["batches"] += 1
+    for key in ("context_limited", "context_limited_correct", "max_tokens_limited", "stage_answers",
+                "stage_answers_context_limited"):
+        totals[key] = totals.get(key, 0) + (report.get(key, 0) or 0)
 
     for name in team:
         agent = totals["agents"].setdefault(name, {"selected": 0, "questions": 0, "correct": 0})
@@ -56,6 +59,26 @@ def _accumulate(totals, team, report):
             agent = tag_state["agents"].setdefault(name, {"questions": 0, "correct": 0})
             agent["questions"] += count
             agent["correct"] += (report.get("per_agent_correct_by_tag") or {}).get(tag, {}).get(name, 0)
+
+
+def limit_summary(totals):
+    """Questions lost to length limits, and accuracy on the questions that fit.
+
+    A context overflow is the serving setup's limit, not the agent's answer:
+    the share of questions that hit it says whether `--max-model-len` needs
+    raising, and the accuracy without them says what the arm scores when the
+    context is not the constraint.
+    """
+    limited = totals.get("context_limited", 0)
+    fitting = totals["questions"] - limited
+    return {
+        "context_limited_questions": limited,
+        "context_limited_agent_answers": totals.get("stage_answers_context_limited", 0),
+        "agent_answers": totals.get("stage_answers", 0),
+        "max_tokens_limited_questions": totals.get("max_tokens_limited", 0),
+        "accuracy_without_context_limited": (
+            (totals["team_correct"] - totals.get("context_limited_correct", 0)) / fitting if fitting else 0.0),
+    }
 
 
 def _empty_totals():
@@ -204,6 +227,7 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
         "test_questions": totals["questions"],
         "batches": totals["batches"],
         "team_accuracy": (totals["team_correct"] / totals["questions"]) if totals["questions"] else 0.0,
+        **limit_summary(totals),
         "agents": totals["agents"],
         "tags": totals["tags"],
     }
@@ -224,6 +248,10 @@ def evaluate_holdout(orchestrator, test_dataset, args, pool_names, scoreboard_md
     print("=" * 60)
     print(f"Questions: {summary['test_questions']} in {summary['batches']} batches")
     print(f"Team accuracy: {summary['team_accuracy']:.2%}")
+    if summary["context_limited_questions"] or summary["max_tokens_limited_questions"]:
+        print(f"Hit the context limit: {summary['context_limited_questions']} questions; "
+              f"accuracy on the rest: {summary['accuracy_without_context_limited']:.2%}. "
+              f"Cut off by max_tokens: {summary['max_tokens_limited_questions']}")
     if random_baseline:
         print(f"Random-team baseline: {summary['baseline_team_accuracy']:.2%}")
     print(f"Written to {summary_path}, {records_path} and {predictions_path}")

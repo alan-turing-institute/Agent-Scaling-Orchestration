@@ -48,6 +48,10 @@ class Stage:
     model: str = "default"
     inputs: tuple = ()
     max_tokens: Optional[int] = None
+    # Agentic tasks only: a cap on this agent's turns (default: the benchmark's
+    # MAX_STEPS), and the stages it may call on through a `delegate` tool.
+    max_steps: Optional[int] = None
+    delegates: tuple = ()
 
     def to_dict(self):
         record = {
@@ -59,6 +63,11 @@ class Stage:
         }
         if self.max_tokens is not None:
             record["max_tokens"] = self.max_tokens
+        # Written only when set, so every config that predates them keeps its config_id.
+        if self.max_steps is not None:
+            record["max_steps"] = self.max_steps
+        if self.delegates:
+            record["delegates"] = list(self.delegates)
         return record
 
 
@@ -90,7 +99,18 @@ class TeamConfig:
                     raise ValueError(f"stage {stage.id!r} reads {item.source!r}, which is not an earlier stage")
                 if item.handoff not in HANDOFFS:
                     raise ValueError(f"stage {stage.id!r}: unknown handoff {item.handoff!r}; known: {HANDOFFS}")
+            for worker in stage.delegates:
+                if worker not in seen:
+                    raise ValueError(f"stage {stage.id!r} delegates to {worker!r}, which is not an earlier stage")
             seen.add(stage.id)
+        on_call = self.on_call()
+        for stage in self.stages:
+            if stage.id in on_call and (stage.inputs or stage.delegates):
+                raise ValueError(f"stage {stage.id!r} is called on by a delegate tool, so it cannot "
+                                 f"read other stages or delegate itself")
+            for item in stage.inputs:
+                if item.source in on_call:
+                    raise ValueError(f"stage {stage.id!r} reads {item.source!r}, which only runs when called on")
         if self.aggregate not in AGGREGATES:
             raise ValueError(f"unknown aggregate {self.aggregate!r}; known: {AGGREGATES}")
         if self.aggregate == "stage" and self.final not in seen:
@@ -109,11 +129,15 @@ class TeamConfig:
                 return s
         raise KeyError(stage_id)
 
+    def on_call(self):
+        """Stages that run only when another stage calls on them through `delegate`."""
+        return {worker for s in self.stages for worker in s.delegates}
+
     def voters(self):
         """The stages a vote counts: `vote_over`, else every stage nothing else reads."""
         if self.vote_over:
             return list(self.vote_over)
-        read = {i.source for s in self.stages for i in s.inputs}
+        read = {i.source for s in self.stages for i in s.inputs} | self.on_call()
         return [s.id for s in self.stages if s.id not in read]
 
     def answer_stages(self):
@@ -121,13 +145,21 @@ class TeamConfig:
         return [self.final] if self.aggregate == "stage" else self.voters()
 
     def layers(self):
-        """Stage ids grouped by dependency depth; stages in one layer can run together."""
+        """Stage ids grouped by dependency depth; stages in one layer can run together.
+
+        Stages called on through `delegate` are not in any layer: they run inside
+        the stage that delegates to them, when it asks.
+        """
+        on_call = self.on_call()
         depth = {}
         for s in self.stages:
+            if s.id in on_call:
+                continue
             depth[s.id] = 1 + max((depth[i.source] for i in s.inputs), default=-1)
         out = [[] for _ in range(max(depth.values()) + 1)]
         for s in self.stages:
-            out[depth[s.id]].append(s.id)
+            if s.id in depth:
+                out[depth[s.id]].append(s.id)
         return out
 
     def personas(self):
@@ -183,6 +215,8 @@ class TeamConfig:
                 model=s.get("model", "default"),
                 inputs=tuple(inputs),
                 max_tokens=s.get("max_tokens"),
+                max_steps=s.get("max_steps"),
+                delegates=tuple(s.get("delegates", ())),
             ))
         stages = tuple(stages)
         vote_over = raw.get("vote_over")
@@ -197,7 +231,7 @@ class TeamConfig:
 
 
 _CONFIG_KEYS = {"stages", "aggregate", "final", "vote_over", "max_tokens", "name"}
-_STAGE_KEYS = {"id", "persona", "role", "model", "inputs", "max_tokens"}
+_STAGE_KEYS = {"id", "persona", "role", "model", "inputs", "max_tokens", "max_steps", "delegates"}
 _INPUT_KEYS = {"source", "handoff"}
 
 
@@ -342,7 +376,24 @@ def split_budget(config: TeamConfig, total_tokens: int) -> TeamConfig:
                       name=f"{config.name}@{total_tokens}" if config.name else "")
 
 
-TOPOLOGIES = ("vote", "debate", "centralized", "synthesis", "pipeline")
+def delegated(workers: Sequence[str], hub: str, model="default", hub_model=None, max_tokens=None,
+              name="delegated"):
+    """A hub that calls on workers through a `delegate` tool, as the paper's centralized lead does.
+
+    Agentic tasks only. The workers do not run up front: the hub decides when to
+    call one and with what instruction, the worker acts on the hub's
+    environment, and its report comes back as the tool's result. The team's
+    outcome is the environment's state when the hub stops.
+    """
+    ids = _unique_ids(list(workers) + [_require(hub, "delegated hub")])
+    stages = [Stage(id=sid, persona=p, model=model) for sid, p in zip(ids[:-1], workers)]
+    stages.append(Stage(id=ids[-1], persona=hub, role="hub", model=hub_model or model,
+                        delegates=tuple(ids[:-1])))
+    return TeamConfig(stages=tuple(stages), aggregate="stage", final=ids[-1],
+                      max_tokens=max_tokens, name=name)
+
+
+TOPOLOGIES = ("vote", "debate", "centralized", "synthesis", "pipeline", "delegated")
 
 
 def for_team(team: Sequence[str], topology="vote", rounds=1, roles=None, handoff="full",
@@ -367,6 +418,10 @@ def for_team(team: Sequence[str], topology="vote", rounds=1, roles=None, handoff
         build = centralized if topology == "centralized" else synthesis
         leader = {"hub": team[-1]} if topology == "centralized" else {"synthesiser": team[-1]}
         return build(team[:-1], model=model, handoff=handoff, **leader)
+    if topology == "delegated":
+        if len(team) < 2:
+            raise ValueError(f"delegated needs at least two agents, got {team}")
+        return delegated(team[:-1], team[-1], model=model)
     if topology == "pipeline":
         roles = list(roles or default_pipeline_roles(len(team)))
         if len(roles) != len(team):

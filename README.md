@@ -22,20 +22,25 @@ This repository provides the codebase for studying **how scaling the number of h
 │   ├── predictions.py            # Per-question records (predictions.jsonl)
 │   ├── responses.py              # Text out of any model wrapper's return value
 │   ├── personas.py               # The 50-persona bank and the paper's per-dataset sets
+│   ├── episode.py                # One agent working through an agentic task with tools
+│   ├── judge.py                  # LLM judge for free-text answers (BrowseComp-Plus, Finance-Agent)
 │   ├── summariser.py             # Rewrites the per-tag performance scoreboard
 │   ├── orchestration/            # Orchestrator agent and team selection
 │   │   └── orchestrator.py       # OrchestratorAgent, tag sampling, team selection prompt
 │   ├── benchmarks/               # Benchmark registry: one module per dataset
 │   │   ├── __init__.py           # Registry: get(name), answer_type_of, scorer_for
 │   │   ├── base.py               # Benchmark and Scorer protocols, Instance, Prediction
-│   │   ├── scorers.py            # One scorer per answer shape (numeric, mcq), strict and lenient
+│   │   ├── scorers.py            # One scorer per answer shape (numeric, mcq, math), strict and lenient
+│   │   ├── environment.py        # Agentic tasks: the Environment protocol and the outcome scorer
 │   │   ├── gsm8k.py              # Grade School Math 8K
 │   │   ├── arc.py                # ARC-Challenge / ARC-Easy
 │   │   ├── hellaswag.py          # HellaSwag
 │   │   ├── truthfulqa.py         # TruthfulQA
 │   │   ├── winogrande.py         # WinoGrande
 │   │   ├── mmlu_pro_medicine.py  # MMLU-Pro Medicine
-│   │   └── mmlu_formal_logic.py  # MMLU Formal Logic
+│   │   ├── mmlu_formal_logic.py  # MMLU Formal Logic
+│   │   ├── gpqa_diamond.py, mmlu_pro.py, aime.py, math500.py   # Harder static sets (own pool)
+│   │   └── plancraft.py, workbench.py, browsecomp_plus.py, finance_agent.py   # Agentic sets
 │   └── model/                    # Model wrappers
 │       ├── model_utils.py        # Agent factory and unified engine
 │       ├── registry.py           # Model key -> served name and endpoint; in-flight cap
@@ -48,10 +53,15 @@ This repository provides the codebase for studying **how scaling the number of h
 │   ├── add*_noperspn.sh          # Same experiments without personas
 │   ├── ablation*.sh              # Ablation studies (persona impact, agent count)
 │   ├── crossval.sh, small_model_arms.sh, e2_topology_arms.sh  # Orchestrator experiment drivers
+│   ├── build_pool.sh             # Tag a new question pool, sharing the existing tag vocabulary
+│   ├── fetch_benchmarks.py       # Download every registered benchmark
+│   ├── build_browsecomp_index.py # BM25 index for BrowseComp-Plus
+│   ├── searxng/                  # Local search engine for Finance-Agent's web_search
 │   ├── run_config.py             # Runs one fixed team config over the held-out split
 │   ├── rescore.py                # Re-scores a predictions file under another parser
 │   └── compare_runs.py           # Pairs arms question by question; McNemar / sign-flip
-├── tests/                        # Offline tests, run as scripts (PYTHONPATH=src)
+├── tests/                        # Offline tests, run as scripts (PYTHONPATH=src); a mock
+│                                 # OpenAI-compatible server and an end-to-end check (mock_e2e.sh)
 ├── K_star_analysis/              # K* diversity metric computation
 │   ├── analysis.py               # Core N* (effective diversity) from embeddings
 │   ├── analysis_improved.py      # Extended metrics: N*_conditioned, N*_weighted, Delta-N*

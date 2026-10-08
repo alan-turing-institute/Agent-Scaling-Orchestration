@@ -18,51 +18,8 @@ import team_config
 from model.model_utils import DEFAULT_MAX_NEW_TOKENS
 from personas import chosen_persona_bank
 from model.registry import ModelRegistry
+from judge import judge_from_args
 from runner import run_question
-
-
-
-
-def _infer_answer_type(answer) -> str:
-    """Guess an answer type from the answer's shape. Last resort only.
-
-    Numeric-looking -> numeric scoring, anything else -> MCQ scoring. That
-    second branch is why this is a last resort: a coding benchmark's answer is
-    a string, so it lands on the MCQ letter parser, which reads a character out
-    of it and reports a number rather than failing. Prefer `answer_type_of`,
-    which asks the registry what the benchmark declared.
-    """
-    if answer is None:
-        return "mcq"
-    try:
-        float(answer)
-        return "numeric"
-    except (TypeError, ValueError):
-        return "mcq"
-
-
-def answer_type_of(sample) -> str:
-    """Which scorer reads this question's answers.
-
-    Decided per question, not per batch: a tag like "step-by-step reasoning"
-    pulls questions from gsm8k and from the multiple-choice sets at once, and
-    judging a batch by its first answer silently mis-scores the rest.
-
-    Taken from the `dataset` column the tagged dataset already carries, so a
-    benchmark declares its own answer shape once and every scoring path agrees.
-    Falls back to sniffing the answer only when that column is absent or names
-    something unregistered.
-    """
-    source = sample.get("dataset") if isinstance(sample, dict) else None
-    if source:
-        try:
-            return benchmarks.answer_type_of(source)
-        except KeyError:
-            print(f"[warn] {source!r} is not a registered benchmark; "
-                  f"guessing its answer type from the answer's shape")
-
-    answer = sample.get("answer") if isinstance(sample, dict) else None
-    return _infer_answer_type(answer)
 
 
 @lru_cache(maxsize=8)
@@ -153,19 +110,25 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
     for model in config.models():
         registry.resolve(model)  # fail before the first call, not halfway through a batch
 
-    # Each scorer states the format it can read, so a batch that mixes numeric and
-    # multiple-choice questions asks each one for the right thing.
+    # Each question is scored as its own benchmark declared, so a batch that mixes
+    # numeric and multiple-choice questions asks each one for the right thing.
+    # Look every question up before the first call: a question nobody can score
+    # should stop the batch, not fail halfway through it.
     parse_mode = getattr(args, "parse_mode", benchmarks.STRICT)
-    scorers = {answer_type: benchmarks.get_scorer(answer_type, mode=parse_mode)
-               for answer_type in ("numeric", "mcq")}
+    scorers = benchmarks.ScorerSet(mode=parse_mode)
+    samples = [s if isinstance(s, dict) else dict(s) for s in sampled_questions]
+    looked_up = [scorers.for_sample(sample) for sample in samples]
+    # Agentic benchmarks get their environment factory, with the judge for the
+    # judged ones; a judged benchmark without a judge stops here, before any call.
+    judge = judge_from_args(args)
+    environments = {name: benchmarks.get(name).environment_for(judge)
+                    for name in {sample["dataset"] for sample in samples}}
     tie_break = getattr(args, "tie_break", "seeded")
     request_seed = getattr(args, "request_seed", 0)
     max_tokens = getattr(args, "max_new_tokens", None) or DEFAULT_MAX_NEW_TOKENS
 
-    def _run_sample(sample):
-        sample = sample if isinstance(sample, dict) else dict(sample)
-        answer_type = answer_type_of(sample)
-        scorer = scorers[answer_type]
+    def _run_sample(item):
+        sample, (answer_type, scorer) = item
         # The tagged dataset stores every answer as a string, numeric ones
         # included; the scorer knows what its own comparison needs.
         gold = scorer.normalise_gold(sample["answer"])
@@ -173,11 +136,15 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
             config, sample["question"], gold, scorer=scorer, personas=personas,
             registry=registry, max_tokens=max_tokens, tie_break=tie_break,
             request_seed=None if request_seed is None or request_seed < 0 else request_seed,
+            instance=benchmarks.instance_of(sample),
+            environment=environments[sample["dataset"]],
+            max_steps=benchmarks.get(sample["dataset"]).max_steps,
         )
         by_id = {r["id"]: r for r in result["stages"]}
         result.update({
             "tags": sample.get("tags") or [],
             "dataset": sample.get("dataset"),
+            "question_id": benchmarks.instance_of(sample).id,
             "answer_type": answer_type,
             "question": sample["question"],
             "gold": str(gold),
@@ -192,10 +159,9 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
 
     # Questions are independent, so run them together rather than one at a time:
     # a batch of 5 questions with 4 agents is 20 requests the server can overlap.
-    samples = list(sampled_questions)
     workers = max(1, min(int(getattr(args, "eval_workers", 5) or 1), len(samples) or 1))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(_run_sample, samples))
+        results = list(pool.map(_run_sample, zip(samples, looked_up)))
 
     # A batch in which every call failed is a broken setup - a wrong served
     # name in --models_file, a prompt over the context limit, a bad budget -
@@ -247,6 +213,15 @@ def run_team_evaluation(selected_team: Optional[List[str]], sampled_questions, a
         "config_id": config.config_id,
         "config": config.to_dict(),
         "calls": sum(r["calls"] for r in results),
+        # Questions where a stage hit a length limit, counted apart from wrong
+        # answers so the share lost to the serving setup is visible.
+        "context_limited": sum(r.get("limit") == "context" for r in results),
+        "context_limited_correct": sum(r.get("limit") == "context" and r["team_correct"] for r in results),
+        "max_tokens_limited": sum(r.get("limit") == "max_tokens" for r in results),
+        # The same per agent answer: a team question counts as limited when any one
+        # of its agents ran out, so this is the finer measure of how often it happens.
+        "stage_answers": sum(len(r["stages"]) for r in results),
+        "stage_answers_context_limited": sum(s.get("limit") == "context" for r in results for s in r["stages"]),
         "prompt_tokens": sum(r["prompt_tokens"] for r in results),
         "completion_tokens": sum(r["completion_tokens"] for r in results),
         "parse_mode": parse_mode,

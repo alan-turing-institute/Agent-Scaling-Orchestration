@@ -454,7 +454,7 @@ tool dispatcher are less code, and keep per-stage models working.
 | Stage | Benchmark | Items | Graded by | Notes |
 |---|---|---|---|---|
 | H1 | GPQA-Diamond (`Idavidrein/gpqa`) | 198 | existing `mcq` scorer | Gated: `HF_TOKEN` from the environment. Shuffle the options with a fixed seed when loading |
-| H1 | MMLU-Pro, hard categories (`TIGER-Lab/MMLU-Pro`) | 100–300 | existing `mcq` (A–J) | For example law, engineering, physics, chemistry |
+| H1 | MMLU-Pro, hard categories (`TIGER-Lab/MMLU-Pro`) | 100–300 | existing `mcq` (A–J) | For example law, engineering, physics, chemistry. New to us: our `pro_medicine` is MMLU's 4-option professional medicine (`cais/mmlu`), not MMLU-Pro. Option counts vary (9,981 of 12,032 have 10; the rest have 4, 8 or 9), so the template must take a variable count |
 | H1 | AIME 2022–25 (`AI-MO/aimo-validation-aime`, `math-ai/aime25`) | 120 | existing `numeric` | Small n, so treat it as a stress test. Needs long outputs |
 | H2 | MATH-500, levels 4–5 (`HuggingFaceH4/MATH-500`) | ~250 | new `math` scorer | `math-verify` or sympy equivalence |
 | H3 | Plancraft | first 100 of 580 | environment state | PyPI `plancraft` 0.4.9, pure Python. 4 tools |
@@ -475,8 +475,8 @@ that a single agent scores roughly 20–45%: the 0.8B will sit near chance on GP
 Numbered to continue the research plan's C list. C9 there, an adapter onto their
 Hydra harness, is replaced by C14–C17.
 
-- **C11 — scorers from the registry.** `team_evaluation.py:158` and
-  `scripts/bare_model_baseline.py:188` build scorers only for `("numeric", "mcq")`.
+- **C11 — scorers from the registry.** `team_evaluation.py:159` and
+  `scripts/bare_model_baseline.py:187` build scorers only for `("numeric", "mcq")`.
   `_infer_answer_type` still guesses from the gold answer when a source is not
   registered. Build each scorer lazily from its benchmark, and make an unknown source
   an error. *Needed by every new benchmark; moves nothing.*
@@ -523,8 +523,13 @@ Hydra harness, is replaced by C14–C17.
     batch the benchmark tag alone would drive selection.
   - Structural tags: benchmark, tool count, and the difficulty labels each set ships
     with.
+  - **Tag vocabulary.** `canonicalise_tags.py` only builds a vocabulary from
+    scratch. Rebuilding it over old and new tags would change the 699 pool's tags,
+    so add a mode that maps new raw tags onto the existing canonical set
+    (`data-claude/tag_mapping.json`) and clusters only what is left.
   - The paper assigned no personas for these sets, so `PERSONA_SET` is empty, and
-    there is no canonical arm unless sets are written the same way.
+    there is no canonical arm unless sets are written the same way. Any new
+    personas go into the bank in `src/personas.py`.
 
 ### 6.4 Order
 
@@ -575,6 +580,216 @@ H2, once a sandbox exists, and Finance-Agent's Python tool needs that sandbox to
 | 8 | §6 harder benchmarks: H1–H2 static, then the agentic layer (C11–C18) | — |
 
 ---
+
+## Status — 2026-10-07: ready to start the harder benchmarks
+
+PR #5 merged into `main` (`a24063f`). That brings C1–C5, the benchmark registry
+and the runner, and moves the persona bank from `model/model_utils.py` into
+`src/personas.py` unchanged. Work on §6 happens on branch `benchmarks/harder`.
+
+**Workspace.** Develop in the worktree `../Agent-Scaling-Orchestration-benchmarks`,
+never in the directory a sweep runs from. The E2 sweep runs from the frozen
+worktree `../Agent-Scaling-Orchestration-e2`, whose `data-claude/` and `env/` are
+symlinks into the main checkout.
+
+The benchmarks worktree has its own `env/`: a uv venv with the same package set as
+the shared one, plus `math-verify`. Its `data-claude/` holds copies of the
+read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
+`benchmarks/`), so nothing it writes lands in the main checkout's results.
+
+**Checked on 2026-10-07, in that worktree:**
+
+- **Tests.** `tests/test_runner.py` and `tests/test_scorers.py` pass, and every
+  entry point answers `--help`.
+- **Data.** MMLU-Pro (12,032 test questions, 14 categories), AIME (90 from
+  2022–24, plus 30 from 2025, integer answers) and MATH-500 (262 at levels 4–5)
+  all load. All three are public.
+- **GPQA-Diamond** returned 403 until the HF account accepted the dataset's
+  terms. Done the same day; see below.
+- **Equivalence checking.** `math-verify` installs on aarch64 and gets the MATH
+  answer shapes right (fractions against decimals, tuples, a wrong integer).
+- **Plancraft.** `plancraft` 0.4.9 resolves on aarch64 (dry run).
+
+**What can start now, and what waits.**
+
+- **Starts now:** C11, the H1 benchmark modules, the fetch scripts and the
+  offline tests. None of this calls a model.
+- **C11 done (2026-10-07).** `benchmarks.answer_type_of_sample` and
+  `benchmarks.ScorerSet` replace the fixed `("numeric", "mcq")` dicts in
+  `team_evaluation.py` and `bare_model_baseline.py`, and the guess from the gold
+  answer's shape. A question with no `dataset` or an unregistered one raises
+  before the batch's first call. `rescore.py` keeps the shape guess only for rows
+  written before the registry.
+  - On the 699-row pool, every answer type matches the old guess.
+  - Re-scoring a finished E2 file gives the same result under old and new code
+    (74/140).
+  - The new tests fail on the old code.
+- **GPQA terms accepted (2026-10-07).** `gpqa_diamond.csv` downloads.
+- **H1 in code (2026-10-07).**
+  - **Modules:** `gpqa_diamond` (198), `mmlu_pro` (law, engineering, physics and
+    chemistry, 50 each) and `aime` (120). They have no paper persona set, so they
+    get the default set; the canonical arm refuses them.
+  - **C18's tag extension:** `canonicalise_tags.py --extend` keeps every existing
+    entry; the code asserts it.
+  - **Pool builder:** `scripts/build_pool.sh` (tag, extend, save to
+    `data-claude/tagged_<POOL>`).
+  - **Drivers:** `DATASET` and `MAX_TOKENS` in `small_model_arms.sh` and
+    `e2_topology_arms.sh`; another pool gets its own output root.
+  - **Downloads:** `scripts/fetch_benchmarks.py`.
+  - **Testing tools:** `tests/mock_openai_server.py` and `tests/mock_e2e.sh`.
+  - **Checked against the stand-in server, never :8001/:8002:**
+    - the pool builds;
+    - all four arms and the E2 driver run on fold 0;
+    - every held-out question gets a row, and folds stay stratified;
+    - the lexical canonicaliser output is identical to the old code's.
+  - **What a real run still needs:** `POOL=hard DATA="gpqa_diamond mmlu_pro aime"
+    ./scripts/build_pool.sh` against the 35B, then the bare-model screen. Both
+    wait until E2 frees the servers.
+- **H2 in code (2026-10-07).**
+  - **C12, instances end to end:**
+    - Modules may define `load_instances`. An `Instance` has a stable `id`,
+      JSON `metadata` and structural tags (`"level: 5"`).
+    - The tagged pool keeps `id` and `metadata` columns; the 699 pool, which
+      has neither, still loads.
+    - `Scorer.correct` gets the `Instance`, and prediction rows carry
+      `question_id`.
+  - **C13, part one: the `math` scorer.**
+    - Reads the last `\boxed{}`, compares with math-verify and votes over
+      equivalence classes.
+    - Its signal-based timeouts are off on worker threads, with a length cap
+      instead.
+  - **`math500`:** levels 4–5 (262).
+  - **H1 modules** moved to `load_instances`, with ids, metadata and
+    structural tags. Their questions and labels are byte-identical.
+  - **Checked against the 262 MATH-500 reference solutions** in place of the 50
+    hand-checked model responses, which need the servers:
+    - every boxed answer scores correct against its gold answer;
+    - one cross-problem pair matches (`5` against `x=5`);
+    - `math-verify` is pinned in `requirements.txt`.
+  - **Stand-in server runs:** `tests/mock_e2e.sh` passes on a math500+aime
+    pool, and the 699 pool still runs its arms, canonical included.
+  - **Still to do with the servers:** hand-check 50 real responses.
+- **H3 in code (2026-10-07).**
+  - **C14:** `Completion.tool_calls`. Arguments that aren't JSON become an error
+    the model reads, not a crash.
+  - **C15:** the `Environment` protocol and `OutcomeScorer`. It votes over end
+    states (`success|<fingerprint>`).
+  - **C16:** `episode.run_episode`, a turn-capped loop with no wall-clock caps,
+    plus runner support:
+    - forks for voters;
+    - continuation for critics, revisers, checkers and debaters (`resume()`
+      lets them overrule an `impossible`);
+    - fresh environments for hubs;
+    - `--topology delegated`, whose hub calls workers through a tool on its
+      own environment;
+    - stages read each other's actions, never their grades.
+  - **C17:** `*_traces.jsonl` beside the predictions files.
+  - **`plancraft`:** the package's text environment, with the renderer stubbed
+    and a cheap fork; the paper's first 100.
+  - **Bare model:** runs one episode with no persona.
+  - **Checked:**
+    - replaying the package's optimal plans through our environment succeeds
+      on all 580;
+    - on the stand-in server, all four arms run, and every topology (vote,
+      debate, centralized, synthesis, pipeline, delegated) runs through the
+      E2 driver;
+    - `tests/test_agentic.py` passes.
+  - **Waiting until E2 ends (it is using the servers):**
+    - **Serve flags.** Add tool calling to the serve scripts:
+      `--enable-auto-tool-choice --tool-call-parser qwen3_xml` for the Qwen
+      models (as `vllm/qwen3.6/run_docker.sh` has), and `--tool-call-parser
+      mistral` for Ministral. Don't edit `vllm/qwen3.5-0.8b/run_docker.sh`
+      now: E2's server-config trials relaunch the server from it.
+    - **Tool-calling screen.** 20 Plancraft items per agent model.
+- **H4 in code (2026-10-07): `workbench`.**
+  - **Upstream's own code.** Tools, sandbox data and `is_correct` grader come
+    from olly-styles/WorkBench, pinned at `49c7dfd`, fetched by
+    `scripts/fetch_benchmarks.py workbench`. Not the paper harness's stub.
+  - **Separate state per episode.** Each episode binds its own `ToolState` into
+    the thread only for a tool call, and grading runs unbound.
+  - **Ending.** A reply ends the task; the turn cap (20) grades wrong, as
+    upstream does.
+  - **Default set:** the paper's 100, reproduced from its sampling code and
+    matching its ids, on the current wording (`v1` for the 2024 wording).
+  - **Checked:**
+    - all 690 ground truths, replayed as tool calls on 8 threads, grade correct;
+    - doing nothing passes 124 tasks, upstream's figure;
+    - forks are independent;
+    - on the stand-in server, all four arms and all six topologies run.
+- **H5 in code (2026-10-07).**
+  - **`judge.Judge` (the rest of C13):**
+    - BrowseComp-Plus's own grader prompt and parser;
+    - rubric lines one at a time, with the contradiction line asked as "does
+      it contradict?", fixing the paper's inversion;
+    - verdicts cached;
+    - `--judge_model` passed by both drivers, defaulting to the
+      orchestrator's model.
+  - **`browsecomp_plus`:**
+    - the paper's 100 questions over the 100,195-page corpus (downloaded,
+      1.7 GB);
+    - BM25 via `bm25s`, which runs on ARM; the paper's dense retriever
+      does not;
+    - `scripts/build_browsecomp_index.py`.
+  - **`finance_agent`:**
+    - the 50 public questions;
+    - EDGAR full-text search, page store, sandboxed Python;
+    - external calls allowed (decided 2026-10-07): on by default,
+      `FINANCE_AGENT_ONLINE=0` for offline, cached on disk, rate-limited.
+      The SEC contact is read from a git-ignored file under `data-claude/`
+      (set on this machine) or `SEC_USER_AGENT`.
+    - `web_search` through a local SearXNG (`scripts/searxng/run.sh`), chosen
+      2026-10-07 over the hosted APIs:
+      - Brave's free tier needs a card since February 2026;
+      - Google Custom Search is closed to new customers;
+      - Tavily's 1,000 queries a month and Serper's one-off 2,500 run out
+        within a sweep.
+      Bing, Google and DuckDuckGo answer through it; Brave rate-limits it.
+  - **Checked:**
+    - a 2,568-document evidence index builds in 13 s at 0.6 GB;
+    - BM25 on the raw question text puts an evidence document in the top 5
+      for 35/100;
+    - on the stand-in server, all four arms run on both;
+    - the offline tests cover the judge, both environments, stubbed network
+      calls and the rubric scoring.
+  - **Waiting on decisions or until E2 ends:**
+    - **Full index.** The full BrowseComp-Plus build (8–10 GB peak) waits for E2.
+    - **External access** is decided (allowed) and live-checked against EDGAR
+      and SearXNG. SearXNG must be running (`scripts/searxng/run.sh`; it
+      restarts with the machine).
+    - **Web search.** It needs a Tavily key and is not implemented beyond its
+      schema.
+
+- **Context limits counted, not scored wrong (2026-10-08).**
+  - **Context:** a request vLLM refuses as too long for the context window is
+    recorded as `limit: "context"`. Episodes stop there and are graded on
+    their state.
+  - **Generation budget:** a reply cut off by `max_tokens` is `limit:
+    "max_tokens"`.
+  - **Reports:**
+    - questions limited, where any one agent ran out;
+    - agent answers limited, the finer measure;
+    - accuracy on the questions that fit.
+    These appear in batch reports, holdout summaries and `report_crossval.py`,
+    to decide whether `--max-model-len` (32,768 now) needs raising.
+  - **Why it matters:** rough sizes put WorkBench's tool list at about 7k
+    tokens a turn, and a BrowseComp-Plus episode at up to about 90k tokens
+    over 30 turns.
+
+**All of H1–H5 is now in code.** SWE-bench and Terminal-Bench stay out, per
+§6.2. Before the first real sweep, once E2 frees the servers:
+
+1. Add the tool-calling flags to the serve scripts.
+2. Build the full BrowseComp-Plus index.
+3. Build the pools with `scripts/build_pool.sh` (`hard`: gpqa_diamond mmlu_pro
+   aime math500; `agentic`: plancraft workbench browsecomp_plus
+   finance_agent).
+4. Run bare-model screens and the tool-calling screen.
+5. Hand-check 50 MATH responses.
+- **Waits:** tagging the new pool, the bare-model screens and every arm. Tagging
+  uses the 35B, which the E2 sweep is using as its orchestrator on :8002. Any
+  extra load on :8001/:8002 changes the sweep's answers, because the servers'
+  outputs depend on the batch. So all of this waits for E2 to finish.
+- **Also waits:** C18's tag-vocabulary extension has to exist before tagging.
 
 ## Status — updated 2026-10-05
 

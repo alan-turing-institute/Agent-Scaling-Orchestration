@@ -8,7 +8,9 @@ Research code for paper *Understanding Agent Scaling in LLM-Based Multi-Agent Sy
 `README.md` has paper story, persona table, K\* definition, full flag list.
 
 Collection of experiment entry points, not a library. No lint, no packaging, no `__init__.py`.
-Offline tests in `tests/` run directly as scripts.
+Offline tests in `tests/` run directly as scripts. `tests/mock_openai_server.py` is a stand-in
+OpenAI-compatible server for running real entry points without a model, and `tests/mock_e2e.sh`
+builds a small pool and runs every arm against it. Never point tests at a server a sweep is using.
 
 Two pipelines share `src/model` and `src/benchmarks`:
 
@@ -152,7 +154,11 @@ the iteration is skipped and recorded, rather than falling back to agents that n
 `team_evaluation.py` — `run_team_evaluation(selected_team, questions, args, config=None)` runs a
 team on each question (questions in parallel, `--eval_workers`) and adds up the results. With only
 `selected_team` it runs `team_config.vote(selected_team)`; pass a `TeamConfig` for anything else.
-Answer type comes from the question's `dataset` column via the benchmark registry, per question.
+Answer type comes from the question's `dataset` column via the benchmark registry, per question
+(`benchmarks.answer_type_of_sample`). A question with no `dataset`, or naming an unregistered
+benchmark, raises before the batch's first call; nothing guesses from the answer's shape. Entry
+points build scorers lazily through `benchmarks.ScorerSet`, so a benchmark with a new answer type
+needs a scorer in `SCORERS` and its module, and no edit to any entry point.
 Returns accuracies **and** raw counts (`per_agent_correct`, `per_agent_correct_by_tag`,
 `per_tag_counts`, `team_correct`) keyed by **stage id** — for a vote the stage ids are the persona
 names, so the scoreboard keys are unchanged — plus `config_id`, call and token totals, and
@@ -201,8 +207,8 @@ semaphore in `model/registry.py`) runs every request alone: two runs of the same
 `scripts/run_config.py` runs one fixed config over the held-out split in the same batches as the
 orchestrator arms. `scripts/rescore.py` re-scores a predictions file under another parser without
 calling a model. `scripts/compare_runs.py` pairs arms question by question across folds and
-repeats (McNemar / sign-flip, Holm-corrected) and prints each arm's repeat-to-repeat flip rate. Offline tests: `PYTHONPATH=src python tests/test_runner.py` and
-`tests/test_scorers.py` (no pytest in the pinned env).
+repeats (McNemar / sign-flip, Holm-corrected) and prints each arm's repeat-to-repeat flip rate. Offline tests: `PYTHONPATH=src python tests/test_runner.py`,
+`tests/test_scorers.py` and `tests/test_benchmarks.py` (no pytest in the pinned env).
 
 `summariser.py` — two modes. `save_evaluation_summary` (default, `--summariser counts`) folds those
 counts into `agent_performance_state.json` and renders the markdown from it: agent totals, per-tag
@@ -236,6 +242,10 @@ whole `asyncio.gather`, so nothing is written — check every dataset loads befo
 `canonicalise_tags.py` builds the raw-tag → canonical-tag mapping from the data: lexical
 normalisation (case, punctuation, plurals, word order, filler) then LLM clustering in batches,
 re-clustering the batch canonicals until a round merges nothing. Writes `data-claude/tag_mapping.json`.
+`--extend <mapping>` grows an existing mapping for a new pool without changing any entry in it:
+new raw tags are matched to existing canonicals (lexically, then by the model), and only the rest
+are clustered. `scripts/build_pool.sh` runs tag → extend → save for a new pool (`POOL`, `DATA`),
+writing `data-claude/tagged_<POOL>`; the drivers take it as `DATASET=data-claude/tagged_<POOL>`.
 
 `tag_dataset.py` applies that mapping, then the hand-written `TAG_MAPPING`, drops tags under 5
 occurrences, saves the HF dataset. Now argparse behind a `main()` guard (`--tags_file`,
@@ -253,6 +263,124 @@ splits. Adding a benchmark means one module plus one line in `_MODULES` in
 `winogrande` load `truthfulqa/truthful_qa` and `allenai/winogrande`, because current
 `huggingface_hub` rejects the bare ids they used before. Both remap `test` to `validation`
 internally.
+
+Benchmarks added after the paper have `PERSONA_SET = []`: `paper_persona_names` gives them the
+default set, and `paper_persona_baseline.py` (the canonical arm) refuses them. They live in their
+own pool, never in the 699-question one:
+
+- `gpqa_diamond` — 198 four-option questions, gated (accept the terms on Hugging Face once).
+  Options are shuffled per question, seeded by its record id, so the order is fixed.
+- `mmlu_pro` — law, engineering, physics, chemistry by default (`--sub_data` to change), 50 each;
+  up to ten options (A–J). Not `pro_medicine`, which is MMLU's four-option professional medicine.
+- `aime` — 2022–2025, 120 problems, integer answers, numeric scorer. Needs a large token budget.
+- `math500` — MATH-500 levels 4–5 by default (262; `--sub_data 3,4,5` to change), LaTeX answers,
+  `math` scorer.
+
+A module may define `load_instances(args, split) -> list[Instance]` instead of `load`; the registry
+derives `load` from it. An `Instance` carries a stable `id`, JSON-serialisable `metadata` and
+structural `tags` (the benchmark's own labels as `"key: value"`, e.g. `level: 5`). Modules that
+only define `load` get ids from `question_id(benchmark, text)`. `tag_questions.py` writes ids,
+metadata and structural tags; `tag_dataset.py` keeps `id` and `metadata` (a JSON string) as columns
+and, under `--structural_tags`, adds the structural tags to `tags` past the mapping and filter.
+Readers default both columns for the 699 pool, which has neither (`benchmarks.instance_of(row)`).
+`Scorer.correct(prediction, gold, instance=None)` receives that `Instance` from the runner and the
+bare-model baseline, for scorers that read more than the gold answer.
+
+The `math` scorer reads the last `\boxed{}` (strict) or falls back to a `final answer:` line and
+then the last `$...$` (lenient), compares with math-verify, and votes over equivalence classes.
+math-verify's timeouts use `signal.alarm`, which fails off the main thread, so on worker threads the
+scorer disables them and refuses to hand sympy anything over `MATH_MAX_CHARS`. All 262 reference
+solutions for levels 4–5 score correct against their gold answers.
+
+`scripts/fetch_benchmarks.py` downloads every registered set and reports counts; a module may define
+`fetch(args)` for data its loader does not pull itself. gsm8k's loader returns nothing at
+`--data_size 0` (it takes `head(data_size)`), which the script flags.
+
+### Agentic benchmarks
+
+A benchmark module is agentic when it declares `ANSWER_TYPE = "outcome"`, `ENVIRONMENT`
+(`factory(instance) -> Environment`) and `MAX_STEPS`; the registry refuses one without the other.
+`benchmarks/environment.py` defines the protocol: `task_prompt()`, `tools()` (OpenAI function
+schemas), `call(name, arguments) -> observation` (errors as text, never raised), `done`,
+`outcome() -> Outcome(success, fingerprint)`, `fork()`, and optionally `resume()`. An outcome becomes
+the prediction `"success|<fingerprint>"` / `"fail|<fingerprint>"`, so `OutcomeScorer` votes over
+end states and the winning state carries its verdict.
+
+`episode.run_episode` is the loop: generate with tools, run each call, append the observation; stop
+when the environment is done, after two replies in a row without a tool call (one nudge between),
+or at the turn cap. No wall-clock caps. `runner.run_question(..., environment=, max_steps=)` runs
+each stage as an episode. Where a stage starts:
+
+- reading nothing: fresh;
+- reading its own persona's earlier stage (debate): a fork of its own last state;
+- reading others as critic, reviser or checker: a fork of the last input's state, so a pipeline
+  builds on its predecessor. `resume()` lets it overrule a verdict (Plancraft: `impossible`) but
+  keeps a reached goal;
+- hub or synthesiser: fresh, with the attempts as advice.
+
+Stages read each other through `episode.report_text`: actions and final message, never the grade.
+`team_config.delegated(workers, hub)` (`--topology delegated`) gives the hub a `delegate(agent,
+instruction)` tool; workers run only when called, on the hub's environment, and a worker's text
+reply ends its turn. Agentic role wording is `roles.AGENT_ROLES`, versioned separately
+(`AGENT_ROLE_TEMPLATES_VERSION`). Each step goes to `*_traces.jsonl` beside the predictions file
+(`predictions.split_traces`); prediction rows keep the outcome, calls and tokens.
+`OpenAICompatChatWrapper.generate(..., tools=...)` returns `Completion.tool_calls`, with an `error`
+instead of a crash for arguments that are not JSON. The bare-model baseline runs one persona-less
+episode on agentic tasks.
+
+- `plancraft` — the package's text environment, with its image renderer stubbed out (0.2 ms to
+  build; `fork` copies only the inventory). Tools: search, move, smelt, impossible. Success: the
+  target in any slot but [0], or `impossible` on a truly impossible task. Default set: the first 100
+  test examples, as the paper ran (`--sub_data all` for 580). Install with
+  `requirements-agentic.txt` (`plancraft` itself with `--no-deps`). Replaying the package's optimal
+  plans through it succeeds on all 580.
+
+- `workbench` — upstream's own 27 tools, sandbox CSVs and grader (`is_correct`: replay the agent's
+  calls and the ground truth on fresh sandboxes, compare tables), fetched at a pinned commit into
+  `data-claude/benchmarks/workbench-upstream` (`scripts/fetch_benchmarks.py workbench`, or
+  `WORKBENCH_ROOT`). Upstream keeps the sandbox in a thread-local `ToolState`; each episode owns its
+  own and binds it only for the length of a tool call, and grading runs unbound so it can never
+  reset an episode's state. A reply without a tool call ends the task (`text_reply_ends`); hitting
+  the turn cap (20) grades wrong, as upstream does (`close(stopped)`). Default set: the paper's 100
+  (one `random.Random(42)` across domains in alphabetical order), current wording; `--sub_data
+  all` for 690, `v1` for the 2024 wording. Replaying all 690 ground truths as tool calls grades
+  690/690; doing nothing passes the 124 tasks upstream reports.
+
+- `browsecomp_plus` — the paper's 100 questions over BrowseComp-Plus's fixed 100,195-page corpus,
+  searched with BM25 (`bm25s`; the paper's dense retriever needs flash-attn, which has no ARM build,
+  so numbers are BM25 numbers). Tools: search (top 5, ~2,000-char snippets), get_document (clipped
+  at 12,000 chars), done. Graded by the judge with BrowseComp-Plus's own grader. `fetch` downloads
+  questions, qrels and corpus; the index is separate: `scripts/build_browsecomp_index.py` (full
+  build 8–10 GB peak, so not while a sweep runs), or `--subset evidence` (2,568 docs, 0.6 GB) for
+  tests, selected with `BROWSECOMP_INDEX`.
+- `finance_agent` — Vals AI's 50 public questions. Tools: edgar_search (EDGAR's free full-text
+  search), parse_html_page / read_page / search_page, python (separate interpreter, CPU and
+  memory capped, not network-isolated), web_search, submit_final_result. External calls are on by
+  default (`FINANCE_AGENT_ONLINE=0` turns them off), cached on disk under `finance-agent/http-cache/`
+  and rate-limited to 5/s. The SEC's required contact comes from `SEC_USER_AGENT`, else
+  `data-claude/benchmarks/finance-agent/sec_user_agent.txt` (git-ignored, so no address is
+  committed). `web_search` queries a local SearXNG (`scripts/searxng/run.sh`: self-hosted
+  metasearch, no key or quota, 127.0.0.1:8888 or `SEARXNG_URL`), offered only when it answers;
+  unlike EDGAR it cannot cap results at 2025-04-07. Graded per rubric line by the judge; correct at ≥ 0.5, with the contradiction line asked as
+  "does it contradict?" (the paper's grader inverted it).
+
+Judged benchmarks (`JUDGED = True`) take `judge=` in their environment factory;
+`ModuleBenchmark.environment_for(judge)` supplies it and refuses to run without one. `judge.Judge`
+(from `--judge_model`/`--judge_api_base_url`; the drivers default it to the orchestrator's model)
+caches verdicts per prompt and counts its tokens apart from the agents'.
+
+**Length limits are not wrong answers.** A request refused as longer than the model's context
+(vLLM's 400 "maximum context length", `openai_compat.is_context_limit`) is recorded as `limit:
+"context"` on the stage. An episode stops there (`stopped: "context_limit"`) and is graded on the
+state it left; a one-call stage scores as unanswered. A reply cut off by the generation budget
+(`finish_reason: "length"`) is `limit: "max_tokens"`. Each question row carries the worst stage
+`limit`. Batch reports, holdout summaries and `report_crossval.py` count questions and agent
+answers that hit the context, and give accuracy on the questions that fit, to judge whether
+`--max-model-len` needs raising. The mock server's `--context_chars N` refuses requests the same
+way (`MOCK_ARGS` in `tests/mock_e2e.sh`).
+
+`tests/test_agentic.py` covers the loop, every topology on a toy environment, delegation and traces;
+the mock server answers requests that offer tools with deterministic tool calls.
 
 ### K\* analysis
 

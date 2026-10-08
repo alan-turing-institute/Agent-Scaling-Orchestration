@@ -39,6 +39,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from datasets import load_from_disk
+import benchmarks
 
 from runner import add_runner_args
 from splits import add_split_args, make_split, split_label
@@ -74,6 +75,12 @@ def parse_args():
 def persona_sets(datasets, team_size, nvidia):
     """Build the paper's assigned set for each dataset present in the split."""
     sets = {}
+    unassigned = sorted(n for n in datasets if n in benchmarks.list_names() and not benchmarks.persona_set(n))
+    if unassigned:
+        # The canonical arm means "the paper's persona set for this dataset". These
+        # benchmarks postdate the paper, so there is nothing canonical to run.
+        raise SystemExit(f"no paper persona set for {unassigned}; the canonical arm is undefined "
+                         f"for them (see PERSONA_SET in src/benchmarks/)")
     for name in sorted(datasets):
         built = _build_enhanced_personas(SimpleNamespace(
             data=name, multi_persona=True, baseline_a=False, baseline_b=False,

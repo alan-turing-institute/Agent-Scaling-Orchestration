@@ -25,10 +25,15 @@ import hashlib
 import random
 from typing import Any, Dict, Optional
 
+from benchmarks.environment import function_tool
+from episode import report_text, run_episode
+
 from openai import APIConnectionError, APITimeoutError
 
+from model.openai_compat import is_context_limit, limit_of
 from personas import get_persona_config
-from roles import ROLE_TEMPLATES_VERSION, render_handoff, render_prompt
+from roles import (AGENT_ROLE_TEMPLATES_VERSION, RATIONALE_CHARS, ROLE_TEMPLATES_VERSION,
+                   render_agent_prompt, render_handoff, render_prompt)
 from team_config import TeamConfig
 
 SYSTEM_PROMPT = "You are a helpful assistant."
@@ -47,6 +52,10 @@ def add_runner_args(parser):
                              "global: the old behaviour, drawn from the global random state")
     parser.add_argument("--request_seed", type=int, default=0,
                         help="Base for the per-request seed sent with every call; -1 sends none")
+    parser.add_argument("--judge_model", default=None,
+                        help="Served name of the LLM judge, for benchmarks graded by one (BrowseComp-Plus, "
+                             "Finance-Agent). Never the agent model")
+    parser.add_argument("--judge_api_base_url", default=None, help="The judge's endpoint (default 8002)")
     parser.add_argument("--max_inflight", type=int, default=0,
                         help="Cap on agent requests in flight per server; 0 = no cap. 1 makes greedy "
                              "output reproducible: the servers' output depends on what else is in the batch")
@@ -55,10 +64,12 @@ def add_runner_args(parser):
 
 def add_topology_args(parser):
     """How a team chosen by name works together. For entry points that select teams."""
-    parser.add_argument("--topology", choices=["vote", "debate", "centralized", "synthesis", "pipeline"],
+    parser.add_argument("--topology", choices=["vote", "debate", "centralized", "synthesis", "pipeline", "delegated"],
                         default="vote",
                         help="How a selected team works together. centralized/synthesis: the last selected "
-                             "agent leads, the rest are workers. pipeline: agents take --roles in order")
+                             "agent leads, the rest are workers. pipeline: agents take --roles in order. "
+                             "delegated (agentic tasks only): the last agent leads and calls on the rest "
+                             "through a delegate tool")
     parser.add_argument("--rounds", type=int, default=1, help="debate: exchange rounds after the first answer")
     parser.add_argument("--roles", default=None,
                         help="pipeline: comma-separated roles, one per agent (default solver,critic...,reviser)")
@@ -103,13 +114,33 @@ def _transition(previous_correct: Optional[bool], correct: bool) -> Optional[str
 
 def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, personas: Dict,
                  registry, max_tokens: int, tie_break: str = "seeded", tie_break_seed: int = 0,
-                 request_seed: Optional[int] = 0) -> Dict:
+                 request_seed: Optional[int] = 0, instance=None, environment=None,
+                 max_steps: Optional[int] = None) -> Dict:
     """Run `config` on one question and return a record of every stage.
 
     `gold` must already be normalised by `scorer.normalise_gold`. Connection and
     timeout errors propagate, so the caller's retry can wait out a restarting
     server; any other failure in a stage is recorded and scores as unanswered,
-    as a failed agent call always has.
+    as a failed agent call always has. `instance` is the question as a
+    `benchmarks.Instance`, handed to `scorer.correct` for scorers that read
+    more than the gold answer.
+
+    `environment`, for an agentic task, is a factory `instance -> Environment`
+    (`benchmarks.environment`). Each stage then runs an episode instead of one
+    call (`episode.run_episode`), capped at the stage's `max_steps` or
+    `max_steps`, and its prediction is the environment's outcome. Where a stage
+    starts:
+
+    - reading nothing: a fresh environment;
+    - reading an earlier stage of its own persona (a debater's next round): a
+      fork of the state its own last attempt left;
+    - reading others, as a critic, reviser or checker: a fork of the state the
+      last stage it reads left, so a pipeline builds on its predecessor;
+    - a hub or synthesiser: fresh, with the attempts above as advice;
+    - a stage called on through `delegate`: the delegating stage's own
+      environment, shared, so the lead sees what the worker did.
+
+    Stages read each other as action logs and final messages, never as grades.
     """
     if tie_break not in TIE_BREAKS:
         raise ValueError(f"unknown tie_break {tie_break!r}; known: {TIE_BREAKS}")
@@ -118,8 +149,141 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
     qkey = question_key(question)
     results: Dict[str, Dict] = {}
     predictions: Dict[str, Any] = {}
+    if environment is None and config.on_call():
+        raise ValueError("a config with delegates needs an agentic task: delegate is a tool, "
+                         "and a static question has no environment to act on")
+    envs: Dict[str, Any] = {}          # stage id -> the environment it left
+    delegated_runs: Dict[str, list] = {}
+
+    def base_record(stage, budget, seed):
+        return {
+            "id": stage.id,
+            "persona": stage.persona,
+            "role": stage.role,
+            "model": stage.model,
+            "inputs": [i.to_dict() for i in stage.inputs],
+            "max_tokens": budget,
+            "seed": seed,
+            "response": "",
+            "reasoning": "",
+            "used_reasoning": False,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "finish_reason": None,
+            "latency_s": None,
+            "served_model": None,
+            "error": None,
+        }
+
+    def start_env(stage):
+        own = [i.source for i in stage.inputs
+               if stage.persona and config.stage(i.source).persona == stage.persona]
+        if own:
+            base = envs[own[-1]]
+        elif stage.inputs and stage.role not in ("hub", "synthesiser"):
+            base = envs[stage.inputs[-1].source]
+        else:
+            return environment(instance)
+        env = base.fork()
+        if hasattr(env, "resume"):
+            env.resume()  # a verdict the last agent gave (impossible, submitted) can be overruled
+        return env
+
+    def agent_handoff(record, handoff):
+        if handoff == "answer":
+            return f"Final message: {record.get('response') or '(none)'}"
+        text = report_text(record)
+        if handoff == "rationale" and len(text) > RATIONALE_CHARS:
+            return "..." + text[-RATIONALE_CHARS:]
+        return text
+
+    def run_agent_stage(stage, env=None, instruction=None, call=0):
+        """One stage's episode. `env` and `instruction` are set when a hub calls on it."""
+        if env is None:
+            env = start_env(stage)
+        inputs = []
+        for item in stage.inputs:
+            position = config.stage_ids.index(item.source) + 1
+            inputs.append((f"Agent {position} ({config.stage(item.source).role})",
+                           agent_handoff(results[item.source], item.handoff)))
+        if instruction is not None:
+            inputs.append(("Instruction from your team lead", instruction))
+        content = render_agent_prompt(_persona_text(stage.persona, personas), env.task_prompt(),
+                                      role=stage.role, inputs=inputs, delegating=bool(stage.delegates))
+        temperature, top_p = _generation_params(stage.persona, personas)
+        budget = stage.max_tokens or config.max_tokens or max_tokens
+        seed = None if request_seed is None or request_seed < 0 else (
+            _stable_int(request_seed, qkey, stage.id, call) % (2 ** 31))
+
+        delegate = None
+        if stage.delegates:
+            names = list(stage.delegates)
+            calls_made = {name: 0 for name in names}
+
+            def run_delegate(arguments):
+                name = arguments.get("agent")
+                if name not in names:
+                    return f"ERROR: there is no teammate called {name!r}; choose one of {names}"
+                calls_made[name] += 1
+                sub = run_agent_stage(config.stage(name), env=env, call=calls_made[name],
+                                      instruction=str(arguments.get("instruction") or ""))
+                delegated_runs.setdefault(name, []).append(sub)
+                return report_text(sub)
+
+            delegate = {
+                "tool": function_tool(
+                    "delegate",
+                    "Give one teammate an instruction. They act on the same environment you see, "
+                    "then report what they did.",
+                    {"agent": {"type": "string", "enum": names, "description": "Which teammate"},
+                     "instruction": {"type": "string", "description": "What they should do"}},
+                    ["agent", "instruction"]),
+                "run": run_delegate,
+            }
+
+        record = base_record(stage, budget, seed)
+        record["agent_role_templates_version"] = AGENT_ROLE_TEMPLATES_VERSION
+        try:
+            episode = run_episode(registry.client(stage.model), env, system=SYSTEM_PROMPT, user=content,
+                                  max_steps=stage.max_steps or max_steps or 30, max_tokens=budget,
+                                  temperature=temperature, top_p=top_p, seed=seed, delegate=delegate,
+                                  nudge=instruction is None)
+            prediction = episode.pop("prediction")
+            record.update(episode)
+            record["_prediction"] = prediction
+        except (APIConnectionError, APITimeoutError):
+            raise
+        except Exception as error:
+            print(f"[warn] stage {stage.id} failed on one question: {error!r}")
+            record["error"] = repr(error)
+            if is_context_limit(error):
+                record["limit"] = "context"
+        if instruction is None:
+            envs[stage.id] = env
+        return record
+
+    def merge_delegated(stage):
+        """A worker's record: every time the hub called on it, in order."""
+        runs = delegated_runs.get(stage.id) or []
+        record = base_record(stage, stage.max_tokens or config.max_tokens or max_tokens, None)
+        record.update({"times_called": len(runs), "steps": [], "calls": 0, "tool_calls": 0,
+                       "prompt_tokens": 0, "completion_tokens": 0,
+                       "agent_role_templates_version": AGENT_ROLE_TEMPLATES_VERSION})
+        for run in runs:
+            record["steps"].extend(run.get("steps") or [])
+            for key in ("calls", "tool_calls", "prompt_tokens", "completion_tokens"):
+                record[key] += run.get(key) or 0
+            record["response"] = run.get("response") or record["response"]
+            record["outcome"] = run.get("outcome")
+            record["error"] = run.get("error") or record["error"]
+            record["limit"] = run.get("limit") or record.get("limit")
+            if "_prediction" in run:
+                record["_prediction"] = run["_prediction"]
+        return record
 
     def run_stage(index, stage):
+        if environment is not None:
+            return index, run_agent_stage(stage)
         inputs = []
         for item in stage.inputs:
             source = config.stage(item.source)
@@ -168,6 +332,7 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
                 "finish_reason": completion.finish_reason,
                 "latency_s": completion.latency_s,
                 "served_model": completion.model,
+                "limit": limit_of(completion.finish_reason),
             })
         except (APIConnectionError, APITimeoutError):
             # A server that is down is not a wrong answer; let the caller retry.
@@ -175,7 +340,18 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
         except Exception as error:
             print(f"[warn] stage {stage.id} failed on one question: {error!r}")
             record["error"] = repr(error)
+            if is_context_limit(error):
+                record["limit"] = "context"
         return index, record
+
+    def settle(record):
+        # An episode's prediction is its environment's outcome; a reply's is parsed from its text.
+        prediction = record.pop("_prediction", None) or scorer.extract(record["response"])
+        record["prediction"] = str(prediction.legacy)
+        record["parsed"] = prediction.parsed
+        record["correct"] = bool(scorer.correct(prediction, gold, instance=instance))
+        results[record["id"]] = record
+        predictions[record["id"]] = prediction
 
     for layer in config.layers():
         stages = [(config.stage_ids.index(sid), config.stage(sid)) for sid in layer]
@@ -185,12 +361,11 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(32, len(stages))) as pool:
                 done = list(pool.map(lambda pair: run_stage(*pair), stages))
         for _, record in done:
-            prediction = scorer.extract(record["response"])
-            record["prediction"] = str(prediction.legacy)
-            record["parsed"] = prediction.parsed
-            record["correct"] = bool(scorer.correct(prediction, gold))
-            results[record["id"]] = record
-            predictions[record["id"]] = prediction
+            settle(record)
+
+    # Stages called on through `delegate` ran inside the stage that called them.
+    for stage_id in config.on_call():
+        settle(merge_delegated(config.stage(stage_id)))
 
     # Credit: compare each stage with the answer it was most directly building on.
     # `transition` says whether it fixed or broke that answer; `copied` says it
@@ -215,7 +390,7 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
             reference = "vote"
             rng = random.Random(_stable_int(tie_break_seed, qkey, stage.id))
             theirs = scorer.aggregate([predictions[i.source] for i in stage.inputs], rng=rng)
-            their_correct = bool(scorer.correct(theirs, gold))
+            their_correct = bool(scorer.correct(theirs, gold, instance=instance))
         else:
             reference = stage.inputs[-1].source
             theirs, their_correct = predictions[reference], results[reference]["correct"]
@@ -232,14 +407,20 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
         team_prediction = scorer.aggregate([predictions[sid] for sid in answer_ids], rng=rng)
 
     stage_records = [results[sid] for sid in config.stage_ids]
+    stage_limits = {r.get("limit") for r in stage_records} - {None}
     return {
+        # Whether any stage ran into a length limit: "context" (the server refused
+        # the request as too long for the model) outranks "max_tokens" (a reply cut
+        # off by the generation budget). Reports count these apart from wrong answers.
+        "limit": "context" if "context" in stage_limits else ("max_tokens" if stage_limits else None),
         "question_key": qkey,
         "stages": stage_records,
         "answer_stages": answer_ids,
         "aggregate": config.aggregate,
         "team_answer": str(team_prediction.legacy),
-        "team_correct": bool(scorer.correct(team_prediction, gold)),
-        "calls": len(stage_records),
+        "team_correct": bool(scorer.correct(team_prediction, gold, instance=instance)),
+        # An episode makes many calls; a one-call stage records none and counts as one.
+        "calls": sum(r.get("calls", 1) for r in stage_records),
         "depth": len(config.layers()),
         "prompt_tokens": sum(r["prompt_tokens"] or 0 for r in stage_records),
         "completion_tokens": sum(r["completion_tokens"] or 0 for r in stage_records),

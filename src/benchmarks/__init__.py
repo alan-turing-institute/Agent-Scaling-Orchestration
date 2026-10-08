@@ -13,15 +13,22 @@ A module here declares:
     ANSWER_TYPE  which scorer reads its answers (benchmarks.scorers.SCORERS)
     PERSONA_SET  the personas the paper assigned it
     load(args, split) -> (questions, labels)
+
+or, instead of `load`, `load_instances(args, split) -> list[Instance]` to attach
+ids, metadata and structural tags (the registry derives `load` from it). And
+optionally `fetch(args)`, for data its loader does not download itself.
 """
 
 from __future__ import annotations
 
+import functools
 import importlib
+import json
+import threading
 from dataclasses import dataclass
 from typing import Any
 
-from benchmarks.base import Instance, Prediction, ScoreResult, load_instances
+from benchmarks.base import Instance, Prediction, ScoreResult, load_instances, question_id
 from benchmarks.scorers import LENIENT, STRICT, get_scorer, score_responses
 
 # module path -> imported lazily, so one benchmark's optional dependency cannot
@@ -34,6 +41,16 @@ _MODULES = [
     "benchmarks.winogrande",
     "benchmarks.mmlu_pro_medicine",
     "benchmarks.mmlu_formal_logic",
+    # Harder static sets (H1). No persona set from the paper.
+    "benchmarks.gpqa_diamond",
+    "benchmarks.mmlu_pro",
+    "benchmarks.aime",
+    "benchmarks.math500",
+    # Agentic (H3 onwards): graded on the environment's outcome.
+    "benchmarks.plancraft",
+    "benchmarks.workbench",
+    "benchmarks.browsecomp_plus",
+    "benchmarks.finance_agent",
 ]
 
 
@@ -45,11 +62,37 @@ class ModuleBenchmark:
     answer_type: str
     persona_set: list[str]
     _load: Any
+    # Optional: downloads the loader does not do itself (scripts/fetch_benchmarks.py).
+    fetch: Any = None
+    # Optional: the module's own `load_instances`, with ids, metadata and structural tags.
+    _instances: Any = None
+    # Agentic benchmarks: `environment(instance) -> Environment`, and the default
+    # cap on an agent's turns (see benchmarks.environment).
+    environment: Any = None
+    max_steps: Any = None
+    # Graded by an LLM judge: its environment takes `judge=` (see judge.py).
+    judged: bool = False
+
+    def environment_for(self, judge=None):
+        """This benchmark's environment factory, given the run's judge when it needs one."""
+        if self.environment is None:
+            return None
+        if not self.judged:
+            return self.environment
+        if judge is None:
+            raise ValueError(f"{self.name} is graded by an LLM judge: pass --judge_model "
+                             f"(and --judge_api_base_url)")
+        return functools.partial(self.environment, judge=judge)
 
     def load(self, args, split: str = "test"):
+        if self._load is None:
+            instances = self._instances(args, split=split)
+            return [i.question for i in instances], [i.answer for i in instances]
         return self._load(args, split=split)
 
     def instances(self, args, split: str = "test") -> list[Instance]:
+        if self._instances is not None:
+            return self._instances(args, split=split)
         return load_instances(self, args, split=split)
 
     def scorer(self, mode: str = STRICT, bae: bool = False):
@@ -71,8 +114,17 @@ def _load_registry() -> dict[str, ModuleBenchmark]:
             name=module.NAME,
             answer_type=module.ANSWER_TYPE,
             persona_set=list(module.PERSONA_SET),
-            _load=module.load,
+            _load=getattr(module, "load", None),
+            fetch=getattr(module, "fetch", None),
+            _instances=getattr(module, "load_instances", None),
+            environment=getattr(module, "ENVIRONMENT", None),
+            max_steps=getattr(module, "MAX_STEPS", None),
+            judged=bool(getattr(module, "JUDGED", False)),
         )
+        if (benchmark.answer_type == "outcome") != (benchmark.environment is not None):
+            raise TypeError(f"{path}: answer type 'outcome' and ENVIRONMENT go together")
+        if benchmark._load is None and benchmark._instances is None:
+            raise TypeError(f"{path} defines neither load nor load_instances")
         _REGISTRY[benchmark.name] = benchmark
     return _REGISTRY
 
@@ -102,6 +154,76 @@ def answer_type_of(name: str) -> str:
     return get(name).answer_type
 
 
+def answer_type_of_sample(sample) -> str:
+    """Which scorer reads this question: the answer type its benchmark declared.
+
+    Read from the `dataset` field every tagged row carries, per question, since
+    a batch can mix benchmarks. A row without one, or naming a benchmark that
+    is not registered, is an error. The old fallback guessed from the gold
+    answer's shape, and anything non-numeric went to the multiple-choice parser,
+    which reads a letter out of any text and reports a number.
+    """
+    source = sample.get("dataset") if hasattr(sample, "get") else None
+    if not source:
+        question = str(sample.get("question", "") if hasattr(sample, "get") else sample)
+        raise ValueError(
+            f"question has no 'dataset' field, so its scorer is unknown: {question[:80]!r}"
+        )
+    return answer_type_of(source)
+
+
+class ScorerSet:
+    """The scorers one run needs, each built the first time a question asks for it.
+
+    Replaces a dict built up front for `("numeric", "mcq")` in every entry point,
+    which meant a benchmark with any other answer type needed edits in each of
+    them. Kept for the life of a run, so a scorer that holds state (a judge's
+    verdict cache, say) keeps it across questions. Safe to share between the
+    threads that score questions concurrently.
+    """
+
+    def __init__(self, mode: str = STRICT, bae: bool = False):
+        self.mode = mode
+        self.bae = bae
+        self._scorers = {}
+        self._lock = threading.Lock()
+
+    def get(self, answer_type: str):
+        with self._lock:
+            if answer_type not in self._scorers:
+                self._scorers[answer_type] = get_scorer(answer_type, mode=self.mode, bae=self.bae)
+            return self._scorers[answer_type]
+
+    def for_sample(self, sample):
+        """`(answer_type, scorer)` for one question."""
+        answer_type = answer_type_of_sample(sample)
+        return answer_type, self.get(answer_type)
+
+
+def metadata_of(sample) -> dict:
+    """A tagged row's metadata: stored as a JSON string, absent in older pools."""
+    raw = sample.get("metadata") if hasattr(sample, "get") else None
+    if not raw:
+        return {}
+    return raw if isinstance(raw, dict) else json.loads(raw)
+
+
+def instance_of(sample) -> Instance:
+    """A tagged row as an `Instance`, for scorers that read more than the gold answer.
+
+    Rows from the 699-question pool predate ids and metadata; they get the id
+    the registry would have given them and empty metadata.
+    """
+    question = sample["question"]
+    return Instance(
+        question=question,
+        answer=sample["answer"],
+        tags=list(sample.get("tags") or []),
+        metadata=metadata_of(sample),
+        id=sample.get("id") or question_id(sample.get("dataset") or "", question),
+    )
+
+
 def persona_set(name: str) -> list[str]:
     return list(get(name).persona_set)
 
@@ -117,11 +239,16 @@ __all__ = [
     "Prediction",
     "STRICT",
     "ScoreResult",
+    "ScorerSet",
     "answer_type_of",
+    "answer_type_of_sample",
     "get",
     "get_scorer",
+    "instance_of",
     "list_names",
+    "metadata_of",
     "persona_set",
+    "question_id",
     "score_responses",
     "scorer_for",
 ]

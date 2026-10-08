@@ -15,6 +15,15 @@ This script builds the mapping from the data instead, in two stages:
 
 Writes a JSON mapping {raw tag: canonical tag} that `tag_dataset.py --tag_mapping`
 applies before the frequency filter.
+
+`--extend` grows an existing mapping for a new pool of questions without
+changing it. Every entry already there stays as it is, so the pool it was built
+for keeps its tags exactly. New raw tags are mapped onto the existing canonical
+tags first: lexically, then by asking the model which existing tag, if any,
+names the same capability. Only what is still unmatched is clustered among
+itself, as above. A pool tagged this way shares the old pool's vocabulary
+wherever the capabilities overlap, which is what lets a scoreboard learned on
+one pool be read on the other.
 """
 
 import argparse
@@ -53,6 +62,21 @@ Return only valid JSON, no markdown fences, no commentary, in this shape:
 """
 
 
+ASSIGN_PROMPT = """Below are EXISTING tags from a curated vocabulary, then NEW tags from questions not seen before.
+
+For each new tag, name the existing tag that names the same capability - a wording variant, a synonym, or the same skill at a different level of detail - so that an agent good at one is good at the other by definition. If no existing tag fits that strictly, give null. Related is not enough: "arithmetic" is not "algebra".
+
+Existing tags:
+{existing_block}
+
+New tags:
+{new_block}
+
+Return only valid JSON, no markdown fences, no commentary, in this shape:
+{{"assignments": {{"<new tag>": "<existing tag or null>"}}}}
+"""
+
+
 # Words that carry no distinguishing meaning in a capability tag.
 FILLER_WORDS = {"general", "basic", "simple", "task", "tasks", "based", "skills", "ability"}
 
@@ -60,7 +84,7 @@ FILLER_WORDS = {"general", "basic", "simple", "task", "tasks", "based", "skills"
 LEMMA_SUFFIXES = (("ing", ""), ("ies", "y"), ("es", ""), ("s", ""))
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Build a raw-tag -> canonical-tag mapping from a tags JSONL"
     )
@@ -105,7 +129,19 @@ def parse_args():
         action="store_true",
         help="Lexical normalisation only, no model calls",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--extend",
+        default="",
+        help="An existing mapping JSON to grow: its entries stay unchanged, new raw tags are "
+             "matched to its canonical tags where they mean the same, the rest are clustered",
+    )
+    parser.add_argument(
+        "--assign_min_count",
+        type=int,
+        default=2,
+        help="With --extend, offer the model only existing canonical tags this common",
+    )
+    return parser.parse_args(argv)
 
 
 def read_tag_counts(path):
@@ -281,15 +317,46 @@ def compose(first, second):
     return {tag: second.get(target, target) for tag, target in first.items()}
 
 
-def main():
-    args = parse_args()
+def parse_assignments(raw_text, new_tags, existing):
+    """`{new tag: existing tag}` for the assignments that name a real existing tag."""
+    text = strip_fences(raw_text or "")
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        try:
+            parsed = json.loads(text[start : end + 1]) if start != -1 and end > start else {}
+        except json.JSONDecodeError:
+            parsed = {}
+    assignments = parsed.get("assignments", parsed) if isinstance(parsed, dict) else {}
+    if not isinstance(assignments, dict):
+        return {}
+    # Only tags that were asked about, onto tags that exist: anything else is
+    # the model inventing vocabulary, which is what --extend must not do.
+    return {
+        new: str(target).strip().lower()
+        for new, target in assignments.items()
+        if new in new_tags and target and str(target).strip().lower() in existing
+    }
 
-    counts = read_tag_counts(args.tags_file)
-    if not counts:
-        sys.exit(f"No tags found in {args.tags_file}")
-    print(f"{sum(counts.values())} tag occurrences, {len(counts)} unique raw tags")
 
-    # Stage 1 - lexical
+def assign_batch(client, args, batch, existing_block, existing):
+    new_block = "\n".join(f"- {tag}" for tag in batch)
+    response = client.chat.completions.create(
+        model=args.model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": ASSIGN_PROMPT.format(existing_block=existing_block, new_block=new_block)},
+        ],
+        max_tokens=args.max_tokens,
+        temperature=args.temperature,
+        top_p=args.top_p,
+    )
+    return parse_assignments(response.choices[0].message.content or "", set(batch), existing)
+
+
+def build_mapping(counts, args, client=None):
+    """Lexical normalisation, then rounds of model clustering, over `counts`."""
     mapping = {}
     current = Counter()
     for _, members in lexical_groups(counts).items():
@@ -299,9 +366,7 @@ def main():
             current[canonical] += count
     print(f"after lexical normalisation: {len(current)} tags")
 
-    # Stage 2 - semantic, repeated until a round merges nothing
-    if not args.no_llm:
-        client = OpenAI(base_url=args.api_base_url, api_key=args.api_key)
+    if client is not None:
         for round_index in range(1, args.max_rounds + 1):
             if len(current) <= 1:
                 break
@@ -319,6 +384,70 @@ def main():
                 break
             print(f"round {round_index}: {len(current)} -> {len(merged)} tags")
             current = merged
+    return mapping
+
+
+def extend_mapping(counts, base, base_counts, args, client=None):
+    """Grow `base` to cover `counts` without changing any entry already in it."""
+    mapping = dict(base)
+    new_tags = {tag: count for tag, count in counts.items() if tag not in base}
+    canonicals = set(base.values())
+    print(f"{len(counts) - len(new_tags)} raw tags already mapped, {len(new_tags)} new")
+
+    # 1. Lexical: a new tag whose normalised form matches an existing raw or
+    #    canonical tag takes that tag's canonical.
+    by_key = {}
+    for raw, canonical in base.items():
+        by_key.setdefault(lexical_key(raw), canonical)
+    for canonical in canonicals:
+        by_key.setdefault(lexical_key(canonical), canonical)
+    unmatched = Counter()
+    for tag, count in new_tags.items():
+        canonical = by_key.get(lexical_key(tag))
+        if canonical:
+            mapping[tag] = canonical
+        else:
+            unmatched[tag] = count
+    print(f"lexical match to the existing vocabulary: {len(new_tags) - len(unmatched)}, left: {len(unmatched)}")
+
+    # 2. Model: which existing tag, if any, names the same capability.
+    if client is not None and unmatched:
+        offered = sorted(t for t in canonicals if base_counts.get(t, 0) >= args.assign_min_count) or sorted(canonicals)
+        existing_block = "\n".join(f"- {tag}" for tag in offered)
+        ordered = sorted(unmatched)
+        batches = [ordered[i : i + args.batch_size] for i in range(0, len(ordered), args.batch_size)]
+        assigned = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(args.max_workers, len(batches)))) as pool:
+            for result in pool.map(lambda b: assign_batch(client, args, b, existing_block, set(offered)), batches):
+                assigned.update(result)
+        mapping.update(assigned)
+        for tag in assigned:
+            del unmatched[tag]
+        print(f"model match to the existing vocabulary: {len(assigned)}, left: {len(unmatched)}")
+
+    # 3. Whatever is left is new vocabulary: cluster it among itself.
+    if unmatched:
+        mapping.update(build_mapping(unmatched, args, client))
+    return mapping
+
+
+def main(argv=None):
+    args = parse_args(argv)
+
+    counts = read_tag_counts(args.tags_file)
+    if not counts:
+        sys.exit(f"No tags found in {args.tags_file}")
+    print(f"{sum(counts.values())} tag occurrences, {len(counts)} unique raw tags")
+
+    client = None if args.no_llm else OpenAI(base_url=args.api_base_url, api_key=args.api_key)
+    if args.extend:
+        with open(args.extend, "r", encoding="utf-8") as handle:
+            base_payload = json.load(handle)
+        base = base_payload["mapping"]
+        mapping = extend_mapping(counts, base, base_payload.get("canonical_counts", {}), args, client)
+    else:
+        base_payload, base = None, {}
+        mapping = build_mapping(counts, args, client)
 
     final_counts = Counter()
     for tag, count in counts.items():
@@ -327,6 +456,7 @@ def main():
     payload = OrderedDict(
         [
             ("source", args.tags_file),
+            ("extends", args.extend or None),
             ("model", None if args.no_llm else args.model),
             ("unique_raw_tags", len(counts)),
             ("unique_canonical_tags", len(final_counts)),
@@ -334,6 +464,12 @@ def main():
             ("canonical_counts", OrderedDict(final_counts.most_common())),
         ]
     )
+    if base_payload is not None:
+        changed = [tag for tag, canonical in base.items() if mapping.get(tag) != canonical]
+        assert not changed, f"--extend changed existing entries: {changed[:5]}"
+        shared = sum(count for tag, count in final_counts.items() if tag in set(base.values()))
+        payload["shared_with_base"] = shared
+        print(f"{shared}/{sum(final_counts.values())} tag occurrences land on the existing vocabulary")
     os.makedirs(os.path.dirname(args.out_file) or ".", exist_ok=True)
     with open(args.out_file, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, ensure_ascii=False)

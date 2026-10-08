@@ -138,8 +138,12 @@ def test_registry():
     check("registry is populated", len(names) >= 7, True)
     check("gsm8k is numeric", benchmarks.answer_type_of("gsm8k"), "numeric")
     check("arc is mcq", benchmarks.answer_type_of("arc"), "mcq")
-    check("every benchmark has a persona set",
-          all(len(benchmarks.persona_set(n)) == 5 for n in names), True)
+    paper = ["gsm8k", "arc", "hellaswag", "truthfulqa", "winogrande", "pro_medicine", "formal_logic"]
+    check("every paper benchmark has its five-persona set",
+          all(len(benchmarks.persona_set(n)) == 5 for n in paper), True)
+    check("benchmarks added since the paper have none",
+          {n: benchmarks.persona_set(n) for n in names if n not in paper},
+          {n: [] for n in names if n not in paper})
     check("every benchmark has a scorer",
           all(benchmarks.get(n).scorer() is not None for n in names), True)
     try:
@@ -148,6 +152,82 @@ def test_registry():
         pass
     else:
         FAILURES.append("registry: an unregistered benchmark should raise, not fall back")
+
+
+def test_answer_type_comes_from_the_registry():
+    """A question is scored as its benchmark declared, and only that way.
+
+    The scorer lookup used to fall back to the gold answer's shape, sending any
+    non-numeric answer to the multiple-choice parser. Entry points also built
+    scorers from a fixed `("numeric", "mcq")` list, so a new answer type needed
+    an edit in each of them.
+    """
+    check("per-question type, numeric",
+          benchmarks.answer_type_of_sample({"dataset": "gsm8k", "answer": "(A)"}), "numeric")
+    check("per-question type, mcq",
+          benchmarks.answer_type_of_sample({"dataset": "arc", "answer": "8"}), "mcq")
+    for label, sample, exc in [
+        ("no dataset field raises", {"question": "q", "answer": "8"}, ValueError),
+        ("empty dataset field raises", {"question": "q", "answer": "8", "dataset": ""}, ValueError),
+        ("unregistered dataset raises", {"question": "q", "answer": "def f(): pass", "dataset": "humaneval"}, KeyError),
+    ]:
+        try:
+            benchmarks.answer_type_of_sample(sample)
+        except exc:
+            pass
+        else:
+            FAILURES.append(f"{label}: did not raise {exc.__name__}")
+
+    scorers = benchmarks.ScorerSet(mode=LENIENT)
+    answer_type, scorer = scorers.for_sample({"dataset": "arc"})
+    check("scorer set: type", answer_type, "mcq")
+    check("scorer set: built in the run's mode", scorer.mode, LENIENT)
+    check("scorer set: one scorer per type per run", scorers.get("mcq") is scorer, True)
+
+    # A benchmark with an answer type no entry point has heard of is scored
+    # without editing any of them: register a scorer and a benchmark, look it up.
+    from benchmarks import scorers as scorer_module
+
+    class ExactScorer(scorer_module.MCQScorer):
+        name = "exact_test"
+
+    registry = benchmarks._load_registry()
+    scorer_module.SCORERS["exact_test"] = ExactScorer
+    registry["exact_bench"] = benchmarks.ModuleBenchmark(
+        name="exact_bench", answer_type="exact_test", persona_set=[], _load=None)
+    try:
+        answer_type, scorer = benchmarks.ScorerSet().for_sample({"dataset": "exact_bench"})
+        check("new answer type: looked up", answer_type, "exact_test")
+        check("new answer type: its own scorer", type(scorer).__name__, "ExactScorer")
+    finally:
+        del scorer_module.SCORERS["exact_test"]
+        del registry["exact_bench"]
+
+
+def test_math_scorer():
+    """Boxed LaTeX answers, compared by equivalence; the team votes over classes."""
+    try:
+        import math_verify  # noqa: F401
+    except ImportError:
+        print("  (math-verify not installed; skipping the math scorer: pip install -r requirements.txt)")
+        return
+    strict, lenient = get_scorer("math"), get_scorer("math", mode=LENIENT)
+    check("reads the last box", strict.extract("try \\boxed{1} then \\boxed{\\frac{a}{b^{2}}}").value,
+          "\\frac{a}{b^{2}}")
+    check("strict needs a box", strict.extract("final answer: 5").parsed, False)
+    check("lenient falls back to a final-answer line", lenient.extract("final answer: 5").value, "5")
+    check("lenient falls back to the last $...$", lenient.extract("so $x = 3$ and $7$").value, "7")
+    for gold, text, want in [
+        ("\\frac{7}{4}", "\\boxed{1.75}", True),
+        ("\\left( 3, \\frac{\\pi}{2} \\right)", "\\boxed{(3, \\pi/2)}", True),
+        ("12", "\\boxed{13}", False),
+        ("\\text{even}", "\\boxed{\\text{even}}", True),
+    ]:
+        check(f"equivalence {gold} vs {text}", score_responses(strict, {"a": text}, gold).correct, want)
+    team = score_responses(strict, {"a": "\\boxed{0.5}", "b": "\\boxed{\\frac{1}{2}}", "c": "\\boxed{7}"}, "\\frac12")
+    check("vote over equivalence classes", (team.aggregate.value, team.correct), ("0.5", True))
+    check("nothing parsed, no team answer", score_responses(strict, {"a": "", "b": "no"}, "1").aggregate.parsed, False)
+    check("math500 is math", benchmarks.answer_type_of("math500"), "math")
 
 
 def test_gold_normalisation():

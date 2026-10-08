@@ -28,6 +28,10 @@
 #
 #   PORTS="8001 8001" ./scripts/e2_topology_arms.sh
 #
+# DATASET (default data-claude/tagged_dataset) picks the question pool; another
+# pool's name is added to the output root (e2-topology-hard/...). MAX_TOKENS is
+# the agents' generation budget (default 4096).
+#
 # Orchestrator: the 35B on 8002. Results: data-claude/e2-topology/<label>/
 # fold<k>/<selection>-<topology>/; logs beside them under data-claude/logs/.
 set -u
@@ -41,12 +45,19 @@ PORTS=${PORTS:-"8001 8001"}
 MAX_INFLIGHT=${MAX_INFLIGHT:-0}
 ORCH_MODEL=${ORCH_MODEL:-nvidia/Qwen3.6-35B-A3B-NVFP4}
 ORCH_API=${ORCH_API:-http://127.0.0.1:8002/v1}
+JUDGE_MODEL=${JUDGE_MODEL:-$ORCH_MODEL}   # for judged benchmarks only
+JUDGE_API=${JUDGE_API:-$ORCH_API}
 ITERATIONS=${ITERATIONS:-30}
 FOLDS=${FOLDS:-"0 1 2 3 4"}
 SELECTIONS=${SELECTIONS:-"continual no_memory random"}
 TOPOLOGIES=${TOPOLOGIES:-"debate vote centralized synthesis"}
-OUT_ROOT=${OUT_ROOT:-data-claude/e2-topology/$LABEL}
-LOG_DIR=${LOG_DIR:-data-claude/logs/e2-topology/$LABEL}
+DATASET=${DATASET:-data-claude/tagged_dataset}
+MAX_TOKENS=${MAX_TOKENS:-4096}
+POOL=$(basename "$DATASET"); POOL=${POOL#tagged_}
+SUFFIX=""
+[ "$POOL" != "dataset" ] && SUFFIX="-$POOL"
+OUT_ROOT=${OUT_ROOT:-data-claude/e2-topology$SUFFIX/$LABEL}
+LOG_DIR=${LOG_DIR:-data-claude/logs/e2-topology$SUFFIX/$LABEL}
 mkdir -p "$OUT_ROOT" "$LOG_DIR"
 
 QUEUE="$LOG_DIR/queue.txt"
@@ -88,7 +99,8 @@ run_job() {  # port fold selection topology
     case $selection in no_memory|continual) wait_for "$ORCH_API" "$ORCH_MODEL" ;; esac
     echo "=== $(date -u +%FT%TZ) :$port $out starting ==="
 
-    common="--dataset_path data-claude/tagged_dataset --model_name $MODEL --api_base_url $api \
+    common="--dataset_path $DATASET --model_name $MODEL --api_base_url $api --max_new_tokens $MAX_TOKENS \
+        --judge_model $JUDGE_MODEL --judge_api_base_url $JUDGE_API \
         --split_seed 0 --n_folds 5 --fold $fold --num_samples 5 --team_size 4 --seed 0 \
         --test_batch_size 5 --eval_workers 5 --summary_every 1 \
         --topology $topology --rounds 1 --handoff full --max_inflight $MAX_INFLIGHT"

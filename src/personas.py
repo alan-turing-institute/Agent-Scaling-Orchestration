@@ -695,8 +695,10 @@ def paper_persona_names(data):
         data, names = names, None
     if names is not None:
         return list(names)
-    if data in benchmarks.list_names():
+    if data in benchmarks.list_names() and benchmarks.persona_set(data):
         return benchmarks.persona_set(data)
+    # Registered benchmarks added after the paper (GPQA, MMLU-Pro, AIME, ...) have
+    # no assigned set and get the default one, as an unknown `--data` always has.
     return list(_DEFAULT_PERSONA_SET)
 
 
