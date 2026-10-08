@@ -100,10 +100,18 @@ def run_episode(client, env, *, system: str, user: str, max_steps: int, max_toke
         for call in completion.tool_calls:
             if call["error"]:
                 observation = f"ERROR: {call['error']}"
-            elif call["name"] == delegate_name:
-                observation = delegate["run"](call["arguments"])
             else:
-                observation = env.call(call["name"], call["arguments"])
+                try:
+                    if call["name"] == delegate_name:
+                        observation = delegate["run"](call["arguments"])
+                    else:
+                        observation = env.call(call["name"], call["arguments"])
+                except (APIConnectionError, APITimeoutError):
+                    raise  # a delegated worker's server is down: the caller's retry handles it
+                except Exception as error:
+                    # Environments return errors as text; this catches one that raises
+                    # anyway, so a malformed argument costs one turn, not the episode.
+                    observation = f"ERROR: {call['name']} failed: {type(error).__name__}: {str(error)[:300]}"
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": observation})
             steps.append({"turn": turn, "tool": call["name"], "arguments": call["arguments"],
                           "observation": _clip(observation),

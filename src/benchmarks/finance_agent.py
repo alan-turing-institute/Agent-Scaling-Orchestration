@@ -126,6 +126,8 @@ def http_get(url, root, headers=None, needs_contact=True):
     `needs_contact`: the request goes to the SEC, which requires a declared
     contact in the User-Agent; the local SearXNG does not.
     """
+    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+        return 0, f"ERROR: not a web address: {url[:200]!r}; give a full http(s):// URL"
     cache = Path(root) / "http-cache" / (hashlib.sha1(url.encode("utf-8")).hexdigest() + ".json")
     if cache.exists():
         cached = json.loads(cache.read_text())
@@ -247,6 +249,14 @@ class FinanceTask:
         return tools
 
     def call(self, name, arguments):
+        """Run one tool. Any failure comes back as text the agent can read, never as an exception:
+        a malformed argument from the model must not cost the whole episode."""
+        try:
+            return self._call(name, arguments)
+        except Exception as error:
+            return f"ERROR: {name} failed: {type(error).__name__}: {str(error)[:300]}"
+
+    def _call(self, name, arguments):
         if self.done:
             return "The task is over."
         args = arguments or {}

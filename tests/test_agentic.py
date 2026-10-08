@@ -155,6 +155,17 @@ def test_episode_loop():
     record = run_episode(looper, Counter(30), system="s", user="go", max_steps=4, max_tokens=50)
     check("turn cap", (record["stopped"], record["calls"]), ("max_steps", 4))
 
+    class Raising(Counter):
+        def call(self, name, arguments):
+            if name == "inc" and arguments.get("by") == 99:
+                raise ValueError("bad argument")
+            return super().call(name, arguments)
+    record = run_episode(Scripted({"go": [[call("inc", by=99)], [call("inc", by=3)], [call("submit")]]}), Raising(3),
+                         system="s", user="go", max_steps=5, max_tokens=50)
+    check("a tool that raises costs one turn, not the episode",
+          (record["prediction"].value, record["steps"][0]["observation"].startswith("ERROR: inc failed: ValueError")),
+          ("success|n=3", True))
+
     finished = Counter(0)
     finished.call("submit", {})
     record = run_episode(Scripted({"go": []}), finished, system="s", user="go", max_steps=5, max_tokens=50)
@@ -495,6 +506,9 @@ def test_finance_environment():
     check("web_search when SearXNG answers", "web_search" in [t["function"]["name"] for t in env.tools()], True)
     try:
         check("web search returns titles and urls", json.loads(env.call("web_search", {"query": "us steel"}))[0]["url"], "https://x")
+        check("a page fetch with a bad URL is an error message, not a crash",
+              original("mock", metadata["root"])[1].startswith("ERROR: not a web address"), True)
+        check("so is a tool that raises", env.call("read_page", {"key": "k", "start": "not a number"}).startswith("ERROR"), True)
         hits = json.loads(env.call("edgar_search", {"query": "revenue", "end_date": "2030-01-01"}))
         check("EDGAR hits become filing URLs", hits[0]["url"], "https://www.sec.gov/Archives/edgar/data/320193/000123000001/doc.htm")
         env.call("parse_html_page", {"url": "https://www.sec.gov/page", "key": "k"})

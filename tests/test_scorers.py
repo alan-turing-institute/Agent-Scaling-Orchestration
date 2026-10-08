@@ -206,6 +206,11 @@ def test_answer_type_comes_from_the_registry():
 
 def test_math_scorer():
     """Boxed LaTeX answers, compared by equivalence; the team votes over classes."""
+    try:
+        import math_verify  # noqa: F401
+    except ImportError:
+        print("  (math-verify not installed; skipping the math scorer: pip install -r requirements.txt)")
+        return
     strict, lenient = get_scorer("math"), get_scorer("math", mode=LENIENT)
     check("reads the last box", strict.extract("try \\boxed{1} then \\boxed{\\frac{a}{b^{2}}}").value,
           "\\frac{a}{b^{2}}")
