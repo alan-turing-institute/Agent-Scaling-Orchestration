@@ -34,11 +34,12 @@ from splits import add_split_args, make_split, split_label
 
 import benchmarks
 from benchmarks import score_responses
-from holdout_evaluation import _batch_indices, with_server_retry
-from predictions import SCHEMA_VERSION, write_predictions
+from holdout_evaluation import _batch_indices, limit_summary, with_server_retry
+from episode import run_episode
+from judge import judge_from_args
+from predictions import SCHEMA_VERSION, split_traces, traces_path, write_predictions
 from runner import question_key
-from model.openai_compat import OpenAICompatChatWrapper
-from team_evaluation import answer_type_of
+from model.openai_compat import OpenAICompatChatWrapper, is_context_limit, limit_of
 
 # Named so the report tables read sensibly: it occupies the slot a persona would.
 AGENT_NAME = "bare_model"
@@ -58,6 +59,8 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--max_tokens", type=int, default=4096)
+    parser.add_argument("--judge_model", default=None, help="LLM judge for judged benchmarks (BrowseComp-Plus, Finance-Agent)")
+    parser.add_argument("--judge_api_base_url", default=None)
     parser.add_argument("--max_inflight", type=int, default=0,
                         help="Cap on requests in flight; 1 makes greedy output reproducible")
     parser.add_argument("--parse_mode", choices=["strict", "lenient"], default="strict",
@@ -69,12 +72,52 @@ def parse_args():
     return parser.parse_args()
 
 
+def attempt_task(agent, sample, scorer, answer_type, args):
+    """An agentic task: the bare model works through it alone, with no persona and no team.
+
+    The same episode a team's solver runs (`episode.run_episode`), with the
+    benchmark's turn cap, graded on the environment's outcome.
+    """
+    benchmark = benchmarks.get(sample["dataset"])
+    instance = benchmarks.instance_of(sample)
+    env = benchmark.environment_for(judge_from_args(args))(instance)
+    episode, error_text = None, None
+    try:
+        episode = run_episode(agent, env, system="You are a helpful assistant.", user=env.task_prompt(),
+                              max_steps=benchmark.max_steps or 30, max_tokens=args.max_tokens,
+                              temperature=args.temperature, top_p=args.top_p)
+        prediction = episode.pop("prediction")
+    except (APIConnectionError, APITimeoutError):
+        raise
+    except Exception as error:
+        print(f"[warn] episode failed: {error!r}; scoring as incorrect")
+        prediction, error_text = scorer.extract(""), repr(error)
+    correct = bool(scorer.correct(prediction, scorer.normalise_gold(sample["answer"]), instance=instance))
+    return {
+        "tags": sample["tags"] or [],
+        "answer_type": answer_type,
+        "correct": correct,
+        "parsed": prediction.parsed,
+        "prediction": str(prediction.legacy),
+        "gold": str(sample["answer"]),
+        "question": sample["question"],
+        "question_id": instance.id,
+        "response": (episode or {}).get("response", ""),
+        "dataset": sample.get("dataset"),
+        "completion": None,
+        "episode": episode,
+        "error": error_text,
+        "limit": (episode or {}).get("limit"),
+    }
+
+
 def answer_one(agent, sample, scorers, args):
     """Ask the model one question and score it exactly as a team agent is scored."""
     question = sample["question"]
     answer = sample["answer"]
-    answer_type = answer_type_of(sample)
-    scorer = scorers[answer_type]
+    answer_type, scorer = scorers.for_sample(sample)
+    if benchmarks.get(sample["dataset"]).environment is not None:
+        return attempt_task(agent, sample, scorer, answer_type, args)
     # The tagged dataset stores every answer as a string, numeric ones included.
     answer = scorer.normalise_gold(answer)
 
@@ -95,8 +138,12 @@ def answer_one(agent, sample, scorers, args):
     except Exception as error:
         print(f"[warn] call failed: {error!r}; scoring as incorrect")
         text, error_text = "", repr(error)
+    # A request too long for the model's context is the serving setup's limit,
+    # not an answer; a reply cut off by max_tokens is the generation budget's.
+    limit = "context" if error_text and is_context_limit(error_text) else (
+        limit_of(completion.finish_reason) if completion else None)
 
-    result = score_responses(scorer, {AGENT_NAME: text}, answer)
+    result = score_responses(scorer, {AGENT_NAME: text}, answer, instance=benchmarks.instance_of(sample))
     prediction = result.predictions[0]
 
     # With one respondent the majority answer is that respondent's, so the team
@@ -109,10 +156,12 @@ def answer_one(agent, sample, scorers, args):
         "prediction": str(prediction.legacy),
         "gold": str(result.gold),
         "question": question,
+        "question_id": benchmarks.instance_of(sample).id,
         "response": text,
         "dataset": sample.get("dataset"),
         "completion": completion,
         "error": error_text,
+        "limit": limit,
     }
 
 
@@ -137,14 +186,21 @@ def prediction_row(r, batch_index, question_index, args):
         "served_model": args.model_name,
         "error": r.get("error"),
         "prediction": r["prediction"], "parsed": r["parsed"], "correct": r["correct"],
-        "transition": None, "copied": None,
+        "transition": None, "copied": None, "limit": r.get("limit"),
     }
+    episode = r.get("episode")
+    if episode:
+        # An agentic task: the episode's cost and ending, and its steps for the traces file.
+        stage.update({key: episode.get(key) for key in
+                      ("prompt_tokens", "completion_tokens", "finish_reason", "steps", "stopped",
+                       "outcome", "calls", "tool_calls")})
     return {
         "schema": SCHEMA_VERSION,
         "arm": "bare_model",
         "batch": batch_index,
         "question_index": question_index,
         "question_key": question_key(r.get("question")),
+        "question_id": r.get("question_id"),
         "dataset": r.get("dataset"),
         "answer_type": r["answer_type"],
         "tags": r["tags"],
@@ -153,9 +209,10 @@ def prediction_row(r, batch_index, question_index, args):
         "team": [AGENT_NAME],
         "config_id": None,
         "aggregation": {"rule": "stage", "over": [AGENT_NAME], "tie_break": None},
+        "limit": r.get("limit"),
         "team_answer": r["prediction"],
         "team_correct": r["correct"],
-        "calls": 1,
+        "calls": stage.get("calls") or 1,
         "depth": 1,
         "prompt_tokens": stage["prompt_tokens"] or 0,
         "completion_tokens": stage["completion_tokens"] or 0,
@@ -182,12 +239,16 @@ def main():
         limiter=threading.BoundedSemaphore(args.max_inflight) if args.max_inflight > 0 else None,
     )
 
-    # Each scorer states the answer format it can read, so a split that mixes
+    # Each question is scored as its own benchmark declared, so a split that mixes
     # numeric and multiple-choice questions asks each one for the right thing.
-    scorers = {
-        answer_type: benchmarks.get_scorer(answer_type, mode=args.parse_mode)
-        for answer_type in ("numeric", "mcq")
-    }
+    # Every question is looked up before the first call, so one nobody can score
+    # stops the run at the start.
+    scorers = benchmarks.ScorerSet(mode=args.parse_mode)
+    for sample in test_dataset:
+        scorers.for_sample(sample)
+    judge = judge_from_args(args)
+    for name in set(test_dataset["dataset"]):
+        benchmarks.get(name).environment_for(judge)  # a judged benchmark without a judge stops here
 
     batches = _batch_indices(len(test_dataset), args.test_batch_size, args.split_seed)
     records_path = out_dir / "holdout_records.jsonl"
@@ -196,6 +257,7 @@ def main():
     predictions_path.unlink(missing_ok=True)
 
     total = correct = 0
+    limits = {}
     tag_counts, tag_correct = Counter(), Counter()
 
     for batch_index, indices in enumerate(batches, start=1):
@@ -213,6 +275,12 @@ def main():
                 results[futures[future]] = future.result()
 
         batch_correct = sum(r["correct"] for r in results)
+        for key, hit in (("context_limited", lambda r: r.get("limit") == "context"),
+                         ("context_limited_correct", lambda r: r.get("limit") == "context" and r["correct"]),
+                         ("max_tokens_limited", lambda r: r.get("limit") == "max_tokens"),
+                         ("stage_answers", lambda r: True),
+                         ("stage_answers_context_limited", lambda r: r.get("limit") == "context")):
+            limits[key] = limits.get(key, 0) + sum(1 for r in results if hit(r))
         total += len(results)
         correct += batch_correct
         for r in results:
@@ -237,6 +305,11 @@ def main():
                 "per_agent_correct": {AGENT_NAME: batch_correct},
                 "per_agent_accuracy": {AGENT_NAME: batch_correct / len(results) if results else 0.0},
                 "answer_types": [r["answer_type"] for r in results],
+                "context_limited": sum(r.get("limit") == "context" for r in results),
+                "context_limited_correct": sum(r.get("limit") == "context" and r["correct"] for r in results),
+                "max_tokens_limited": sum(r.get("limit") == "max_tokens" for r in results),
+                "stage_answers": len(results),
+                "stage_answers_context_limited": sum(r.get("limit") == "context" for r in results),
             },
         }
         with records_path.open("a", encoding="utf-8") as fh:
@@ -244,8 +317,9 @@ def main():
 
         # Same per-question detail the team arms write, in the same shape: one
         # stage, no persona, so the arms can be compared question by question.
-        write_predictions(predictions_path, [prediction_row(r, batch_index, indices[position], args)
-                                             for position, r in enumerate(results)])
+        rows = [prediction_row(r, batch_index, indices[position], args) for position, r in enumerate(results)]
+        write_predictions(traces_path(predictions_path), split_traces(rows))
+        write_predictions(predictions_path, rows)
 
     summary = {
         "run": str(out_dir),
@@ -254,6 +328,7 @@ def main():
         "test_questions": total,
         "batches": len(batches),
         "team_accuracy": correct / total if total else 0.0,
+        **limit_summary({"questions": total, "team_correct": correct, **limits}),
         # Keyed the way report_run.py reads an arm: "questions" answered,
         # "selected" batches it was picked for - here, every batch.
         "agents": {AGENT_NAME: {"correct": correct, "questions": total, "selected": len(batches)}},
@@ -264,6 +339,10 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"BARE MODEL: {correct}/{total} = {correct / total:.1%}" if total else "BARE MODEL: no questions")
+    if summary["context_limited_questions"] or summary["max_tokens_limited_questions"]:
+        print(f"Hit the context limit: {summary['context_limited_questions']}; accuracy on the rest: "
+              f"{summary['accuracy_without_context_limited']:.1%}. "
+              f"Cut off by max_tokens: {summary['max_tokens_limited_questions']}")
     print(f"Written to {summary_path}, {records_path} and {predictions_path}")
 
 

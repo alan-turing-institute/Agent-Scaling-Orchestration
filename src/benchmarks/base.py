@@ -15,6 +15,7 @@ editing every caller.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence, runtime_checkable
 
@@ -25,13 +26,20 @@ class Instance:
 
     `metadata` is where a benchmark puts what only its own scorer understands:
     a test suite for a coding task, a rubric for a judged one, a repository
-    snapshot, an environment seed.
+    snapshot, an environment seed. It must be JSON-serialisable: the tagged
+    dataset stores it as a JSON string.
+
+    `id` is stable across loads and machines, so records from different runs
+    can be joined on it. `tags` here are structural, the labels a benchmark
+    ships with (a subject, a difficulty level), as `"key: value"` strings;
+    the model's capability tags are added when the pool is built.
     """
 
     question: str
     answer: Any
     tags: list[str] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    id: str = ""
 
 
 @dataclass(frozen=True)
@@ -110,7 +118,13 @@ class Scorer(Protocol):
     def extract(self, text: str) -> Prediction:
         ...
 
-    def correct(self, prediction: Prediction, gold: Any) -> bool:
+    def correct(self, prediction: Prediction, gold: Any, instance: "Instance | None" = None) -> bool:
+        """Whether `prediction` answers the question.
+
+        `instance` carries the question and its metadata for scorers that need
+        more than the gold answer (a judge reads the question; a rubric lives
+        in the metadata). Scorers that compare against `gold` alone ignore it.
+        """
         ...
 
     def aggregate(self, predictions: Sequence[Prediction], rng=None) -> Prediction:
@@ -138,13 +152,20 @@ class Benchmark(Protocol):
         """Return `(questions, labels)`.
 
         The pair, rather than `list[Instance]`, because that is what
-        `main.py` and `tag_questions.py` already consume. `load_instances`
-        below adapts it for anything that wants the richer shape.
+        `main.py` consumes. A module may define `load_instances` instead, to
+        attach ids, metadata and structural tags; the registry derives `load`
+        from it.
         """
         ...
+
+
+def question_id(benchmark_name: str, question: str) -> str:
+    """A stable id for a question that came without one: its benchmark and text hash."""
+    return f"{benchmark_name}:{hashlib.sha1((question or '').encode('utf-8')).hexdigest()[:12]}"
 
 
 def load_instances(benchmark: Benchmark, args, split: str = "test") -> list[Instance]:
     """Adapt a benchmark's `(questions, labels)` into `Instance` objects."""
     questions, labels = benchmark.load(args, split=split)
-    return [Instance(question=q, answer=a) for q, a in zip(questions, labels)]
+    return [Instance(question=q, answer=a, id=question_id(benchmark.name, q))
+            for q, a in zip(questions, labels)]

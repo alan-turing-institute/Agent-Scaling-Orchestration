@@ -25,6 +25,14 @@ when reading the number:
 - Only the five gsm8k personas define an extra NVIDIA-format block.
   `--nvidia_persona` appends it to those; the orchestrator arms never append it.
 
+`--proxy` is the domain-matched version for pools the paper never saw. A
+benchmark with no paper set may name, per question, a paper benchmark whose set
+stands in for it (`proxy_persona_source` in its module): AIME and MATH-500 borrow
+GSM8K's maths set, MMLU-Pro's law questions the formal-logic set. Questions with
+no stand-in are left out and counted, never forced onto a poor match, so compare
+this arm with the others only on the questions it covers (the summary lists
+them by dataset). These pairings are this repository's choice, not the paper's.
+
 Output is written in the shape `scripts/report_run.py` reads.
 """
 
@@ -39,7 +47,9 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from datasets import load_from_disk
+import benchmarks
 
+from model.model_utils import DEFAULT_MAX_NEW_TOKENS
 from runner import add_runner_args
 from splits import add_split_args, make_split, split_label
 
@@ -62,6 +72,11 @@ def parse_args():
     parser.add_argument("--team_size", type=int, default=0,
                         help="0 uses each dataset's whole assigned set (five, as the paper wrote it); "
                              "4 truncates to the first four, matching the team size the orchestrator picks")
+    parser.add_argument("--max_new_tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS,
+                        help="Token cap per agent answer")
+    parser.add_argument("--proxy", action="store_true",
+                        help="Benchmarks the paper assigned no set to borrow a domain-matched paper set "
+                             "(proxy_persona_source); questions with none are skipped and counted")
     parser.add_argument("--nvidia_persona", action="store_true",
                         help="Append the NVIDIA-format block where a persona defines one, as the orchestrator arms do")
     parser.add_argument("--limit", type=int, default=0, help="Answer only the first N held-out questions; 0 means all")
@@ -71,9 +86,15 @@ def parse_args():
     return parser.parse_args()
 
 
-def persona_sets(datasets, team_size, nvidia):
-    """Build the paper's assigned set for each dataset present in the split."""
+def persona_sets(datasets, team_size, nvidia, proxy=False):
+    """Build the paper's assigned set for each dataset (or stand-in source) named."""
     sets = {}
+    unassigned = sorted(n for n in datasets if n in benchmarks.list_names() and not benchmarks.persona_set(n))
+    if unassigned and not proxy:
+        # The canonical arm means "the paper's persona set for this dataset". These
+        # benchmarks postdate the paper, so there is nothing canonical to run.
+        raise SystemExit(f"no paper persona set for {unassigned}; the canonical arm is undefined "
+                         f"for them (see PERSONA_SET in src/benchmarks/)")
     for name in sorted(datasets):
         built = _build_enhanced_personas(SimpleNamespace(
             data=name, multi_persona=True, baseline_a=False, baseline_b=False,
@@ -98,14 +119,29 @@ def main():
         test_dataset = test_dataset.select(range(min(args.limit, len(test_dataset))))
     print(f"✓ Held out: {len(test_dataset)} questions [{split_label(args)}]")
 
-    print("✓ Assigned persona sets:")
-    sets = persona_sets(set(test_dataset["dataset"]), args.team_size, args.nvidia_persona)
-
-    # Questions are grouped by their source dataset because that is what picks the
-    # team; within a group the shared batching keeps batch sizes comparable.
-    by_dataset = defaultdict(list)
+    # Each question's team comes from its own dataset's paper set, or under --proxy
+    # from the set its benchmark borrows; questions with neither are skipped.
+    source_of, skipped = [], defaultdict(int)
     for position, name in enumerate(test_dataset["dataset"]):
-        by_dataset[name].append(position)
+        if benchmarks.persona_set(name) or not args.proxy:
+            source_of.append(name)
+            continue
+        source = benchmarks.get(name).proxy_for(benchmarks.metadata_of(test_dataset[position]))
+        source_of.append(source)
+        if source is None:
+            skipped[name] += 1
+    print("✓ Assigned persona sets:")
+    sets = persona_sets({s for s in source_of if s}, args.team_size, args.nvidia_persona, proxy=args.proxy)
+    if skipped:
+        print(f"✓ Skipped, no stand-in set: {dict(skipped)}")
+
+    # Questions are grouped by their source dataset (and the set it borrows)
+    # because that is what picks the team; within a group the shared batching
+    # keeps batch sizes comparable.
+    by_dataset = defaultdict(list)
+    for position, (name, source) in enumerate(zip(test_dataset["dataset"], source_of)):
+        if source is not None:
+            by_dataset[name if source == name else f"{name}<-{source}"].append(position)
 
     records_path = out_dir / "holdout_records.jsonl"
     records_path.unlink(missing_ok=True)
@@ -120,7 +156,7 @@ def main():
 
     for name in sorted(by_dataset):
         positions = by_dataset[name]
-        team, definitions = sets[name]
+        team, definitions = sets[name.split("<-")[-1]]
         batches = _batch_indices(len(positions), args.test_batch_size, args.split_seed)
         correct_here = seen_here = 0
 
@@ -143,7 +179,7 @@ def main():
                 continue
 
             save_report(predictions_path, report, batch=batch_number,
-                        arm=f"paper_personas:{name}", team=team,
+                        arm=f"{'proxy' if '<-' in name else 'paper'}_personas:{name}", team=team,
                         question_indices=indices, response_chars=args.response_chars)
 
             n = report["n_samples"]
@@ -169,7 +205,9 @@ def main():
                     "question_indices": indices,
                     "selected_team": team,
                     "invalid_agents": [],
-                    "reasoning": f"Fixed assignment: the paper's persona set for {name}",
+                    "reasoning": (f"Fixed assignment: the paper's persona set for {name}" if "<-" not in name else
+                                  f"Fixed stand-in: {name.split('<-')[0]} borrows the paper's set for "
+                                  f"{name.split('<-')[1]} (this repository's choice)"),
                     "report": report,
                 }, default=str) + "\n")
 
@@ -179,7 +217,11 @@ def main():
 
     summary = {
         "run": str(out_dir),
-        "selection": f"fixed per-dataset assignment (team_size {args.team_size or 'all'})",
+        "selection": (f"fixed per-dataset assignment (team_size {args.team_size or 'all'})"
+                      + ("; domain-matched stand-ins for unassigned benchmarks" if args.proxy else "")),
+        # Questions with no set at all (under --proxy): compare arms only on the rest.
+        "skipped_questions": sum(skipped.values()),
+        "skipped_by_dataset": dict(skipped),
         "model": args.model_name,
         "test_questions": total,
         "batches": batch_number,

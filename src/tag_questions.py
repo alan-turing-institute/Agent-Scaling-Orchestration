@@ -120,7 +120,8 @@ def parse_tags(raw_text):
     return [text]
 
 
-async def tag_one_question(agent, dataset_name, idx, question, answer, args, semaphore):
+async def tag_one_question(agent, dataset_name, idx, instance, args, semaphore):
+    question, answer = instance.question, instance.answer
     async with semaphore:
         prompt = build_prompt(question)
         message = [{"role": "user", "content": prompt}]
@@ -147,9 +148,14 @@ async def tag_one_question(agent, dataset_name, idx, question, answer, args, sem
         print(f"[{dataset_name} sample {idx}] Question: {question}\nTags: {tags}\nRaw response: {raw_text}\n")
         return {
             'dataset': dataset_name,
+            'id': instance.id,
             'question': question,
             'answer': answer,
             'tags': tags,
+            # Labels the benchmark ships with ("level: 5"); tag_dataset.py adds
+            # them to `tags` under --structural_tags, past the mapping and filter.
+            'structural_tags': list(instance.tags),
+            'metadata': instance.metadata,
             'raw_response': raw_text,
         }
 
@@ -185,14 +191,13 @@ def main():
     async def run_dataset(dataset_name):
         print(f"Processing dataset: {dataset_name}")
         args.data = dataset_name
-        test_X, test_Y = benchmarks.get(dataset_name).load(args, split=args.split)
+        instances = benchmarks.get(dataset_name).instances(args, split=args.split)
         if args.data_size and args.data_size > 0:
-            test_X = test_X[:args.data_size]
-            test_Y = test_Y[:args.data_size]
+            instances = instances[:args.data_size]
 
         tasks = [
-            tag_one_question(agent, dataset_name, idx, question, answer, args, semaphore)
-            for idx, (question, answer) in enumerate(zip(test_X, test_Y))
+            tag_one_question(agent, dataset_name, idx, instance, args, semaphore)
+            for idx, instance in enumerate(instances)
         ]
         return await asyncio.gather(*tasks)
 
