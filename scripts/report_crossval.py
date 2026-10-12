@@ -15,8 +15,11 @@ import json
 import math
 from pathlib import Path
 
-ARM_ORDER = ["bare_model", "paper_personas", "paper_personas_4", "random",
-             "no_memory", "batched", "continual"]
+ARM_ORDER = ["bare_model", "self_consistency", "paper_personas", "paper_personas_4", "canonical",
+             "canonical_proxy", "random", "no_memory", "batched", "continual"]
+# Arms that answer only part of the split; their row is not comparable with the rest
+# except on the questions they cover.
+PARTIAL_ARMS = {"canonical_proxy": "answers only questions with a domain-matched stand-in set"}
 
 
 def wilson(correct, total, z=1.96):
@@ -68,8 +71,12 @@ def main():
         print(f"no folds under {root}")
         return
 
+    # Known arms in their usual order, then any other arm directory found, so a new
+    # arm is never silently left out of the table.
+    found = sorted({p.name for fold_dir in fold_dirs for p in fold_dir.iterdir() if p.is_dir()} - set(ARM_ORDER))
+    arms = ARM_ORDER + found
     results = {}
-    for arm in ARM_ORDER:
+    for arm in arms:
         per_fold = {}
         for fold_dir in fold_dirs:
             got = read_fold(fold_dir / arm)
@@ -86,7 +93,7 @@ def main():
     header = f"{'arm':18s} {'pooled':>14s}  {'95% CI':>14s}  {'per fold':>28s}  folds"
     print(header)
     print("-" * len(header))
-    for arm in ARM_ORDER:
+    for arm in arms:
         if arm not in results:
             continue
         per_fold = results[arm]
@@ -98,6 +105,10 @@ def main():
         folds = ",".join(sorted(per_fold))
         print(f"{arm:18s} {correct:4d}/{questions:<4d} {100 * correct / questions:5.1f}%  "
               f"[{low:4.1f},{high:5.1f}]  {each:>28s}  {folds}")
+
+    for arm, note in PARTIAL_ARMS.items():
+        if arm in results:
+            print(f"  ({arm}: {note}; compare it on those questions only)")
 
     # The comparison the sweep exists to make: is any gap between arms bigger than
     # the gap the same arm shows between folds?

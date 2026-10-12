@@ -68,8 +68,10 @@ for arm in arms:
         problems.append(f"{arm}: missing {summary.name} or {preds.name}")
         continue
     rows = [json.loads(line) for line in preds.open()]
-    if len(rows) != len(test):
-        problems.append(f"{arm}: {len(rows)} prediction rows for {len(test)} held-out questions")
+    # canonical_proxy answers only the questions with a stand-in set and says how many it skipped.
+    expected = len(test) - json.loads(summary.read_text()).get("skipped_questions", 0)
+    if len(rows) != expected:
+        problems.append(f"{arm}: {len(rows)} prediction rows for {expected} questions it should answer")
     unparsed = sum(1 for r in rows for s in (r.get("stages") or []) if not s.get("parsed"))
     limits = json.loads(summary.read_text())
     print(f"  {arm:11s} {len(rows)} rows, {unparsed} unparsed stage answers, "

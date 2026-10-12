@@ -45,3 +45,13 @@ def load_instances(args, split='test'):
         )
         for _, row in problems.iterrows()
     ]
+
+
+def proxy_persona_source(metadata):
+    """The paper benchmark whose persona set stands in for this one's (our choice, not the paper's).
+
+    Used only by `paper_persona_baseline.py --proxy`, the domain-matched fixed-team
+    baseline. GSM8K's set is written for multi-step arithmetic and algebra, the core of
+    MATH's problems.
+    """
+    return "gsm8k"

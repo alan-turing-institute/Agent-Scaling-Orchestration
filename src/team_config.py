@@ -21,6 +21,7 @@ records with the same id were produced by the same prompts.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -52,6 +53,10 @@ class Stage:
     # MAX_STEPS), and the stages it may call on through a `delegate` tool.
     max_steps: Optional[int] = None
     delegates: tuple = ()
+    # Sampling settings for this stage, overriding its persona's (which are
+    # temperature 0 for every persona in the bank). Self-consistency needs them.
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
 
     def to_dict(self):
         record = {
@@ -68,6 +73,10 @@ class Stage:
             record["max_steps"] = self.max_steps
         if self.delegates:
             record["delegates"] = list(self.delegates)
+        if self.temperature is not None:
+            record["temperature"] = self.temperature
+        if self.top_p is not None:
+            record["top_p"] = self.top_p
         return record
 
 
@@ -217,6 +226,8 @@ class TeamConfig:
                 max_tokens=s.get("max_tokens"),
                 max_steps=s.get("max_steps"),
                 delegates=tuple(s.get("delegates", ())),
+                temperature=s.get("temperature"),
+                top_p=s.get("top_p"),
             ))
         stages = tuple(stages)
         vote_over = raw.get("vote_over")
@@ -231,7 +242,8 @@ class TeamConfig:
 
 
 _CONFIG_KEYS = {"stages", "aggregate", "final", "vote_over", "max_tokens", "name"}
-_STAGE_KEYS = {"id", "persona", "role", "model", "inputs", "max_tokens", "max_steps", "delegates"}
+_STAGE_KEYS = {"id", "persona", "role", "model", "inputs", "max_tokens", "max_steps", "delegates",
+               "temperature", "top_p"}
 _INPUT_KEYS = {"source", "handoff"}
 
 
@@ -351,10 +363,11 @@ def parallel(*configs: TeamConfig, name="parallel", max_tokens=None):
     for b, config in enumerate(configs, start=1):
         prefix = f"b{b}/"
         for s in config.stages:
-            stages.append(Stage(
-                id=prefix + s.id, persona=s.persona, role=s.role, model=s.model,
+            # Every field carried over; only the ids a stage names are prefixed.
+            stages.append(dataclasses.replace(
+                s, id=prefix + s.id,
                 inputs=tuple(Input(prefix + i.source, i.handoff) for i in s.inputs),
-                max_tokens=s.max_tokens,
+                delegates=tuple(prefix + d for d in s.delegates),
             ))
         finals.extend(prefix + sid for sid in config.answer_stages())
     if len(finals) != len(configs):
@@ -391,6 +404,21 @@ def delegated(workers: Sequence[str], hub: str, model="default", hub_model=None,
                         delegates=tuple(ids[:-1])))
     return TeamConfig(stages=tuple(stages), aggregate="stage", final=ids[-1],
                       max_tokens=max_tokens, name=name)
+
+
+def self_consistency(n=4, temperature=0.7, top_p=0.95, model="default", max_tokens=None,
+                     name="self_consistency"):
+    """The bare model answering `n` times with sampling on, then a vote.
+
+    The baseline that separates "four answers voted" from "four personas voted":
+    every persona in the bank runs at temperature 0, so a vote of personas gets
+    its variety from the persona prompts alone, and this gets it from sampling
+    alone. Stages have no persona; each gets its own request seed (the runner
+    derives it from the stage id), so the samples differ and a rerun repeats them.
+    """
+    stages = tuple(Stage(id=f"sample{i + 1}", persona=None, model=model, temperature=temperature, top_p=top_p)
+                   for i in range(n))
+    return TeamConfig(stages=stages, aggregate="vote", max_tokens=max_tokens, name=name)
 
 
 TOPOLOGIES = ("vote", "debate", "centralized", "synthesis", "pipeline", "delegated")

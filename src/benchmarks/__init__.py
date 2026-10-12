@@ -26,7 +26,7 @@ import importlib
 import json
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from benchmarks.base import Instance, Prediction, ScoreResult, load_instances, question_id
 from benchmarks.scorers import LENIENT, STRICT, get_scorer, score_responses
@@ -72,6 +72,13 @@ class ModuleBenchmark:
     max_steps: Any = None
     # Graded by an LLM judge: its environment takes `judge=` (see judge.py).
     judged: bool = False
+    # Optional `proxy_persona_source(metadata) -> benchmark name or None`: whose
+    # paper persona set stands in for a benchmark the paper assigned none to.
+    proxy_source: Any = None
+
+    def proxy_for(self, metadata) -> Optional[str]:
+        """The paper benchmark whose set this question borrows, or None."""
+        return self.proxy_source(metadata or {}) if self.proxy_source else None
 
     def environment_for(self, judge=None):
         """This benchmark's environment factory, given the run's judge when it needs one."""
@@ -120,6 +127,7 @@ def _load_registry() -> dict[str, ModuleBenchmark]:
             environment=getattr(module, "ENVIRONMENT", None),
             max_steps=getattr(module, "MAX_STEPS", None),
             judged=bool(getattr(module, "JUDGED", False)),
+            proxy_source=getattr(module, "proxy_persona_source", None),
         )
         if (benchmark.answer_type == "outcome") != (benchmark.environment is not None):
             raise TypeError(f"{path}: answer type 'outcome' and ENVIRONMENT go together")

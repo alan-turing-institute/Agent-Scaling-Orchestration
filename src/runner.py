@@ -97,11 +97,17 @@ def _persona_text(name, personas):
     return data or ""
 
 
-def _generation_params(name, personas):
+def _generation_params(name, personas, stage=None):
+    """Temperature and top_p: the stage's own when it sets them, else its persona's."""
     if name and name in personas and isinstance(personas[name], dict):
         config = get_persona_config(name, personas)
-        return config["temperature"], config["top_p"]
-    return 0, 0.9
+        temperature, top_p = config["temperature"], config["top_p"]
+    else:
+        temperature, top_p = 0, 0.9
+    if stage is not None:
+        temperature = stage.temperature if stage.temperature is not None else temperature
+        top_p = stage.top_p if stage.top_p is not None else top_p
+    return temperature, top_p
 
 
 def _transition(previous_correct: Optional[bool], correct: bool) -> Optional[str]:
@@ -210,7 +216,7 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
             inputs.append(("Instruction from your team lead", instruction))
         content = render_agent_prompt(_persona_text(stage.persona, personas), env.task_prompt(),
                                       role=stage.role, inputs=inputs, delegating=bool(stage.delegates))
-        temperature, top_p = _generation_params(stage.persona, personas)
+        temperature, top_p = _generation_params(stage.persona, personas, stage)
         budget = stage.max_tokens or config.max_tokens or max_tokens
         seed = None if request_seed is None or request_seed < 0 else (
             _stable_int(request_seed, qkey, stage.id, call) % (2 ** 31))
@@ -294,7 +300,7 @@ def run_question(config: TeamConfig, question: str, gold: Any, *, scorer, person
             ))
         content = render_prompt(_persona_text(stage.persona, personas), question, suffix,
                                 role=stage.role, inputs=inputs)
-        temperature, top_p = _generation_params(stage.persona, personas)
+        temperature, top_p = _generation_params(stage.persona, personas, stage)
         budget = stage.max_tokens or config.max_tokens or max_tokens
         seed = None if request_seed is None or request_seed < 0 else (
             _stable_int(request_seed, qkey, stage.id) % (2 ** 31))

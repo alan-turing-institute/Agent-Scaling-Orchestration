@@ -50,3 +50,13 @@ def load_instances(args, split='test'):
             metadata={"year": year, "paper": row['paper'], "number": None if pd.isna(row['number']) else int(row['number'])},
         ))
     return instances
+
+
+def proxy_persona_source(metadata):
+    """The paper benchmark whose persona set stands in for this one's (our choice, not the paper's).
+
+    Used only by `paper_persona_baseline.py --proxy`, the domain-matched fixed-team
+    baseline. GSM8K's set is written for multi-step arithmetic and algebra (a rigorous
+    formalist, a decomposer, a verifier), which is what AIME problems need.
+    """
+    return "gsm8k"

@@ -60,3 +60,15 @@ def load_instances(args, split='test'):
                       "n_options": len(row['options']), "src": row['src']},
         ))
     return instances
+
+
+def proxy_persona_source(metadata):
+    """The paper benchmark whose persona set stands in for this one's (our choice, not the paper's).
+
+    Used only by `paper_persona_baseline.py --proxy`, the domain-matched fixed-team
+    baseline. Law questions get the formal-logic set (a formal logician, a critical
+    analyst, an eliminative reasoner). The science and engineering subjects get
+    none: the nearest set, ARC's, is written for grade-school science and would
+    be a poor match, so those questions are left out of that baseline.
+    """
+    return "formal_logic" if metadata.get("category") == "law" else None

@@ -292,6 +292,21 @@ math-verify's timeouts use `signal.alarm`, which fails off the main thread, so o
 scorer disables them and refuses to hand sympy anything over `MATH_MAX_CHARS`. All 262 reference
 solutions for levels 4–5 score correct against their gold answers.
 
+Two baselines for pools the paper never saw, both arms of `small_model_arms.sh`:
+
+- `self_consistency` — `team_config.self_consistency(n, temperature)`: n persona-less stages
+  sampled at `Stage.temperature` (default 0.7) and voted. Every persona runs at temperature 0, so
+  this separates sampling variety from persona variety. Stage `temperature`/`top_p` override the
+  persona's and are serialised only when set (existing `config_id`s are unchanged).
+  `run_config.py --topology self_consistency --samples N --temperature T`.
+- `canonical_proxy` — `paper_persona_baseline.py --proxy`: a benchmark with no paper set may name,
+  per question, a paper benchmark whose set stands in (`proxy_persona_source(metadata)` in its
+  module; `ModuleBenchmark.proxy_for`). Ours: AIME and MATH-500 borrow gsm8k's set, MMLU-Pro law
+  borrows formal_logic's; GPQA, MMLU-Pro science and engineering, and the agentic sets have none
+  and are skipped and counted (`skipped_questions`). Compare it only on the questions it covers.
+
+`report_crossval.py` lists every arm directory it finds, known ones first.
+
 `scripts/fetch_benchmarks.py` downloads every registered set and reports counts; a module may define
 `fetch(args)` for data its loader does not pull itself. gsm8k's loader returns nothing at
 `--data_size 0` (it takes `head(data_size)`), which the script flags.

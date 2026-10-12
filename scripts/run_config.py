@@ -14,6 +14,7 @@ shape) or with flags:
     --topology synthesis   --personas A,B,C --synthesiser S
     --topology pipeline    --steps solver:A,critic:B,reviser:C
     --topology parallel    --steps "solver:A,checker:B|solver:C,checker:D"
+    --topology self_consistency [--samples 4 --temperature 0.7 --top_p 0.95]   (no personas)
 
 A step may name a model key after a second colon (`reviser:C:qwen35b`); keys
 resolve through `--models_file`. `--budget N` splits N tokens per question
@@ -57,7 +58,11 @@ def parse_args():
 
     team = parser.add_argument_group("the team")
     team.add_argument("--config", default=None, help="TeamConfig JSON file; overrides the flags below")
-    team.add_argument("--topology", choices=["vote", "debate", "centralized", "synthesis", "pipeline", "parallel"])
+    team.add_argument("--topology", choices=["vote", "debate", "centralized", "synthesis", "pipeline", "parallel",
+                                             "self_consistency"])
+    team.add_argument("--samples", type=int, default=4, help="self_consistency: answers sampled and voted")
+    team.add_argument("--temperature", type=float, default=0.7, help="self_consistency: sampling temperature")
+    team.add_argument("--top_p", type=float, default=0.95, help="self_consistency: nucleus sampling")
     team.add_argument("--personas", default="", help="Comma-separated persona names")
     team.add_argument("--rounds", type=int, default=1, help="Debate exchange rounds after the first answer")
     team.add_argument("--hub", default=None)
@@ -107,6 +112,9 @@ def build_config(args):
                                            handoff=args.handoff, name=name)
         elif args.topology == "pipeline":
             config = team_config.pipeline(_steps(args.steps), model=args.model, handoff=args.handoff, name=name)
+        elif args.topology == "self_consistency":
+            config = team_config.self_consistency(args.samples, temperature=args.temperature, top_p=args.top_p,
+                                                  model=args.model, name=name)
         elif args.topology == "parallel":
             specs = [b for b in args.steps.split("|") if b.strip()]
             if len(specs) == 1:

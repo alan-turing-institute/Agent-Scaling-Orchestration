@@ -42,6 +42,15 @@ def test_persona_fallback():
           benchmarks.persona_set("gsm8k"))
 
 
+def test_domain_matched_stand_ins():
+    """Our choice of paper set for benchmarks the paper assigned none; None where nothing fits."""
+    for name, metadata, want in [("aime", {}, "gsm8k"), ("math500", {}, "gsm8k"),
+                                 ("mmlu_pro", {"category": "law"}, "formal_logic"),
+                                 ("mmlu_pro", {"category": "physics"}, None), ("gpqa_diamond", {}, None),
+                                 ("plancraft", {}, None), ("gsm8k", {}, None)]:
+        check(f"stand-in for {name} {metadata}", benchmarks.get(name).proxy_for(metadata), want)
+
+
 def test_gpqa_option_shuffle():
     """Same order on every call, correct answer tracked, letters spread out."""
     def row(record_id):

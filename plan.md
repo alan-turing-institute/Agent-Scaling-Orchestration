@@ -775,6 +775,22 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
     tokens a turn, and a BrowseComp-Plus episode at up to about 90k tokens
     over 30 turns.
 
+- **Baselines for the new pools (2026-10-12).**
+  - **`self_consistency`:** the bare model sampled 4 times at temperature 0.7,
+    then voted. It separates sampling variety from persona variety.
+  - **`canonical_proxy`:** domain-matched stand-ins for the canonical arm, our
+    choice and not the paper's:
+    - AIME and MATH-500 get gsm8k's maths set;
+    - MMLU-Pro law gets formal_logic's set;
+    - GPQA, MMLU-Pro science and engineering, and the agentic sets get none.
+      The nearest set, ARC's, is written for grade-school science. These
+      questions are skipped and counted.
+  - **Both are arms of `small_model_arms.sh`.** `report_crossval.py` now lists
+    every arm it finds; it had been silently leaving out `canonical`.
+  - **`parallel()`** now keeps every stage field. It had been dropping
+    `max_steps` and `delegates`. Existing `config_id`s are unchanged, checked
+    against `main`.
+
 **All of H1–H5 is now in code.** SWE-bench and Terminal-Bench stay out, per
 §6.2. Before the first real sweep, once E2 frees the servers:
 
