@@ -321,6 +321,11 @@ schemas), `call(name, arguments) -> observation` (errors as text, never raised),
 the prediction `"success|<fingerprint>"` / `"fail|<fingerprint>"`, so `OutcomeScorer` votes over
 end states and the winning state carries its verdict.
 
+Agentic runs need a server that parses tool calls: the `../vllm/` scripts the experiments use pass
+`--enable-auto-tool-choice --tool-call-parser` (`qwen3_xml` for Qwen, `mistral` for Ministral,
+`gemma4` for Gemma). A server launched before 2026-10-19 lacks them and returns tool calls as plain
+text, so relaunch it first. Requests without `tools` are unaffected by the flags.
+
 `episode.run_episode` is the loop: generate with tools, run each call, append the observation; stop
 when the environment is done, after two replies in a row without a tool call (one nudge between),
 or at the turn cap. No wall-clock caps. `runner.run_question(..., environment=, max_steps=)` runs

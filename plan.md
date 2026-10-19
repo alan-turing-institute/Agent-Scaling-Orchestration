@@ -643,8 +643,8 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
     - every held-out question gets a row, and folds stay stratified;
     - the lexical canonicaliser output is identical to the old code's.
   - **What a real run still needs:** `POOL=hard DATA="gpqa_diamond mmlu_pro aime"
-    ./scripts/build_pool.sh` against the 35B, then the bare-model screen. Both
-    wait until E2 frees the servers.
+    ./scripts/build_pool.sh` against the 35B, then the bare-model screen. E2
+    has freed the servers (2026-10-19).
 - **H2 in code (2026-10-07).**
   - **C12, instances end to end:**
     - Modules may define `load_instances`. An `Instance` has a stable `id`,
@@ -694,13 +694,14 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
       debate, centralized, synthesis, pipeline, delegated) runs through the
       E2 driver;
     - `tests/test_agentic.py` passes.
-  - **Waiting until E2 ends (it is using the servers):**
-    - **Serve flags.** Add tool calling to the serve scripts:
-      `--enable-auto-tool-choice --tool-call-parser qwen3_xml` for the Qwen
-      models (as `vllm/qwen3.6/run_docker.sh` has), and `--tool-call-parser
-      mistral` for Ministral. Don't edit `vllm/qwen3.5-0.8b/run_docker.sh`
-      now: E2's server-config trials relaunch the server from it.
-    - **Tool-calling screen.** 20 Plancraft items per agent model.
+  - **Serve flags (done 2026-10-19, after E2).** `--enable-auto-tool-choice
+    --tool-call-parser` is in every serve script the experiments use: `qwen3_xml`
+    for Qwen3.5-0.8B, Qwen3.5-4B and the NVFP4 35B, `mistral` for Ministral,
+    `gemma4` for Gemma 4 E4B. All three parsers exist in the pinned image
+    (vLLM 0.21). A request without `tools` defaults to `tool_choice: "none"`
+    and never reaches the parser, so earlier runs' requests are served as
+    before. Servers started before then need relaunching.
+  - **Still to do:** the tool-calling screen, 20 Plancraft items per agent model.
 - **H4 in code (2026-10-07): `workbench`.**
   - **Upstream's own code.** Tools, sandbox data and `is_correct` grader come
     from olly-styles/WorkBench, pinned at `49c7dfd`, fetched by
@@ -751,13 +752,12 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
     - on the stand-in server, all four arms run on both;
     - the offline tests cover the judge, both environments, stubbed network
       calls and the rubric scoring.
-  - **Waiting on decisions or until E2 ends:**
-    - **Full index.** The full BrowseComp-Plus build (8–10 GB peak) waits for E2.
-    - **External access** is decided (allowed) and live-checked against EDGAR
-      and SearXNG. SearXNG must be running (`scripts/searxng/run.sh`; it
-      restarts with the machine).
-    - **Web search.** It needs a Tavily key and is not implemented beyond its
-      schema.
+  - **Still to do:**
+    - **Full index.** The full BrowseComp-Plus build (8–10 GB peak); E2 has
+      finished, so memory allows it.
+  - **Decided:** external access is allowed and live-checked against EDGAR
+    and SearXNG. SearXNG must be running (`scripts/searxng/run.sh`; it
+    restarts with the machine).
 
 - **Context limits counted, not scored wrong (2026-10-08).**
   - **Context:** a request vLLM refuses as too long for the context window is
@@ -792,20 +792,19 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
     against `main`.
 
 **All of H1–H5 is now in code.** SWE-bench and Terminal-Bench stay out, per
-§6.2. Before the first real sweep, once E2 frees the servers:
+§6.2. E2 finished on 2026-10-19. Before the first real sweep:
 
-1. Add the tool-calling flags to the serve scripts.
+1. ~~Add the tool-calling flags to the serve scripts.~~ Done 2026-10-19;
+   relaunch the servers to pick them up.
 2. Build the full BrowseComp-Plus index.
 3. Build the pools with `scripts/build_pool.sh` (`hard`: gpqa_diamond mmlu_pro
    aime math500; `agentic`: plancraft workbench browsecomp_plus
    finance_agent).
 4. Run bare-model screens and the tool-calling screen.
 5. Hand-check 50 MATH responses.
-- **Waits:** tagging the new pool, the bare-model screens and every arm. Tagging
-  uses the 35B, which the E2 sweep is using as its orchestrator on :8002. Any
-  extra load on :8001/:8002 changes the sweep's answers, because the servers'
-  outputs depend on the batch. So all of this waits for E2 to finish.
-- **Also waits:** C18's tag-vocabulary extension has to exist before tagging.
+- **No longer blocked:** tagging the new pool (the 35B on :8002), the
+  bare-model screens and every arm were waiting for E2 to free the servers.
+  C18's tag-vocabulary extension (`canonicalise_tags --extend`) is in code.
 
 ## Status — updated 2026-10-05
 
