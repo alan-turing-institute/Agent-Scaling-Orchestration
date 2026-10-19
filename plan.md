@@ -702,6 +702,9 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
     and never reaches the parser, so earlier runs' requests are served as
     before. Servers started before then need relaunching.
   - **Still to do:** the tool-calling screen, 20 Plancraft items per agent model.
+    `scripts/tool_call_screen.py` reads a bare-model run's traces and reports, per
+    benchmark, turns with a tool call, calls the parser missed, malformed and
+    unknown-tool calls, environment errors, how episodes stopped and success.
 - **H4 in code (2026-10-07): `workbench`.**
   - **Upstream's own code.** Tools, sandbox data and `is_correct` grader come
     from olly-styles/WorkBench, pinned at `49c7dfd`, fetched by
