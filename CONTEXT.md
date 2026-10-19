@@ -78,7 +78,9 @@ _Avoid_: mechanism, aggregation, architecture
 **Sequential topology**:
 A topology where one agent's output is the next agent's input, so a later agent can improve on an
 earlier one's answer rather than only outvote it. Not a fixed template: for each task the
-orchestrator chooses how many steps there are, which agent takes each step, and what role it plays.
+orchestrator chooses how many steps there are and which pool agent takes each. An agent is the same
+in a sequence as in any other topology; there are no separate role prompts, so a reviewer-like step
+exists only if such an agent is in the pool.
 _Avoid_: chain, pipeline (when meaning the topology rather than the code)
 
 **Cost budget**:
@@ -92,6 +94,10 @@ folds, and what it cost.
 **Continual memory**:
 The orchestrator's record of its own past choices and how they turned out. Tested as an ablation
 against agent cards alone.
+
+**Handoff**:
+What a later step in a sequence sees of the earlier steps, with the one fixed instruction that comes
+with it. The same for every agent and every step.
 
 **Best single agent**:
 The one agent that does best on the training folds, used alone for every task. The fixed baseline;

@@ -108,9 +108,10 @@ candidates.
 Issues: #24 orchestrator, #25 continual memory, #17 topologies.
 
 - **One call per task.** It returns either a direct answer or a configuration: the agents, the
-  topology and, for a sequential topology, the whole sequence. For a sequence it chooses how many
-  steps, which pool agent takes each step and what role it plays; no template is fixed in
-  advance.
+  topology and, for a sequential topology, the whole sequence: how many steps and which pool
+  agent takes each. No template is fixed in advance, and there are no separate role prompts
+  (Q34). An agent behaves the same in a sequence as anywhere else, and later steps get the
+  earlier steps' output through one fixed **handoff** instruction.
 - **Topology menu:** single agent, vote, cascade, sequential (composed by the orchestrator) and
   synthesis. Debate is dropped (5× vote's tokens for +0.5 points at 4B), and so is centralized
   (it behaves like synthesis). A later variant answers
@@ -200,15 +201,16 @@ Issues: #12 cost, #19 answer matrix, #20 replay and oracle, #26 two-box serving.
 Issue #29.
 
 - **Q30:** no best fixed configuration; the best single agent is the fixed baseline.
-- **Q31:** sequential topologies are composed per task by the orchestrator: length, agents and roles
-  are all chosen from the pool, with no fixed solve → review → revise template.
+- **Q31:** sequential topologies are composed per task by the orchestrator: the length and the agents
+  are chosen from the pool, with no fixed solve → review → revise template.
+- **Q34:** roles come from the pool too. There is no role library for sequences; an agent keeps its
+  own prompt in every topology, and later steps see earlier output through one fixed handoff.
 - **Q32:** no separate test of fixed sequential pairs before building (#18 closed), since no
   sequence is fixed. Instead, add more base model families to the pool (#32).
 - **Q33:** order of work on one box: PR #7 → pool → specialist smoke tests → dev-split work → agent
   cards and orchestrator prompt. The answer matrix and orchestrator runs go to the second Spark.
 
-Still open: whether the orchestrator picks roles from the existing role library or writes its own
-role instructions, and which extra base models join the pool.
+Still open: which extra base models join the pool (#32), and the wording of the handoff (#17).
 
 ## 9. Not yet designed
 
