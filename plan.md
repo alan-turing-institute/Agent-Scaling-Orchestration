@@ -805,6 +805,14 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
    finance_agent).
 4. Run bare-model screens and the tool-calling screen.
 5. Hand-check 50 MATH responses.
+- **Tagging budget (2026-10-19).** The first hard-pool build tagged with
+  `tag_questions.py`'s 512-token default. The 35B thinks for 1–2k tokens
+  before answering, so nearly every reply ran out mid-thought. The client
+  then fell back to the reasoning text, and comma-splitting it gave ~50 prose
+  'tags' per question (21,755 distinct). Now `build_pool.sh` tags at
+  `TAG_MAX_TOKENS` (4096). A reply cut off with no answer is retried at 4x,
+  never parsed, and fails the build if it still has no tags. At 4096 the
+  699 pool's first question gets back exactly its original tags.
 - **No longer blocked:** tagging the new pool (the 35B on :8002), the
   bare-model screens and every arm were waiting for E2 to free the servers.
   C18's tag-vocabulary extension (`canonicalise_tags --extend`) is in code.

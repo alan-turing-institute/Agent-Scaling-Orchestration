@@ -29,6 +29,10 @@ BASE_MAPPING=${BASE_MAPPING:-data-claude/tag_mapping.json}
 DATA_DIR=${DATA_DIR:-data-claude/benchmarks}
 THRESHOLD=${THRESHOLD:-5}
 DATA_SIZE=${DATA_SIZE:-0}   # questions per benchmark; 0 = each loader's full set
+# Tagging budget. The 35B thinks before it answers, usually 1-2k tokens; at the
+# old 512 nearly every reply ran out mid-thought. A reply that still runs out is
+# retried at 4x, and tag_questions.py fails the build if any question gets no tags.
+TAG_MAX_TOKENS=${TAG_MAX_TOKENS:-4096}
 
 TAGS=data-claude/question_tags/${POOL}_tags.jsonl
 MAPPING=data-claude/tag_mapping_${POOL}.json
@@ -37,8 +41,9 @@ OUT=data-claude/tagged_${POOL}
 echo "=== 1/3 tagging: $DATA ==="
 # shellcheck disable=SC2086
 $PYTHON src/tag_questions.py --use_vllm --vllm_base_url "$API" --model "$MODEL" \
-    --data $DATA --data_dir "$DATA_DIR" --split test --data_size "$DATA_SIZE" \
-    --out_dir data-claude/question_tags --output_file "${POOL}_tags.jsonl" > "data-claude/question_tags/${POOL}_tags.log" 2>&1
+    --data $DATA --data_dir "$DATA_DIR" --split test --data_size "$DATA_SIZE" --max_new_tokens "$TAG_MAX_TOKENS" \
+    --out_dir data-claude/question_tags --output_file "${POOL}_tags.jsonl" > "data-claude/question_tags/${POOL}_tags.log" 2>&1 \
+    || { grep -E "^\[fail\]" "data-claude/question_tags/${POOL}_tags.log"; exit 1; }
 echo "    $(wc -l < "$TAGS") questions tagged"
 
 echo "=== 2/3 extending the tag vocabulary from $BASE_MAPPING ==="
