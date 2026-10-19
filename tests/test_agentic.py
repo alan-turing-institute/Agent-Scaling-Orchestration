@@ -136,6 +136,9 @@ def test_completion_reads_tool_calls():
     check("bad JSON is an error, not a crash", (completion.tool_calls[1]["arguments"],
                                                 completion.tool_calls[1]["error"] is not None), ({}, True))
     check("assistant message carries the calls", completion.assistant_message()["tool_calls"][0]["function"]["name"], "inc")
+    replayed = [c["function"]["arguments"] for c in completion.assistant_message()["tool_calls"]]
+    check("valid arguments replay verbatim, broken ones as {} (vLLM refuses broken JSON)",
+          replayed, ['{"by": 2}', "{}"])
 
 
 def test_episode_loop():

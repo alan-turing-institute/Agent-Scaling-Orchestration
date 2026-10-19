@@ -73,9 +73,14 @@ class Completion:
         """This turn as a chat message, to append to the conversation before the tool results."""
         message: Dict[str, Any] = {"role": "assistant", "content": self.content or ""}
         if self.tool_calls:
+            # Arguments that are not a JSON object are replayed as "{}": vLLM parses
+            # every earlier call's arguments to render the conversation, and refuses
+            # the whole request (400 "Unterminated string ...") over one broken call.
+            # The tool result that follows still tells the model what went wrong.
             message["tool_calls"] = [
                 {"id": call["id"], "type": "function",
-                 "function": {"name": call["name"], "arguments": call["arguments_raw"]}}
+                 "function": {"name": call["name"],
+                              "arguments": "{}" if call.get("error") else call["arguments_raw"]}}
                 for call in self.tool_calls
             ]
         return message

@@ -61,12 +61,17 @@ def summarise(run_dirs):
         rows, traces = load_run(run_dir)
         if not traces:
             print(f"[warn] no traces in {run_dir}", file=sys.stderr)
+        traced = {trace.get("question_key") for trace in traces}
+        for key, row in rows.items():
+            if key not in traced:  # the episode raised before it recorded anything
+                stats[row.get("dataset") or "unknown"]["lost"] += 1
+                stops[row.get("dataset") or "unknown"]["lost (no trace)"] += 1
         for trace in traces:
             row = rows.get(trace.get("question_key"), {})
             dataset = row.get("dataset") or "unknown"
             s = stats[dataset]
             s["episodes"] += 1
-            s["success"] += bool(row.get("correct"))
+            s["success"] += bool(row.get("team_correct", row.get("correct")))
             stops[dataset][trace.get("stopped") or "unknown"] += 1
             turns = set()
             for step in trace["steps"]:
@@ -111,6 +116,9 @@ def main(argv=None):
     for dataset in sorted(stops):
         parts = [f"{k} {v}" for k, v in sorted(stops[dataset].items(), key=lambda kv: (kv[0] not in STOPS, kv[0]))]
         print(f"  {dataset:16s} " + ", ".join(parts))
+    lost = {k: s["lost"] for k, s in stats.items() if s["lost"]}
+    if lost:
+        print(f"\nepisodes lost to an error before any trace (not in the table above): {lost}")
     print("\n'reached done' counts episodes the environment marked finished (a submit, an `impossible`"
           " verdict, BrowseComp's `done`); WorkBench ends on a text reply instead ('reply').")
     if args.json:
