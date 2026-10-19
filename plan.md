@@ -817,6 +817,53 @@ read-only inputs (`tagged_dataset`, `tag_mapping.json`, the HF cache under
   bare-model screens and every arm were waiting for E2 to free the servers.
   C18's tag-vocabulary extension (`canonicalise_tags --extend`) is in code.
 
+- **Pools built and 0.8B screened (2026-10-19).** Servers relaunched with tool calling:
+  Qwen3.5-0.8B on :8001 (E2's settings), the 35B on :8002 (32 slots for tagging).
+  Runs from the frozen worktree `Agent-Scaling-Orchestration-hard` (bfa5c07). Shared
+  env gained math-verify and the agentic packages. The full BrowseComp-Plus index
+  built in 3m42s at 7.6 GB peak.
+  - **Pools:**
+
+    | Pool | Questions | Distinct tags |
+    |---|---|---|
+    | `tagged_hard` | 780 | 148 |
+    | `tagged_agentic` | 350 | 120 |
+
+    Both have a median of 5 tags per question. The base vocabulary is unchanged.
+  - **Hard pool, 0.8B alone, 5 folds** (`crossval-small-hard/qwen3.5-0.8b`):
+    19.6% overall. 53% of answers hit the 4,096-token cap; 35–52% of those are
+    repetition loops. None hit the context limit.
+
+    | Benchmark | Correct | Cut off | Accuracy on uncut answers |
+    |---|---|---|---|
+    | GPQA | 13.6% | 57% | 31% |
+    | MMLU-Pro | 31.5% | 40% | 51% |
+    | AIME | 1.7% | 84% | 5% |
+    | MATH-500 | 23.3% | 48% | 45% |
+
+    MMLU-Pro and MATH-500 sit in the 20–45% band. GPQA falls below chance only
+    because of cut-offs. AIME is out of the 0.8B's reach.
+  - **MATH hand-check:** 52 boxed answers; the scorer agrees on all 52. It
+    accepts spacing, units and "12th grade". It rejects `37.70` for `12\pi`,
+    following MATH's exact-answer convention.
+  - **Agentic pool, 0.8B alone, 5 folds** (`crossval-small-agentic/qwen3.5-0.8b`;
+    `scripts/tool_call_screen.py`):
+
+    | Benchmark | Success | Notes |
+    |---|---|---|
+    | WorkBench | 17% | 9 of 17 successes need no action |
+    | Finance-Agent | 4% | |
+    | Plancraft | 3% | 72% of moves rejected: slots written `I3`, not `[I3]` |
+    | BrowseComp-Plus | 1% | |
+
+    - The parser missed no calls, and malformed arguments are under 1%.
+    - **Context:** 85/99 BrowseComp-Plus and 29/50 Finance-Agent episodes hit
+      the 32,768-token context. Raise `--max-model-len` before reading those two.
+    - **Plancraft:** the 0.8B fails the screen, so agentic work starts at the 4B
+      (§6.4).
+    - **Lost episodes:** two were lost to a vLLM 400 over broken argument JSON.
+      Fixed in 005dbb2 (replayed as `{}`), after these runs.
+
 ## Status — updated 2026-10-05
 
 The branch was rebased onto `main` after the experiment branch merged (#4) and
