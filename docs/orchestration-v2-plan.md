@@ -84,11 +84,17 @@ An **agent** is checkpoint + **thinking mode** + prompt (+ tools in step (c))
 | Gemma-4-E4B | ✓ | ✓ if supported | ShiningValiant3 (science) |
 | Ministral-3-3B | Instruct | Reasoning-2512 (Mistral's sibling) | — |
 | Qwen3.6-35B-A3B (NVFP4) | ✓ | ✓ | BigBang-v1 → step (c) |
-| more families (#32) | | | e.g. a small Llama; being surveyed |
+| Llama-3.1-8B (+ Llama-3.2-3B) | ✓ (no thinking mode) | — | HuatuoGPT-o1-8B, Fino1-8B, R1-Distill-Llama-8B |
+| Granite-4.2-8B | ✓ | ✓ (also low effort) | — |
+| gpt-oss-20b | low effort | medium / high effort | — |
+| Nemotron-Nano-9B-v2 | ✓ | ✓ | — |
+| Qwen2.5-7B (specialist host) | ✓ | — | Fin-R1, HuatuoGPT-o1-7B |
 
-More base model families are to be added (for example a small Llama), so that agents differ in
-family as well as size. Each new base also brings its own published fine-tunes in as specialist
-candidates.
+The last five rows are new families (Q36, #32; survey in `docs/notes/base-models.md`), so that agents
+differ in family and architecture as well as size. Use ungated NVIDIA/Red Hat Llama copies unless
+our token has Meta access. gpt-oss sets reasoning by effort level (Harmony format), not `<think>`
+tags. Not added: Mistral-7B v0.1, which would only host Saul-7B (law). This roughly brings the pool
+to ~28 agents and makes the answer matrix ~40% larger; it fits only with the second Spark.
 
 - **Personas.** A persona joins as a separate agent only if it beats the same model with the
   **neutral prompt**, on training folds, by more than the run-to-run noise. At most 2 personas per
@@ -210,7 +216,13 @@ Issue #29.
 - **Q33:** order of work on one box: PR #7 → pool → specialist smoke tests → dev-split work → agent
   cards and orchestrator prompt. The answer matrix and orchestrator runs go to the second Spark.
 
-Still open: which extra base models join the pool (#32), and the wording of the handoff (#17).
+- **Q35:** personas enter the pool only through the solo test (beat the neutral prompt answering
+  alone). A second route, for personas that are good at checking another agent's answer, can be
+  added if the orchestrator's sequences show checking steps help.
+- **Q36:** add Llama-3.1-8B (+ 3.2-3B), Granite-4.2-8B, gpt-oss-20b, Nemotron-Nano-9B-v2, and
+  Qwen2.5-7B as a host for finance and medicine specialists (§3).
+
+Still open: the wording of the handoff (#17), settled when it is implemented.
 
 ## 9. Not yet designed
 
