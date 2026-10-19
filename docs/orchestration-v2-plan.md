@@ -6,7 +6,7 @@ ADRs in [`docs/adr/`](adr/). The research behind the pool and the baselines is i
 [`docs/notes/specialists.md`](notes/specialists.md) and
 [`docs/notes/orchestration-baselines.md`](notes/orchestration-baselines.md).
 
-Work is tracked as GitHub issues under the tracking issue linked from the PR that adds this file.
+Work is tracked in GitHub issue #31, which links one issue per work item (#9–#30).
 
 ---
 
@@ -71,6 +71,8 @@ We do not train or fine-tune anything ourselves ([ADR-0003](adr/0003-no-training
 
 ## 3. The pool
 
+Issues: #10 pool, #11 thinking, #14 serving, #15 gates, #16 personas, #30 vLLM upgrade.
+
 An **agent** is checkpoint + **thinking mode** + prompt (+ tools in step (c))
 ([ADR-0001](adr/0001-agents-are-checkpoints-not-personas.md)).
 
@@ -97,6 +99,8 @@ An **agent** is checkpoint + **thinking mode** + prompt (+ tools in step (c))
 
 ## 4. The orchestrator
 
+Issues: #24 orchestrator, #25 continual memory, #17 topologies.
+
 - **One call per task.** It returns either a direct answer, or a configuration: 1–3 agents, a
   topology and, for sequential topologies, which agent takes which role. A later variant answers
   first and then decides whether to delegate, its own answer joining the team.
@@ -116,6 +120,8 @@ An **agent** is checkpoint + **thinking mode** + prompt (+ tools in step (c))
 
 ## 5. Benchmarks and splits
 
+Issues: #9 PR #7, #13 splits.
+
 - **Questions:** the existing easy set (699 questions: gsm8k, arc, hellaswag, truthfulqa,
   winogrande, professional medicine, formal logic) plus the PR #7 hard sets:
 
@@ -133,6 +139,8 @@ An **agent** is checkpoint + **thinking mode** + prompt (+ tools in step (c))
   every learned baseline are fit on training folds only.
 
 ## 6. Baselines
+
+Issues: #21 simple, #22 cascade, #23 routers, #27 later.
 
 All are re-run on our pool; no published numbers transfer.
 
@@ -152,6 +160,8 @@ The exhaustive "best fixed configuration" baseline was dropped as too costly. Wh
 for the replayable topologies is open (§8, Q30).
 
 ## 7. Evaluation and cost
+
+Issues: #12 cost, #19 answer matrix, #20 replay and oracle, #26 two-box serving.
 
 - **Answer matrix:** every agent × every question × k repeats. Initial plan: k = 3 for
   thinking-off agents and k = 1 for thinking-on, adding repeats for agents the orchestrator picks.
@@ -175,6 +185,8 @@ for the replayable topologies is open (§8, Q30).
 
 ## 8. Open decisions
 
+Issue: #29 (and #18 for Q32).
+
 Proposed answers are in italics; none is settled yet.
 
 - **Q30 – Best fixed configuration.** It is a floor, not a ceiling; the oracle is the ceiling. The
@@ -196,6 +208,8 @@ Proposed answers are in italics; none is settled yet.
   a live mixed team needs all its members served at once.
 
 ## 9. Not yet designed
+
+Issues: #28 step (c), #30 vLLM upgrade.
 
 - **Step (c), multi-step tool tasks.** BigBang-v1 and the tool-calling specialists belong here.
   Tool-call serve flags were added on 2026-10-19.
