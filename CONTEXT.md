@@ -38,9 +38,13 @@ _Avoid_: agent (when meaning persona)
 **Neutral prompt**:
 The plain instruction an agent gets when it has no persona.
 
+**Base model**:
+A general-purpose checkpoint in the pool, from any open model family. Specialists must be built on
+one.
+
 **Specialist**:
-An agent built on an existing fine-tuned checkpoint for one domain, on one of the base models the
-general agents already use. Taken as published, not trained by us.
+An agent built on an existing fine-tuned checkpoint for one domain, on one of the pool's base
+models. Taken as published, not trained by us.
 _Avoid_: expert, trained agent
 
 **Pool**:
@@ -72,8 +76,9 @@ centralized, synthesis, or sequential.
 _Avoid_: mechanism, aggregation, architecture
 
 **Sequential topology**:
-A topology where one agent's output is the next agent's input (for example, solve then review then
-revise), so a later agent can improve on an earlier one's answer rather than only outvote it.
+A topology where one agent's output is the next agent's input, so a later agent can improve on an
+earlier one's answer rather than only outvote it. Not a fixed template: for each task the
+orchestrator chooses how many steps there are, which agent takes each step, and what role it plays.
 _Avoid_: chain, pipeline (when meaning the topology rather than the code)
 
 **Cost budget**:
@@ -87,6 +92,11 @@ folds, and what it cost.
 **Continual memory**:
 The orchestrator's record of its own past choices and how they turned out. Tested as an ablation
 against agent cards alone.
+
+**Best single agent**:
+The one agent that does best on the training folds, used alone for every task. The fixed baseline;
+it stays the same whatever topology the orchestrator picks.
+_Avoid_: best fixed configuration, manual selection
 
 **Random configuration**:
 A configuration drawn at random from the pool, at a stated team size. A baseline.

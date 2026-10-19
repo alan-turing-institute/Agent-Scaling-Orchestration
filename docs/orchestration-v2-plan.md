@@ -71,7 +71,8 @@ We do not train or fine-tune anything ourselves ([ADR-0003](adr/0003-no-training
 
 ## 3. The pool
 
-Issues: #10 pool, #11 thinking, #14 serving, #15 gates, #16 personas, #30 vLLM upgrade.
+Issues: #10 pool, #11 thinking, #14 serving, #15 gates, #16 personas, #30 vLLM upgrade, #32 more base
+models.
 
 An **agent** is checkpoint + **thinking mode** + prompt (+ tools in step (c))
 ([ADR-0001](adr/0001-agents-are-checkpoints-not-personas.md)).
@@ -83,6 +84,11 @@ An **agent** is checkpoint + **thinking mode** + prompt (+ tools in step (c))
 | Gemma-4-E4B | ✓ | ✓ if supported | ShiningValiant3 (science) |
 | Ministral-3-3B | Instruct | Reasoning-2512 (Mistral's sibling) | — |
 | Qwen3.6-35B-A3B (NVFP4) | ✓ | ✓ | BigBang-v1 → step (c) |
+| more families (#32) | | | e.g. a small Llama; being surveyed |
+
+More base model families are to be added (for example a small Llama), so that agents differ in
+family as well as size. Each new base also brings its own published fine-tunes in as specialist
+candidates.
 
 - **Personas.** A persona joins as a separate agent only if it beats the same model with the
   **neutral prompt**, on training folds, by more than the run-to-run noise. At most 2 personas per
@@ -101,8 +107,13 @@ An **agent** is checkpoint + **thinking mode** + prompt (+ tools in step (c))
 
 Issues: #24 orchestrator, #25 continual memory, #17 topologies.
 
-- **One call per task.** It returns either a direct answer, or a configuration: 1–3 agents, a
-  topology and, for sequential topologies, which agent takes which role. A later variant answers
+- **One call per task.** It returns either a direct answer or a configuration: the agents, the
+  topology and, for a sequential topology, the whole sequence. For a sequence it chooses how many
+  steps, which pool agent takes each step and what role it plays; no template is fixed in
+  advance.
+- **Topology menu:** single agent, vote, cascade, sequential (composed by the orchestrator) and
+  synthesis. Debate is dropped (5× vote's tokens for +0.5 points at 4B), and so is centralized
+  (it behaves like synthesis). A later variant answers
   first and then decides whether to delegate, its own answer joining the team.
 - **It sees an agent card for each agent:** what the agent is, its accuracy on the training folds
   by question source, and its average cost. Ablations:
@@ -156,8 +167,9 @@ All are re-run on our pool; no published numbers transfer.
 6. **Later:** Symbolic-MoE (arXiv:2503.05641), then MasRouter (arXiv:2502.11133) if the
    orchestrator clears 1–5.
 
-The exhaustive "best fixed configuration" baseline was dropped as too costly. Whether it comes back
-for the replayable topologies is open (§8, Q30).
+There is no "best fixed configuration" baseline (Q30). It would be a floor rather than a ceiling,
+and the best vote team need not be the best sequential team. The **best single agent** is the fixed
+baseline, the same under every topology; the **oracle** is the ceiling.
 
 ## 7. Evaluation and cost
 
@@ -183,29 +195,20 @@ Issues: #12 cost, #19 answer matrix, #20 replay and oracle, #26 two-box serving.
 - **Statistics:** pooled accuracy with Wilson intervals; exact McNemar paired tests,
   Holm-corrected within families, as in E2.
 
-## 8. Open decisions
+## 8. Decisions settled after the first draft
 
-Issue: #29 (and #18 for Q32).
+Issue #29.
 
-Proposed answers are in italics; none is settled yet.
+- **Q30:** no best fixed configuration; the best single agent is the fixed baseline.
+- **Q31:** sequential topologies are composed per task by the orchestrator: length, agents and roles
+  are all chosen from the pool, with no fixed solve → review → revise template.
+- **Q32:** no separate test of fixed sequential pairs before building (#18 closed), since no
+  sequence is fixed. Instead, add more base model families to the pool (#32).
+- **Q33:** order of work on one box: PR #7 → pool → specialist smoke tests → dev-split work → agent
+  cards and orchestrator prompt. The answer matrix and orchestrator runs go to the second Spark.
 
-- **Q30 – Best fixed configuration.** It is a floor, not a ceiling; the oracle is the ceiling. The
-  best vote team need not be the best sequential team.
-  *Proposed:* drop it, and let the best single agent be the fixed baseline that is the same under
-  every topology.
-- **Q31 – Topology menu.**
-  *Proposed:* single agent (including direct answer), vote, cascade, sequential (solve → review →
-  revise, or solve → check, with roles assigned by the orchestrator) and synthesis. Drop debate
-  (5× vote's tokens for +0.5 points at 4B) and centralized (behaves like synthesis).
-- **Q32 – Test sequential topologies before building on them.**
-  *Proposed:* on the dev split, run a few mixed-model pairs live (for example, 4B solver → 35B
-  thinking reviewer) against each agent alone. Measure fixes, breaks and tokens. Keep sequential
-  topologies on the menu only if some pair fixes clearly more than it breaks, at lower cost than its
-  strongest member alone.
-- **Q33 – Order of work on one box.**
-  *Proposed:* PR #7 → pool refactor → specialist smoke tests → dev-split work → agent cards and
-  orchestrator prompt. When the second Spark arrives, decide which models live on which box, since
-  a live mixed team needs all its members served at once.
+Still open: whether the orchestrator picks roles from the existing role library or writes its own
+role instructions, and which extra base models join the pool.
 
 ## 9. Not yet designed
 
