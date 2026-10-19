@@ -16,7 +16,7 @@
 # data-claude/tag_mapping_<POOL>.json and data-claude/tagged_<POOL>/.
 # Point the experiment drivers at the pool with DATASET=data-claude/tagged_<POOL>.
 # Tagging needs the model server, so do not run it while a sweep is using it.
-set -eu
+set -euo pipefail  # a failed step stops the build; `| tail` would otherwise hide it
 
 cd "$(dirname "$0")/.." || exit 1
 
@@ -52,5 +52,6 @@ $PYTHON src/canonicalise_tags.py --tags_file "$TAGS" --extend "$BASE_MAPPING" \
 
 echo "=== 3/3 saving the pool ==="
 $PYTHON src/tag_dataset.py --tags_file "$TAGS" --tag_mapping "$MAPPING" --threshold "$THRESHOLD" --structural_tags \
-    --out_dir "$OUT" --plot_path "data-claude/tag_frequencies_${POOL}.png" | grep -E "Total number|Unique tags|^  - [a-z_]+: [0-9]+$" | head -12
+    --out_dir "$OUT" --plot_path "data-claude/tag_frequencies_${POOL}.png" > "data-claude/question_tags/${POOL}_dataset.log" 2>&1
+grep -E "Total number|Unique tags|^  - [a-z_]+: [0-9]+$" "data-claude/question_tags/${POOL}_dataset.log" | awk 'NR <= 12' || true
 echo "pool written to $OUT"

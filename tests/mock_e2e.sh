@@ -33,7 +33,7 @@ cleanup() {
     kill "$SERVER" 2>/dev/null || true
     if [ "${KEEP:-0}" != "1" ]; then
         rm -rf "data-claude/tagged_$POOL" "data-claude/tag_mapping_$POOL.json" \
-            "data-claude/question_tags/${POOL}_tags.jsonl" "data-claude/question_tags/${POOL}_tags.log" \
+            "data-claude/question_tags/${POOL}_tags.jsonl" "data-claude/question_tags/${POOL}_tags.log" "data-claude/question_tags/${POOL}_dataset.log" \
             "data-claude/tag_frequencies_$POOL.png" "$WORK"
     else
         echo "kept: data-claude/tagged_$POOL and $WORK"
