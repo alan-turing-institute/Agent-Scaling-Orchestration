@@ -21,6 +21,10 @@
 # servers running two or three requests behind one long answer. Grouping does not change
 # answers or scores for one model answering alone.
 #
+# A 30k-token answer takes most of an hour with the server full (10-15 tokens a second per
+# request), so the client waits up to REQUEST_TIMEOUT for each; at the default 300s every
+# long answer timed out and was asked again from the start.
+#
 # MAX_TOKENS 30720 lets an answer run to the 32k context of the 35B server, less the
 # prompt; the 4B gets the same, though its server allows 131k, so the two compare.
 #
@@ -35,6 +39,7 @@ OUT_ROOT=${OUT_ROOT:-data-claude/x0-headroom}
 LOG_DIR=${LOG_DIR:-data-claude/logs/x0-headroom}
 FOLDS=${FOLDS:-"0 1 2 3 4"}
 MAX_TOKENS=${MAX_TOKENS:-30720}
+REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-10800}
 STREAMS=${STREAMS:-"4b 35b"}
 mkdir -p "$LOG_DIR"
 
@@ -53,8 +58,10 @@ run() {  # label model api workers fold sampling...
     $PYTHON -u scripts/bare_model_baseline.py --dataset_path "$DATASET" --model_name "$model" \
         --api_base_url "$api" --split_seed 0 --n_folds 5 --fold "$fold" --workers "$workers" \
         --test_batch_size $((workers * 3)) \
-        --max_tokens "$MAX_TOKENS" $@ --out_dir "$out" > "$LOG_DIR/${label}_fold$fold.log" 2>&1
-    echo "=== $out finished $(date -u +%FT%TZ) with status $? ==="
+        --max_tokens "$MAX_TOKENS" --request_timeout "$REQUEST_TIMEOUT" $@ --out_dir "$out" \
+        > "$LOG_DIR/${label}_fold$fold.log" 2>&1
+    status=$?
+    echo "=== $out finished $(date -u +%FT%TZ) with status $status ==="
     grep -E "BARE MODEL" "$LOG_DIR/${label}_fold$fold.log"
 }
 

@@ -64,6 +64,8 @@ def parse_args():
     parser.add_argument("--thinking", choices=["server", "on", "off"], default="server",
                         help="on/off sets enable_thinking per request; server keeps the server's default")
     parser.add_argument("--max_tokens", type=int, default=4096)
+    parser.add_argument("--request_timeout", type=float, default=300.0,
+                        help="Seconds before the client gives up on one call; long answers on a busy server need more")
     parser.add_argument("--judge_model", default=None, help="LLM judge for judged benchmarks (BrowseComp-Plus, Finance-Agent)")
     parser.add_argument("--judge_api_base_url", default=None)
     parser.add_argument("--max_inflight", type=int, default=0,
@@ -261,6 +263,7 @@ def main():
         base_url=args.api_base_url,
         model_name=args.model_name,
         api_key=args.api_key,
+        timeout=args.request_timeout,
         limiter=threading.BoundedSemaphore(args.max_inflight) if args.max_inflight > 0 else None,
     )
 
