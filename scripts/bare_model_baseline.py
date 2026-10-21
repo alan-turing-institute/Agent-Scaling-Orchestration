@@ -58,6 +58,11 @@ def parse_args():
                         help="Questions answered concurrently, matching --eval_workers on the other arms")
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=0.9)
+    parser.add_argument("--top_k", type=int, default=None, help="Sent only when set (vLLM extension)")
+    parser.add_argument("--min_p", type=float, default=None, help="Sent only when set (vLLM extension)")
+    parser.add_argument("--presence_penalty", type=float, default=None, help="Sent only when set")
+    parser.add_argument("--thinking", choices=["server", "on", "off"], default="server",
+                        help="on/off sets enable_thinking per request; server keeps the server's default")
     parser.add_argument("--max_tokens", type=int, default=4096)
     parser.add_argument("--judge_model", default=None, help="LLM judge for judged benchmarks (BrowseComp-Plus, Finance-Agent)")
     parser.add_argument("--judge_api_base_url", default=None)
@@ -70,6 +75,24 @@ def parse_args():
                         help="Clip stored responses to this many characters; 0 keeps them whole")
     parser.add_argument("--out_dir", default="data-claude/orchestrator/bare_model")
     return parser.parse_args()
+
+
+def sampling_kwargs(args):
+    """The request fields beyond temperature and top_p: vLLM's sampling extensions and the
+    per-request thinking switch. Unset ones are left out, so older runs' requests are unchanged."""
+    extra = {key: getattr(args, key) for key in ("top_k", "min_p") if getattr(args, key) is not None}
+    if args.thinking != "server":
+        extra["chat_template_kwargs"] = {"enable_thinking": args.thinking == "on"}
+    kwargs = {"extra_body": extra} if extra else {}
+    if args.presence_penalty is not None:
+        kwargs["presence_penalty"] = args.presence_penalty
+    return kwargs
+
+
+def sampling_settings(args):
+    """What the run sent, recorded with its results so every result says how it was sampled."""
+    return {key: getattr(args, key) for key in
+            ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "thinking", "max_tokens")}
 
 
 def attempt_task(agent, sample, scorer, answer_type, args):
@@ -129,6 +152,7 @@ def answer_one(agent, sample, scorers, args):
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
+            **sampling_kwargs(args),
         )
         text = completion.text
     except (APIConnectionError, APITimeoutError):
@@ -187,6 +211,7 @@ def prediction_row(r, batch_index, question_index, args):
         "error": r.get("error"),
         "prediction": r["prediction"], "parsed": r["parsed"], "correct": r["correct"],
         "transition": None, "copied": None, "limit": r.get("limit"),
+        "sampling": sampling_settings(args),
     }
     episode = r.get("episode")
     if episode:
@@ -249,6 +274,8 @@ def main():
     judge = judge_from_args(args)
     for name in set(test_dataset["dataset"]):
         benchmarks.get(name).environment_for(judge)  # a judged benchmark without a judge stops here
+        if benchmarks.get(name).environment is not None and sampling_kwargs(args):
+            sys.exit(f"{name} runs episodes, which do not take --top_k/--min_p/--presence_penalty/--thinking yet")
 
     batches = _batch_indices(len(test_dataset), args.test_batch_size, args.split_seed)
     records_path = out_dir / "holdout_records.jsonl"
@@ -325,6 +352,7 @@ def main():
         "run": str(out_dir),
         "selection": "none (bare model)",
         "model": args.model_name,
+        "sampling": sampling_settings(args),
         "test_questions": total,
         "batches": len(batches),
         "team_accuracy": correct / total if total else 0.0,
