@@ -6,7 +6,7 @@ ADRs in [`docs/adr/`](adr/). The research behind the pool and the baselines is i
 [`docs/notes/specialists.md`](notes/specialists.md) and
 [`docs/notes/orchestration-baselines.md`](notes/orchestration-baselines.md).
 
-Work is tracked in GitHub issue #31, which links one issue per work item (#9–#30).
+Work is tracked in GitHub issue #31, which links one issue per work item (#9–#35).
 
 ---
 
@@ -101,6 +101,11 @@ to ~28 agents and makes the answer matrix ~40% larger; it fits only with the sec
   model. Candidates are shortlisted on the **development split** (§5).
 - **Thinking** may run to the model's context limit (32k). There is no separate thinking budget;
   cost absorbs it. Report per agent how often the ceiling is hit.
+- **Sampling (Q40).** No more temperature 0: every v2 agent uses its vendor's recommended sampling
+  (for Qwen3.5/3.6, "general tasks": thinking on T 1.0, top_p 0.95; thinking off T 0.7, top_p 0.8;
+  both top_k 20, presence_penalty 1.5), and never below T 0.1. Greedy decoding made the small models
+  loop, and repeats and agreement-based escalation need sampling anyway. Results are not compared
+  with the temperature-0 runs; every result set states its settings.
 - **Specialists** must load in our vLLM container and pass a gate before joining the pool: a
   paired comparison of at least 200 dev-split items against their own base. How each was trained
   is recorded in `docs/notes/specialists.md`. Keep looking for more.
@@ -120,8 +125,10 @@ Issues: #24 orchestrator, #25 continual memory, #17 topologies.
   earlier steps' output through one fixed **handoff** instruction.
 - **Topology menu:** single agent, vote, cascade, sequential (composed by the orchestrator) and
   synthesis. Debate is dropped (5× vote's tokens for +0.5 points at 4B), and so is centralized
-  (it behaves like synthesis). A later variant answers
-  first and then decides whether to delegate, its own answer joining the team.
+  (it behaves like synthesis).
+- **Decide first or solve first (Q37).** Two ways of running it, both main arms, compared at
+  matched cost: **decide first** (the one call above) and **solve first** (it answers, then decides
+  whether to escalate). Endpoints: always answer alone, always delegate. See X4 in §10.
 - **It sees an agent card for each agent:** what the agent is, its accuracy on the training folds
   by question source, and its average cost. Ablations:
   - names only;
@@ -222,6 +229,21 @@ Issue #29.
 - **Q36:** add Llama-3.1-8B (+ 3.2-3B), Granite-4.2-8B, gpt-oss-20b, Nemotron-Nano-9B-v2, and
   Qwen2.5-7B as a host for finance and medicine specialists (§3).
 
+- **Q37:** decide first and solve first are both main arms, compared at matched cost, with the
+  "always answer alone" and "always delegate" endpoints.
+- **Q38:** after solving first, the orchestrator chooses among pass on, second opinion and review
+  per task. Each is a configuration whose first member is the orchestrator's own answer.
+- **Q39:** the main escalation trigger is the orchestrator's own judgement after answering. Rules
+  fit on training folds (cut-off or missing answer, sample disagreement, stated confidence) are
+  baselines; the oracle gate is the ceiling.
+- **Q40:** vendor-recommended sampling for every agent, never temperature 0 (at least 0.1). No
+  comparison with earlier temperature-0 runs is needed, as long as each result set states its
+  settings.
+- **Q41:** run X0 now on one box (started 2026-10-21).
+- **Q42:** X5 covers the agentic pool at whole-task level, WorkBench included. Sub-step delegation
+  stays in step (c).
+- **Q43:** X1 tests four prompt groups answering alone, under the Q35 gate.
+
 Still open: the wording of the handoff (#17), settled when it is implemented.
 
 ## 9. Not yet designed
@@ -229,6 +251,46 @@ Still open: the wording of the handoff (#17), settled when it is implemented.
 Issues: #28 step (c), #30 vLLM upgrade.
 
 - **Step (c), multi-step tool tasks.** BigBang-v1 and the tool-calling specialists belong here.
-  Tool-call serve flags were added on 2026-10-19.
+  Tool-call serve flags were added on 2026-10-19. Whole-task escalation on the agentic pool is
+  already in X5 (§10); what is left for (c) is handing sub-steps to different agents.
 - **Upgrading vLLM to ≥0.27,** as its own stability test, if more text-only specialists prove
   worth having.
+
+## 10. Experiments on the harder benchmarks
+
+Agreed 2026-10-21 (Q37–Q43). What exists so far, bare model, temperature 0, 4,096-token answers:
+
+| Pool | Qwen3.5-0.8B | Qwen3.5-4B |
+|---|---|---|
+| Hard, 780 questions, 5 folds | 19.6% (53% cut off) | 60.8% (33% cut off) |
+| Agentic, 350 tasks, 5 folds | 6.6% (32k context) | 48.3% (131k context) |
+
+**One idea links most of them.** When the orchestrator answers alone, that answer is a row of the
+answer matrix like any other agent's. So solve first, followed by pass on, second opinion or a
+cascade, can be scored by replay. Only the orchestrator's decision to escalate, and review steps,
+need live calls. A 4-agent matrix (4B and 35B, thinking off and on) is enough to start, on one box.
+
+| # | Question | Arms | Needs | Issue |
+|---|---|---|---|---|
+| **X0 Headroom** | How often is a stronger or thinking agent right where a cheaper one is wrong? How far is the best single agent from the oracle? | Bare 4B and 35B, thinking off and on, hard pool, 5 folds, 30,720-token answers, vendor sampling; 4B thinking off sampled 3 times | Running since 2026-10-21 (branch `experiments/x0-headroom`) | #33 |
+| **X1 Prompts** | Do prompts matter on hard questions, where personas did not on easy ones? | Neutral, source-matched expert, shortlisted personas, and a commit-to-an-answer prompt aimed at cut-offs and loops; answering alone, 4B thinking off and on, k = 3, paired tests; winners join the pool under the Q35 gate | Existing persona path | #16 |
+| **X2 Models and specialists** | Does a specialist or another family beat its base on matching sources? | RL-MATH on MATH/AIME, ShiningValiant3 on GPQA, Med-Qwen on medicine, new families against the 4B | #10, #14 | #15 |
+| **X3 Per-task selection** | Does choosing per task beat the best single agent and random at equal cost? | Orchestrator v2, decide first, on the hard sources, by replay | #10, #19–#24 | #24 |
+| **X4 Solve first** | Does answering first and escalating only when needed beat deciding first or always delegating? | Below | New orchestrator mode | #34 |
+| **X5 Agentic, whole task** | Does solve first work on tool tasks? | The 4B runs the task; on failure, or when it judges itself unsure, it retries with the 35B or hands the 35B its transcript. BrowseComp-Plus, Finance-Agent, Plancraft, WorkBench | Tool-calling screen of the 35B | #35 |
+
+**X4 in detail.**
+
+- Orchestrators: 4B thinking off first (the cheap solver), then 4B thinking on and 35B. Help can
+  be the same model with thinking on, the 35B, or a specialist.
+- Help (Q38): the orchestrator chooses pass on, second opinion or review per task.
+- Triggers (Q39): its own judgement (main arm); baselines fit on training folds: cut-off or missing
+  answer, disagreement among its k samples (the cascade baseline, #22), stated confidence. Ceiling:
+  the oracle gate. Endpoints: never escalate (its bare model) and always escalate.
+- Gain = wrong answers escalated and fixed − right answers escalated and broken. Cost = its own
+  solve + escalation rate × the help's cost. Report escalation rate, how well the trigger separates
+  its wrong answers from its right ones (AUROC), fixes and breaks by help form, and the
+  accuracy-against-cost curve against decide first and the cascade.
+- With a 35B orchestrator, solve first pays only if some helper fixes its mistakes. X0 and X2 count
+  how often any agent is right where the 35B with thinking on is wrong, before this is built.
+

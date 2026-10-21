@@ -63,6 +63,30 @@ The orchestrator answering a task itself, with no team.
 **Delegation**:
 The orchestrator handing a task to a configuration of other agents.
 
+**Decide first**:
+The orchestrator choosing between a direct answer and delegation before it has tried the task.
+One of two ways it is run; compared with solve first at matched cost.
+
+**Solve first**:
+The orchestrator answering the task itself, then deciding whether to escalate. Its own answer is
+kept and counts in the cost whether or not it escalates.
+_Avoid_: self-check, fallback
+
+**Escalation**:
+Asking for help after solving first. The help is a configuration whose first member is the
+orchestrator's own answer, in one of three forms:
+- **pass on**: another agent answers from scratch and its answer replaces the orchestrator's;
+- **second opinion**: other agents answer independently and vote with the orchestrator's answer;
+- **review**: another agent sees the orchestrator's answer through the handoff and confirms or
+  revises it.
+On a tool task, escalation retries the whole task or hands its transcript on.
+_Avoid_: fallback, retry (when meaning any of the three)
+
+**Escalation trigger**:
+What makes the orchestrator escalate: its own judgement after answering, or a rule fit on training
+folds (a cut-off or missing answer, disagreement among its own samples, a stated confidence below a
+threshold).
+
 **Configuration**:
 What is chosen for a task: which agents, how many, and the topology that combines them.
 _Avoid_: setup, team (when meaning the whole choice)
@@ -124,10 +148,15 @@ shortlisting personas, admitting specialists, placing the cost budgets. Never us
 For each task, the cheapest single agent that answered it correctly, known only in hindsight. The
 ceiling for choosing among agents; a sequential topology can in principle beat it.
 
+**Oracle gate**:
+An escalation trigger that fires exactly when the orchestrator's own answer is wrong, known only in
+hindsight. The ceiling for deciding when to escalate, as the oracle is for choosing agents.
+
 **Replay**:
 Scoring a configuration from answers the agents already gave on their own, without running it
-again. Possible only for topologies where agents do not see each other's answers (vote, cascade).
-Interacting topologies (debate, centralized, synthesis) are run live.
+again. Possible only for topologies where agents do not see each other's answers (vote, cascade,
+and the pass-on and second-opinion forms of escalation). Interacting topologies (debate,
+centralized, synthesis, sequential, review) are run live.
 
 **Efficiency**:
 Where a method sits on the accuracy-against-cost curve. One method is more efficient than another
