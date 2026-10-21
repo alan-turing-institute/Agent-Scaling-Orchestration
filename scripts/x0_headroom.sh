@@ -16,6 +16,11 @@
 #   thinking off  temperature 0.7, top_p 0.8,  top_k 20, min_p 0, presence_penalty 1.5
 # Every summary and prediction row records the settings it was run with.
 #
+# Questions go out in groups of three times the worker count: the script waits for a whole
+# group before starting the next, and with answers up to 30k tokens a group of 5 left the
+# servers running two or three requests behind one long answer. Grouping does not change
+# answers or scores for one model answering alone.
+#
 # MAX_TOKENS 30720 lets an answer run to the 32k context of the 35B server, less the
 # prompt; the 4B gets the same, though its server allows 131k, so the two compare.
 #
@@ -47,6 +52,7 @@ run() {  # label model api workers fold sampling...
     # shellcheck disable=SC2068
     $PYTHON -u scripts/bare_model_baseline.py --dataset_path "$DATASET" --model_name "$model" \
         --api_base_url "$api" --split_seed 0 --n_folds 5 --fold "$fold" --workers "$workers" \
+        --test_batch_size $((workers * 3)) \
         --max_tokens "$MAX_TOKENS" $@ --out_dir "$out" > "$LOG_DIR/${label}_fold$fold.log" 2>&1
     echo "=== $out finished $(date -u +%FT%TZ) with status $? ==="
     grep -E "BARE MODEL" "$LOG_DIR/${label}_fold$fold.log"
