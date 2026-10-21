@@ -225,7 +225,7 @@ def render(agents, head, agree, findings, now):
         out += section(f"Hard pool · 4B thinking off, three samples · folds {', '.join(map(str, g['folds']))}",
                        "Agreement among the 4B's own samples",
                        "Share of questions in each case, and accuracy of the first sample there (or of the "
-                       "majority / any sample); the escalation-by-disagreement trigger reads this table.",
+                       "majority / any sample).",
                        th("Case", "Share", "Accuracy"), body, findings.get("agreement", ""))
     return out, fold_note
 
