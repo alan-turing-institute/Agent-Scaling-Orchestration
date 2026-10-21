@@ -283,6 +283,68 @@ check("report answer types", report["answer_types"], {"numeric": 1, "mcq": 1})
 check("report calls", report["calls"], 6)
 check("report config id", report["config_id"], team_config.vote([A, B, C]).config_id)
 
+# Every question reaches its scorer as an Instance, with its id and metadata.
+from benchmarks import scorers as scorer_module  # noqa: E402
+seen = []
+
+
+class RecordingScorer(scorer_module.NumericScorer):
+    name = "recording_test"
+
+    def correct(self, prediction, gold, instance=None):
+        seen.append(instance)
+        return super().correct(prediction, gold)
+
+
+scorer_module.SCORERS["recording_test"] = RecordingScorer
+benchmarks._load_registry()["recording_bench"] = benchmarks.ModuleBenchmark(
+    name="recording_bench", answer_type="recording_test", persona_set=[], _load=None)
+team_evaluation.registry_for = lambda args: FakeRegistry(FakeClient(answers, []))
+try:
+    row = {"question": QUESTION, "answer": "8", "dataset": "recording_bench", "tags": [],
+           "id": "recording_bench:q1", "metadata": '{"level": 5}'}
+    recorded = team_evaluation.run_team_evaluation([A, B], [row], Args())
+finally:
+    team_evaluation.registry_for = original
+    del scorer_module.SCORERS["recording_test"]
+    del benchmarks._load_registry()["recording_bench"]
+check("scorer sees the instance id", {i.id for i in seen}, {"recording_bench:q1"})
+check("scorer sees the metadata", seen[0].metadata, {"level": 5})
+check("sample records the question id", recorded["samples"][0]["question_id"], "recording_bench:q1")
+
+# Self-consistency: persona-less samples at the stage's own temperature, each with its own seed.
+sc_calls = []
+sc = team_config.self_consistency(4, temperature=0.7, top_p=0.95)
+sc_result = run_question(sc, QUESTION, 8.0, scorer=NUMERIC, personas={},
+                         registry=FakeRegistry(FakeClient({"": "{final answer: 8}"}, sc_calls)), max_tokens=100)
+check("self-consistency: four samples", len(sc_calls), 4)
+check("self-consistency: sampled at the stage's temperature", {(c["temperature"], c["top_p"]) for c in sc_calls}, {(0.7, 0.95)})
+check("self-consistency: each sample its own seed", len({c["seed"] for c in sc_calls}), 4)
+check("self-consistency: no persona in the prompt", sc_calls[0]["messages"][-1]["content"].startswith(QUESTION), True)
+check("self-consistency: votes", sc_result["team_correct"], True)
+check("self-consistency round-trips", team_config.TeamConfig.from_dict(sc.to_dict()).config_id, sc.config_id)
+branch = team_config.vote(["A"])
+branch = team_config.TeamConfig(stages=(team_config.Stage(id="s", persona=A, temperature=0.5, max_steps=7),),
+                                aggregate="vote")
+check("parallel keeps every stage field", [(s.temperature, s.max_steps) for s in team_config.parallel(
+    team_config.pipeline([("solver", A)]), team_config.TeamConfig(
+        stages=(team_config.Stage(id="s", persona=A, temperature=0.5, max_steps=7),), aggregate="stage",
+        final="s")).stages], [(None, None), (0.5, 7)])
+
+# A question nobody can score stops the batch before the first call.
+for label, bad, exc in [
+    ("a question with no dataset field", {"question": QUESTION, "answer": "8", "tags": []}, ValueError),
+    ("a question from an unregistered benchmark",
+     {"question": QUESTION, "answer": "8", "dataset": "humaneval", "tags": []}, KeyError),
+]:
+    calls = []
+    team_evaluation.registry_for = lambda args: FakeRegistry(FakeClient(answers, calls))
+    try:
+        raises(f"{label} raises", lambda: team_evaluation.run_team_evaluation([A, B], samples + [bad], Args()), exc)
+    finally:
+        team_evaluation.registry_for = original
+    check(f"{label}: no call was made", len(calls), 0)
+
 team_evaluation.registry_for = lambda args: FakeRegistry(BrokenClient({}, []))
 try:
     raises("a batch where every call failed raises",

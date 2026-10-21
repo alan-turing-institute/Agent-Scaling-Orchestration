@@ -73,6 +73,7 @@ def rows_from_report(report, *, batch=None, arm=None, team=None,
             "batch": batch,
             "question_index": index,
             "question_key": sample.get("question_key"),
+            "question_id": sample.get("question_id"),
             "dataset": sample.get("dataset"),
             "answer_type": sample.get("answer_type"),
             "tags": sample.get("tags"),
@@ -85,6 +86,7 @@ def rows_from_report(report, *, batch=None, arm=None, team=None,
                 "over": sample.get("answer_stages"),
                 "tie_break": report.get("tie_break"),
             },
+            "limit": sample.get("limit"),
             "team_answer": sample.get("team_answer"),
             "team_correct": sample.get("team_correct"),
             "calls": sample.get("calls"),
@@ -130,8 +132,45 @@ def strip_samples(report):
     return report
 
 
+def traces_path(predictions_path):
+    """`holdout_predictions.jsonl` -> `holdout_traces.jsonl`, beside it."""
+    path = Path(predictions_path)
+    return path.with_name(path.name.replace("predictions", "traces") if "predictions" in path.name
+                          else path.stem + "_traces.jsonl")
+
+
+def split_traces(rows):
+    """Take each agentic stage's `steps` off its row, as trace rows of their own.
+
+    An episode's steps (every tool call, its arguments, a clipped observation,
+    its tokens) run to hundreds per question. Kept out of the prediction rows
+    so those stay one short line per question; joined back on `question_key`
+    and `stage`.
+    """
+    traces = []
+    for row in rows:
+        for stage in row.get("stages") or []:
+            steps = stage.pop("steps", None)
+            if steps is None:
+                continue
+            traces.append({
+                "question_key": row.get("question_key"),
+                "question_id": row.get("question_id"),
+                "arm": row.get("arm"),
+                "batch": row.get("batch"),
+                "stage": stage.get("id"),
+                "persona": stage.get("persona"),
+                "role": stage.get("role"),
+                "stopped": stage.get("stopped"),
+                "steps": steps,
+            })
+    return traces
+
+
 def save_report(predictions_path, report, **row_kwargs):
-    """Write a report's prediction rows and config, then return it stripped for the records file."""
-    write_predictions(predictions_path, rows_from_report(report, **row_kwargs))
+    """Write a report's prediction rows, any episode traces and the config; return it stripped."""
+    rows = rows_from_report(report, **row_kwargs)
+    write_predictions(traces_path(predictions_path), split_traces(rows))
+    write_predictions(predictions_path, rows)
     write_config(Path(predictions_path).with_name("configs.json"), report)
     return strip_samples(report)

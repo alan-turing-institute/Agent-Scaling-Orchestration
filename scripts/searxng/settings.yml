@@ -1,0 +1,36 @@
+# SearXNG for Finance-Agent's web_search (src/benchmarks/finance_agent.py).
+# Started by scripts/searxng/run.sh, which copies this file under
+# data-claude/searxng/ with a fresh secret key; the key is never committed.
+use_default_settings: true
+
+general:
+  instance_name: "agent-scaling-searxng"
+
+server:
+  secret_key: "set-by-run.sh"
+  # Only this machine queries it (the port is bound to 127.0.0.1), so the
+  # public-instance bot limiter has nothing to protect.
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  # JSON is what the agent's tool reads; HTML is kept for a human to look.
+  formats:
+    - html
+    - json
+
+outgoing:
+  request_timeout: 6.0
+
+# More than the default engines, so one engine rate-limiting or showing a
+# CAPTCHA does not leave the agent without results.
+engines:
+  - name: bing
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: startpage
+    disabled: false
+  - name: wikipedia
+    disabled: false

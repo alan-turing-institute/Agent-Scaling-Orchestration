@@ -120,37 +120,61 @@ def parse_tags(raw_text):
     return [text]
 
 
-async def tag_one_question(agent, dataset_name, idx, question, answer, args, semaphore):
+# A reasoning model that spends the whole budget thinking returns an empty answer;
+# such a reply is retried once with this many times the budget.
+TRUNCATED_RETRY_FACTOR = 4
+
+
+def ask_for_tags(agent, prompt, max_tokens, args):
+    """One tagging request -> (answer text, truncated).
+
+    `truncated` means the model ran out of tokens before answering: the answer
+    is empty and only reasoning came back. That reasoning is never parsed as
+    tags (comma-splitting it gave ~50 prose fragments per question).
+    """
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": prompt},
+    ]
+    if hasattr(agent, 'generate'):
+        completion = agent.generate(messages, max_tokens=max_tokens, temperature=args.temperature, top_p=args.top_p)
+        truncated = not completion.content.strip() and completion.finish_reason == "length"
+        return ("" if truncated else completion.text), truncated
+    if hasattr(agent, 'complete'):
+        return agent.complete(messages, max_tokens=max_tokens, temperature=args.temperature, top_p=args.top_p), False
+    raise AttributeError("agent exposes neither generate() nor complete()")
+
+
+async def tag_one_question(agent, dataset_name, idx, instance, args, semaphore):
+    question, answer = instance.question, instance.answer
+    truncated, error = False, None
     async with semaphore:
         prompt = build_prompt(question)
-        message = [{"role": "user", "content": prompt}]
         try:
-            if hasattr(agent, 'complete'):
-                raw_text = await asyncio.to_thread(
-                    agent.complete,
-                    [
-                        {"role": "system", "content": "You are a helpful assistant."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    max_tokens=args.max_new_tokens,
-                    temperature=args.temperature,
-                    top_p=args.top_p,
-                )
-                raw_text = normalize_response(raw_text)
-            else:
-                raise AttributeError("agent does not expose a complete() method")
+            raw_text, truncated = await asyncio.to_thread(ask_for_tags, agent, prompt, args.max_new_tokens, args)
+            if truncated:
+                raw_text, truncated = await asyncio.to_thread(
+                    ask_for_tags, agent, prompt, args.max_new_tokens * TRUNCATED_RETRY_FACTOR, args)
+            raw_text = normalize_response(raw_text)
         except Exception as exc:
-            raw_text = ""
+            raw_text, error = "", repr(exc)
             print(f"[error] {dataset_name} sample {idx}: {exc}")
 
         tags = parse_tags(raw_text)
         print(f"[{dataset_name} sample {idx}] Question: {question}\nTags: {tags}\nRaw response: {raw_text}\n")
         return {
             'dataset': dataset_name,
+            'id': instance.id,
             'question': question,
             'answer': answer,
             'tags': tags,
+            # Labels the benchmark ships with ("level: 5"); tag_dataset.py adds
+            # them to `tags` under --structural_tags, past the mapping and filter.
+            'structural_tags': list(instance.tags),
+            'metadata': instance.metadata,
             'raw_response': raw_text,
+            'truncated': truncated,
+            'error': error,
         }
 
 
@@ -185,14 +209,13 @@ def main():
     async def run_dataset(dataset_name):
         print(f"Processing dataset: {dataset_name}")
         args.data = dataset_name
-        test_X, test_Y = benchmarks.get(dataset_name).load(args, split=args.split)
+        instances = benchmarks.get(dataset_name).instances(args, split=args.split)
         if args.data_size and args.data_size > 0:
-            test_X = test_X[:args.data_size]
-            test_Y = test_Y[:args.data_size]
+            instances = instances[:args.data_size]
 
         tasks = [
-            tag_one_question(agent, dataset_name, idx, question, answer, args, semaphore)
-            for idx, (question, answer) in enumerate(zip(test_X, test_Y))
+            tag_one_question(agent, dataset_name, idx, instance, args, semaphore)
+            for idx, instance in enumerate(instances)
         ]
         return await asyncio.gather(*tasks)
 
@@ -210,6 +233,14 @@ def main():
             f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
     print(f"Saved {len(all_records)} tagged records to {output_path}")
+    untagged = [r for r in all_records if not r['tags']]
+    if untagged:
+        truncated = sum(1 for r in untagged if r['truncated'])
+        failed = sum(1 for r in untagged if r['error'])
+        print(f"[fail] {len(untagged)} questions got no tags: {truncated} ran out of tokens even at "
+              f"{args.max_new_tokens * TRUNCATED_RETRY_FACTOR} (raise --max_new_tokens), {failed} requests failed, "
+              f"{len(untagged) - truncated - failed} answered with no tags")
+        sys.exit(1)
 
 
 if __name__ == '__main__':
