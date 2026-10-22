@@ -110,7 +110,8 @@ def attempt_task(agent, sample, scorer, answer_type, args):
     try:
         episode = run_episode(agent, env, system="You are a helpful assistant.", user=env.task_prompt(),
                               max_steps=benchmark.max_steps or 30, max_tokens=args.max_tokens,
-                              temperature=args.temperature, top_p=args.top_p)
+                              temperature=args.temperature, top_p=args.top_p,
+                              sampling=sampling_kwargs(args))
         prediction = episode.pop("prediction")
     except (APIConnectionError, APITimeoutError):
         raise
@@ -277,8 +278,6 @@ def main():
     judge = judge_from_args(args)
     for name in set(test_dataset["dataset"]):
         benchmarks.get(name).environment_for(judge)  # a judged benchmark without a judge stops here
-        if benchmarks.get(name).environment is not None and sampling_kwargs(args):
-            sys.exit(f"{name} runs episodes, which do not take --top_k/--min_p/--presence_penalty/--thinking yet")
 
     batches = _batch_indices(len(test_dataset), args.test_batch_size, args.split_seed)
     records_path = out_dir / "holdout_records.jsonl"
