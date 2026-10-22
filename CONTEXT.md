@@ -99,6 +99,27 @@ How a team's agents work together and how their answers become one: vote, cascad
 centralized, synthesis, or sequential.
 _Avoid_: mechanism, aggregation, architecture
 
+**Hub**:
+The agent in a centralized topology that reads every other team member's answer and gives the
+team's final answer. It combines answers; it does not choose the team, so a hub is not an
+orchestrator.
+_Avoid_: orchestrator, aggregator (when meaning the hub)
+
+**Worker**:
+A team member in a centralized topology. It answers without seeing anyone else's work, so its
+answer is also its solo answer; the hub reads it.
+_Avoid_: solver (when meaning the team member)
+
+**Expert persona**:
+A persona written for one source or subject (a GPQA organic chemist, an AIME competition
+mathematician), in the same form as the bank's personas.
+_Avoid_: specialist (that is a fine-tuned checkpoint)
+
+**Fixed team**:
+A team set before the run and used for every task it covers, with no per-task choice. The
+alternative to an orchestrator choosing the configuration.
+_Avoid_: static team, preset
+
 **Sequential topology**:
 A topology where one agent's output is the next agent's input, so a later agent can improve on an
 earlier one's answer rather than only outvote it. Not a fixed template: for each task the
