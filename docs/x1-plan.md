@@ -589,6 +589,30 @@ Smoke results (a few samples each; hard = correct / asked at the X1 settings; cu
 | XYZ-Aquila-mini (BF16) | on | 702 s | parsed | cut, clean | GPQA 1/1 | 0 | Finance-Agent 0/1 (40-step limit) |
 | Fx-Work (BF16) | on | 282 s | parsed | cut, clean | GPQA 0/1 | 0 | Finance-Agent 0/1 (answered, judged wrong) |
 
+Speed tests (2026-10-22, second Spark). `vllm bench serve` (random 2000 in / 500 out, temperature 0)
+and a real X1 request (one GPQA question, thinking on, X1 sampling, `thinking_token_budget` 2048,
+3,072 max tokens); tokens/s, one stream / 4 concurrent:
+
+| Config | Bench c1 | Bench c4 | Real c1 | Real c4 | Thinking budget forced an end |
+|---|---|---|---|---|---|
+| Fx-Work BF16 (smoke config) | 28.9 | 77.5 | 29.9 | 74.0 | 6/6 |
+| Fx-Work FP8 at load | 48.2 | 126.3 | 49.2 | 117.0 | 6/6 |
+| Fx-Work BF16 + MTP k=3 | 57.4 | 130.5 | 39.2 | 86.8 | 4/6 |
+| Fx-Work FP8 + MTP k=3 | 75.7 | 199.9 | 49.9 | 134.6 | 3/6 |
+| BigBang NVFP4 (smoke config) | 70.9 | 165.3 | 72.0 | 169.4 | 6/6, then 8/8 |
+| BigBang NVFP4 + MTP k=3 | 102.3 | 223.9 | 86.7 | 185.9 | 4/6, then 3/8 |
+
+- **Serve Fx-Work with FP8 at load (`--quantization fp8`)**: 1.6× on real requests, and KV memory
+  grows from 37 to 60 GiB. Do the same for XYZ-Aquila (also BF16; untested). Both are then served at
+  a lower precision than published, like our Qwen3.5-4B.
+- **No MTP speculation in X1.** It breaks the thinking budget: in 8 BigBang requests with MTP, 3
+  showed the forced end, 1 thought past the budget to the 3,072 cap with no answer, and 2 hit the
+  cap; without MTP, 8/8 forced an end and stopped. It also gains little at temperature 1.0
+  (acceptance 55–62% vs 80–94% at temperature 0 in `vllm/qwen3.6/README.md`): wall-clock for the
+  same 8 requests was 111 s vs 116 s.
+- Keep the thinking cap at 26,624 / 30,720 for comparability with X0; speed comes from FP8 and
+  running requests concurrently (about 2.4× aggregate at 4 concurrent).
+
 Serve settings that worked are in `~sizhey/orchestrator/x1-smoke/serve.sh` and `queue.sh` on the
 second Spark (vLLM 0.21, `--reasoning-config`, default thinking kwargs per mode; Qwen 35B with
 BF16 KV; XYZ-Aquila and Fx-Work at 0.85 memory utilisation).
