@@ -426,7 +426,7 @@ Your approach:
 
 **The full list for review is [`notes/model-cards.md`](notes/model-cards.md)**: a per-dataset index,
 then Part A (domain fine-tunes, below) and Part B (28 tool-use and agentic fine-tunes for the
-agentic pool, found 2026-10-22). Their Hugging Face cards, condensed, are in [`notes/model-cards.md`](notes/model-cards.md). None is downloaded or served on either box, and no smoke test or gate has run.
+agentic pool, found 2026-10-22). Their Hugging Face cards, condensed, are in [`notes/model-cards.md`](notes/model-cards.md). The 11 picked in §4.4 are downloaded on the second Spark and smoke-tested (§7); no gate has run.
 
 | Specialist (HF repo) | Base | Training | Published claims | Loads on vLLM 0.21 | Serve plan / problems |
 |---|---|---|---|---|---|
@@ -521,7 +521,7 @@ first run.
 | L4 | **Fuller handoff ablation**: hub served at 131k context, reading each worker's last N tokens (or full answer) instead of its summary | Q17 | After the first run; reuses stage 1 answers |
 | L5 | **Second wave of specialists** needing new hosts (Llama-3.1-8B, Qwen2.5-7B: R1-Distill-Llama-8B, Fino1-8B, Fin-R1, …), if the user picks any | Q14 | After the Llama / Qwen2.5 serve scripts exist (#32) |
 | L6 | **Text-only checkpoints** (Med-Qwen and other `Qwen3_5ForCausalLM` fine-tunes): local wrapper or vLLM ≥ 0.27; check the `26.06-py3` image on the second Spark | §4 | Only if one is picked (#30) |
-| L7 | **Update the specialist smoke-test spec** in `notes/specialists.md` (still says temperature 0 and a 4,096-token cap) to vendor sampling and X0's caps | §5 | Before any specialist is smoke-tested |
+| L7 | **Update the specialist smoke-test spec** (the 2026-10-22 smoke tests already used X1's settings) in `notes/specialists.md` (still says temperature 0 and a 4,096-token cap) to vendor sampling and X0's caps | §5 | Before any specialist is smoke-tested |
 | L8 | **Re-sync the second Spark** (`data-claude/`, env) from sparkie12 before the run, and copy results back after | Q4 | Before stage 1 / after each stage |
 
 ## 7. To build before the first run
@@ -546,7 +546,9 @@ Found by the smoke tests on the second Spark (2026-10-22):
 - **Absolute paths in the agentic pool.** `data-claude/tagged_agentic` stores sparkie12's absolute
   data root (`/home/syuen/...`) in the metadata of all 100 BrowseComp-Plus and 50 Finance-Agent
   tasks, so they fail on any other machine. Resolve `root` relative to the repo's `data-claude/`
-  (or `--data_dir`) instead of trusting the stored path.
+  (or `--data_dir`) instead of trusting the stored path. The BrowseComp-Plus index has the same
+  bug: `bm25/docmap.json` stores the absolute `corpus_dir`, so on another machine search runs but
+  every document read fails ("file not found" to the model). Resolve it relative to the index.
 - **Benchmark registry race.** `benchmarks._load_registry()` fills `_REGISTRY` one module at a time
   and returns early once it is non-empty, so threads that call `benchmarks.get` concurrently on a
   cold registry can see only `gsm8k`. Load it once before starting worker threads, or guard it with
@@ -555,6 +557,41 @@ Found by the smoke tests on the second Spark (2026-10-22):
   end-of-thinking text at the budget), but the Qwen3.5-4B fine-tunes then keep reasoning in the
   visible answer: with a 512-token budget, answers ran past 3,500 tokens. With 26,624 + 4,096, check
   how often answers are cut off after a forced end, and raise the answer share if needed.
+  Gemma (ShiningValiant3) and the four 35B specialists stop cleanly after a forced end.
+- **Ministral's thinking budget is not enforced.** With `--reasoning-config` markers `[THINK]` /
+  `[/THINK]`, no forced end ever appeared; one AIME answer reasoned for the full 30,720 tokens.
+  Probably the markers tokenise as text, not as Mistral's control tokens. Until fixed, Ministral is
+  capped only by the 30,720 total (Q16 fallback). It also skipped `[THINK]` entirely on the
+  512-token probe, despite its system prompt.
+- **No `chat_template_kwargs` for Ministral.** vLLM rejects any request carrying them for Mistral
+  tokenizers (400, "chat_template is not supported"). The workers must omit `enable_thinking` for
+  Ministral; it always thinks, and needs its card's `SYSTEM_PROMPT.txt`.
+- **35B specialists think to the budget on GPQA.** BigBang, Occamy and Fx-Work hit the 26,624
+  budget on 4 of 5 GPQA questions (XYZ-Aquila stopped at 7.8k). Fx-Work (BF16, ~67 GB) took 45 min
+  for one GPQA question and one Finance-Agent task: stage 1 time for T8 needs estimating.
+
+Smoke results (a few samples each; hard = correct / asked at the X1 settings; cut off = hit 30,720):
+
+| Specialist | Thinking | Ready | Tool call | 512-token budget probe | Hard | Cut off | Agentic |
+|---|---|---|---|---|---|---|---|
+| RL-MATH | off | 161 s | parsed | — | 5/6 (AIME, MATH-500, MMLU-Pro eng.) | 0 | — |
+| AgentMercury-4B | on | 161 s | parsed | cut; answer ran to 4,096 | 4/4 (AIME, MATH-500) | 0 | WorkBench 1/1 |
+| AgentMercury-4B | off | 161 s | parsed | — | 3/4 | 0 | WorkBench 1/1 |
+| Agents-A1-4B (FP8) | on | 171 s | parsed | cut; answer ran to 4,096 | GPQA 1/1 | 0 | BrowseComp-Plus 1/1 (rerun after the corpus-path fix) |
+| R2S ALFWorld student | off | 181 s | parsed | — | — | — | Plancraft 1/1 |
+| R2S ALFWorld student | on | 181 s | parsed | cut; answer ran to 4,096 | AIME 0/1 | 1 | Plancraft 1/1 |
+| SkillGym-4B | on | 171 s | parsed | cut; answer ran to 4,096 | AIME 0/1 | 1 | Plancraft 1/1 |
+| SkillGym-4B | off | 190 s | parsed | — | — | — | Plancraft 1/1 |
+| Ministral-3B-Reasoning | always | 81 s | parsed | no thinking block | 3/4 (MMLU-Pro eng., AIME) | 1 | — |
+| ShiningValiant3 | on | 211 s | parsed | cut, clean | 3/6 (GPQA, MMLU-Pro phys., chem.) | 1 | — |
+| BigBang | on | 291 s | parsed | cut, clean | 3/4 (GPQA, MMLU-Pro law) | 0 | BrowseComp-Plus 0/1 (rerun; hit the 30-step limit, no answer) |
+| Occamy-1.0 (NVFP4) | on | 311 s | parsed | cut, clean | GPQA 1/1 | 0 | WorkBench 1/1 |
+| XYZ-Aquila-mini (BF16) | on | 702 s | parsed | cut, clean | GPQA 1/1 | 0 | Finance-Agent 0/1 (40-step limit) |
+| Fx-Work (BF16) | on | 282 s | parsed | cut, clean | GPQA 0/1 | 0 | Finance-Agent 0/1 (answered, judged wrong) |
+
+Serve settings that worked are in `~sizhey/orchestrator/x1-smoke/serve.sh` and `queue.sh` on the
+second Spark (vLLM 0.21, `--reasoning-config`, default thinking kwargs per mode; Qwen 35B with
+BF16 KV; XYZ-Aquila and Fx-Work at 0.85 memory utilisation).
 
 ## 8. Open decisions
 
