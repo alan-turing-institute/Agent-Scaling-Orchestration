@@ -541,6 +541,21 @@ first run.
   (from its card, confirmed by the smoke test), and whether its tool calls parse with our
   `qwen3_coder` / `qwen3_xml` / Mistral parsers on the agentic tasks.
 
+Found by the smoke tests on the second Spark (2026-10-22):
+
+- **Absolute paths in the agentic pool.** `data-claude/tagged_agentic` stores sparkie12's absolute
+  data root (`/home/syuen/...`) in the metadata of all 100 BrowseComp-Plus and 50 Finance-Agent
+  tasks, so they fail on any other machine. Resolve `root` relative to the repo's `data-claude/`
+  (or `--data_dir`) instead of trusting the stored path.
+- **Benchmark registry race.** `benchmarks._load_registry()` fills `_REGISTRY` one module at a time
+  and returns early once it is non-empty, so threads that call `benchmarks.get` concurrently on a
+  cold registry can see only `gsm8k`. Load it once before starting worker threads, or guard it with
+  a lock.
+- **Thinking budget vs answer length.** vLLM enforces `thinking_token_budget` (it inserts the
+  end-of-thinking text at the budget), but the Qwen3.5-4B fine-tunes then keep reasoning in the
+  visible answer: with a 512-token budget, answers ran past 3,500 tokens. With 26,624 + 4,096, check
+  how often answers are cut off after a forced end, and raise the answer share if needed.
+
 ## 8. Open decisions
 
 - Review of the draft expert personas (§3.4).
