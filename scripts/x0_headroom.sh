@@ -58,7 +58,7 @@ run() {  # label model api workers fold sampling...
     $PYTHON -u scripts/bare_model_baseline.py --dataset_path "$DATASET" --model_name "$model" \
         --api_base_url "$api" --split_seed 0 --n_folds 5 --fold "$fold" --workers "$workers" \
         --test_batch_size $((workers * 3)) \
-        --max_tokens "$MAX_TOKENS" --request_timeout "$REQUEST_TIMEOUT" $@ --out_dir "$out" \
+        --max_tokens "$MAX_TOKENS" --request_timeout "$REQUEST_TIMEOUT" --resume $@ --out_dir "$out" \
         > "$LOG_DIR/${label}_fold$fold.log" 2>&1
     status=$?
     echo "=== $out finished $(date -u +%FT%TZ) with status $status ==="

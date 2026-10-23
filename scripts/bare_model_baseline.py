@@ -76,6 +76,8 @@ def parse_args():
     parser.add_argument("--response_chars", type=int, default=0,
                         help="Clip stored responses to this many characters; 0 keeps them whole")
     parser.add_argument("--out_dir", default="data-claude/orchestrator/bare_model")
+    parser.add_argument("--resume", action="store_true",
+                        help="Keep the batches an interrupted run already wrote to --out_dir and answer only the rest")
     return parser.parse_args()
 
 
@@ -192,6 +194,42 @@ def answer_one(agent, sample, scorers, args):
     }
 
 
+# A restarted 35B can take ~15 min to load, longer than the default 4 x 180 s.
+SERVER_RETRIES = 20
+
+LIMIT_COUNTS = (("context_limited", lambda r: r.get("limit") == "context"),
+                ("context_limited_correct", lambda r: r.get("limit") == "context" and r["correct"]),
+                ("max_tokens_limited", lambda r: r.get("limit") == "max_tokens"),
+                ("stage_answers", lambda r: True),
+                ("stage_answers_context_limited", lambda r: r.get("limit") == "context"))
+
+
+def resume_batches(records_path, predictions_path, batches):
+    """Batches an interrupted run finished, as {batch: results}, rebuilt from its prediction rows.
+
+    A batch counts as finished only if its record exists, it holds the same questions as now and
+    every one of them has a prediction row; the rows of any other batch are dropped from the files,
+    so the run then appends exactly the batches it answers."""
+    if not records_path.exists() or not predictions_path.exists():
+        return {}
+    records = [json.loads(line) for line in records_path.read_text(encoding="utf-8").splitlines() if line]
+    rows = [json.loads(line) for line in predictions_path.read_text(encoding="utf-8").splitlines() if line]
+    done = {}
+    for record in records:
+        b = record["batch"]
+        batch_rows = [row for row in rows if row["batch"] == b]
+        if (b <= len(batches) and record["question_indices"] == list(batches[b - 1])
+                and sorted(row["question_index"] for row in batch_rows) == sorted(batches[b - 1])):
+            done[b] = [{"correct": row["team_correct"], "limit": row.get("limit"), "tags": row["tags"]}
+                       for row in batch_rows]
+    keep = lambda line: json.loads(line)["batch"] in done
+    for path in (records_path, predictions_path, traces_path(predictions_path)):
+        if path.exists():
+            lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line and keep(line)]
+            path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    return done
+
+
 def prediction_row(r, batch_index, question_index, args):
     completion = r.get("completion")
     usage = completion.usage() if completion else {}
@@ -281,15 +319,31 @@ def main():
 
     batches = _batch_indices(len(test_dataset), args.test_batch_size, args.split_seed)
     records_path = out_dir / "holdout_records.jsonl"
-    records_path.unlink(missing_ok=True)
     predictions_path = out_dir / "holdout_predictions.jsonl"
-    predictions_path.unlink(missing_ok=True)
+    done = resume_batches(records_path, predictions_path, batches) if args.resume else {}
+    if not done:
+        for path in (records_path, predictions_path, traces_path(predictions_path)):
+            path.unlink(missing_ok=True)
 
     total = correct = 0
     limits = {}
     tag_counts, tag_correct = Counter(), Counter()
 
     for batch_index, indices in enumerate(batches, start=1):
+        if batch_index in done:
+            # Counted from the rows the interrupted run wrote, exactly as if just answered.
+            results = done[batch_index]
+            total += len(results)
+            correct += sum(r["correct"] for r in results)
+            for key, hit in LIMIT_COUNTS:
+                limits[key] = limits.get(key, 0) + sum(1 for r in results if hit(r))
+            for r in results:
+                for tag in r["tags"]:
+                    tag_counts[tag] += 1
+                    tag_correct[tag] += int(r["correct"])
+            print(f"batch {batch_index}/{len(batches)}: kept from the earlier run "
+                  f"| running {correct}/{total} = {correct / total:.1%}")
+            continue
         batch = test_dataset.select(indices)
         samples = [batch[i] for i in range(len(batch))]
 
@@ -298,17 +352,14 @@ def main():
         results = [None] * len(samples)
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = {pool.submit(with_server_retry,
-                                   lambda s=s: answer_one(agent, s, scorers, args), "bare model call"): i
+                                   lambda s=s: answer_one(agent, s, scorers, args), "bare model call",
+                                   attempts=SERVER_RETRIES): i
                        for i, s in enumerate(samples)}
             for future in concurrent.futures.as_completed(futures):
                 results[futures[future]] = future.result()
 
         batch_correct = sum(r["correct"] for r in results)
-        for key, hit in (("context_limited", lambda r: r.get("limit") == "context"),
-                         ("context_limited_correct", lambda r: r.get("limit") == "context" and r["correct"]),
-                         ("max_tokens_limited", lambda r: r.get("limit") == "max_tokens"),
-                         ("stage_answers", lambda r: True),
-                         ("stage_answers_context_limited", lambda r: r.get("limit") == "context")):
+        for key, hit in LIMIT_COUNTS:
             limits[key] = limits.get(key, 0) + sum(1 for r in results if hit(r))
         total += len(results)
         correct += batch_correct
