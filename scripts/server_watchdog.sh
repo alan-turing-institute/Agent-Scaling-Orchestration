@@ -8,6 +8,7 @@
 #   ./scripts/server_watchdog.sh qwen3.5-4b-vllm:8003 qwen3.6-orch:8002
 set -u
 STALL_MINUTES=${STALL_MINUTES:-10}
+LOAD_MINUTES=${LOAD_MINUTES:-40}  # the 35B took 9 min just to read its weights after a restart
 INTERVAL=${INTERVAL:-60}
 declare -A last_tokens stalled
 
@@ -38,7 +39,7 @@ while true; do
         if [ "${stalled[$name]}" -ge $(( STALL_MINUTES * 60 / INTERVAL )) ]; then
             echo "$(date -u +%FT%TZ) $name: stuck for ${STALL_MINUTES} min; restarting"
             docker restart "$name"
-            for _ in $(seq 60); do curl -s -m 5 "localhost:$port/v1/models" | grep -q id && break; sleep 10; done
+            for _ in $(seq $(( LOAD_MINUTES * 6 ))); do curl -s -m 5 "localhost:$port/v1/models" | grep -q id && break; sleep 10; done
             echo "$(date -u +%FT%TZ) $name: back up ($(curl -s -m 5 "localhost:$port/v1/models" | grep -q id && echo answering || echo NOT answering))"
             stalled[$name]=0 last_tokens[$name]=
         fi
