@@ -523,7 +523,7 @@ first run.
 | L6 | **Text-only checkpoints** (Med-Qwen and other `Qwen3_5ForCausalLM` fine-tunes): local wrapper or vLLM ≥ 0.27; check the `26.06-py3` image on the second Spark | §4 | Only if one is picked (#30) |
 | L7 | **Update the specialist smoke-test spec** (the 2026-10-22 smoke tests already used X1's settings) in `notes/specialists.md` (still says temperature 0 and a 4,096-token cap) to vendor sampling and X0's caps | §5 | Before any specialist is smoke-tested |
 | L8 | **Re-sync the second Spark** (`data-claude/`, env) from sparkie12 before the run, and copy results back after | Q4 | Before stage 1 / after each stage |
-| L9 | **Thinking cap and mode for thinking-on workers.** X0 shows thinking on scores below thinking off on the same folds (35B 75.0% vs 83.0%, 4B 67.5% vs 72.0%) and ~20–26% of thinking-on answers hit 30,720. Rerun the thinking-on specialists with a larger cap (e.g. 65,536), and compare each specialist with thinking off; a first thinking on/off test (tok/s, accuracy, cut-offs) is running on the second Spark | X0 results, 2026-10-23 | Decide before stage 1; the larger-cap rerun after it |
+| L9 | **Thinking cap and mode for thinking-on workers.** X0 shows thinking on scores below thinking off on the same folds (35B 75.0% vs 83.0%, 4B 67.5% vs 72.0%) and ~20–26% of thinking-on answers hit 30,720. Rerun the thinking-on specialists with a larger cap (e.g. 65,536), and compare each specialist with thinking off; a first thinking on/off test (tok/s, accuracy, cut-offs) is done (§7, 2026-10-26) | X0 results, 2026-10-23 | Decide before stage 1; the larger-cap rerun after it |
 
 ## 7. To build before the first run
 
@@ -614,6 +614,43 @@ and a real X1 request (one GPQA question, thinking on, X1 sampling, `thinking_to
 - Keep the thinking cap at 26,624 / 30,720 for comparability with X0; speed comes from FP8 and
   running requests concurrently (about 2.4× aggregate at 4 concurrent).
 
+Thinking on vs off (2026-10-23 to 2026-10-26, second Spark). Each specialist on its own sources'
+hardest questions, both modes on one server; X1 settings (on: budget 26,624, agentic 12,288; off:
+no budget; 30,720 max either way); 8 hard and 4 agentic requests at once. Correct / asked, mean
+completion tokens, answers cut off at 30,720:
+
+| Specialist | Questions | Hard on | Hard off | Mean tokens on / off | Cut off on / off | Agentic | Agentic on | Agentic off |
+|---|---|---|---|---|---|---|---|---|
+| RL-MATH | AIME, MATH-500, MMLU-Pro eng. | 19/24 | 22/24 | 16.7k / 4.9k | 3 / 0 | — | — | — |
+| AgentMercury-4B | AIME, MATH-500 | 16/16 | 13/16 | 13.2k / 3.9k | 0 / 0 | WorkBench | 3/6 | 3/6 |
+| Agents-A1-4B (FP8) | GPQA | 5/6 | 5/6 | 15.1k / 8.0k | 0 / 1 | BrowseComp-Plus | 0/4 | 0/4 |
+| R2S ALFWorld student | — | — | — | — | — | Plancraft | 1/8 | 6/8 |
+| SkillGym-4B | — | — | — | — | — | Plancraft | 1/8 | 2/8 |
+| ShiningValiant3 | GPQA, MMLU-Pro phys., chem. | 4/18 | 10/18 | 11.1k / 5.7k | 0 / 0 | — | — | — |
+| BigBang | GPQA, MMLU-Pro law | 18/20 | 15/20 | 7.6k / 6.1k | 0 / 3 | BrowseComp-Plus | 0/4 | 0/4 |
+| Occamy-1.0 (NVFP4) | GPQA | 5/6 | 5/6 | 22.9k / 6.3k | 0 / 0 | WorkBench | 6/6 | 5/6 |
+| XYZ-Aquila-mini (FP8) | GPQA | 4/6 | 5/6 | 16.2k / 10.3k | 0 / 1 | Finance-Agent | 0/4 | 0/4 |
+| Fx-Work (FP8) | GPQA | 5/6 | 6/6 | 22.2k / 15.6k | 0 / 0 | Finance-Agent | 0/4 | 0/4 |
+| **Total** | | **76/102** | **81/102** | | **3 / 5** | | **11/44** | **16/44** |
+
+- Per-token speed is the same in both modes; thinking off saves time only by writing fewer tokens
+  (hard questions: 135 vs 83 wall-clock minutes for all specialists but ShiningValiant3, which took
+  16.2 vs 8.4).
+- Thinking on wins for AgentMercury and BigBang, loses for RL-MATH, R2S and ShiningValiant3, and
+  ties elsewhere; samples are small (6–24 questions), so only the large gaps mean much.
+- **ShiningValiant3 with thinking on mostly loses on format**: 7 of its 14 misses name the right
+  letter but as `\boxed{(D)}` or `\[\{\text{final answer: (D)}\}\]`, which the strict parser rejects
+  (1 such miss with thinking off). With the letter read leniently it is 11/18 in both modes.
+- R2S with thinking on declared Plancraft tasks impossible; SkillGym with thinking on ran to the
+  token cap without a tool call.
+- BrowseComp-Plus and Finance-Agent are 0 in both modes: every BigBang search ran to the 30-step
+  limit, and the finance specialists never submitted within 40 steps (the base 35B got 1 of the
+  same 4 Finance-Agent tasks).
+- **Judge.** These smoke tests used each specialist as its own judge for BrowseComp-Plus and
+  Finance-Agent (Agents-A1's "claude beri langmann" was judged against "Claude Berel Langmann").
+  X1 judges both with the 35B, as the repo intends, scored in stage 2 with the hub.
+- Ministral is not in the table: it always thinks (no `enable_thinking` switch).
+
 Serve settings that worked are in `~sizhey/orchestrator/x1-smoke/serve.sh` and `queue.sh` on the
 second Spark (vLLM 0.21, `--reasoning-config`, default thinking kwargs per mode; Qwen 35B with
 BF16 KV; XYZ-Aquila and Fx-Work at 0.85 memory utilisation).
@@ -621,3 +658,6 @@ BF16 KV; XYZ-Aquila and Fx-Work at 0.85 memory utilisation).
 ## 8. Open decisions
 
 - Review of the draft expert personas (§3.4).
+- Thinking mode per specialist (L9, §7 thinking on vs off). Proposed: off for RL-MATH, R2S,
+  SkillGym and ShiningValiant3 (or on with a stricter format instruction); on for AgentMercury,
+  BigBang and Occamy; either for Agents-A1, XYZ-Aquila and Fx-Work (off is faster).
