@@ -68,6 +68,10 @@ Status: inventory written; Q6–Q26 settled 2026-10-22; design still being settl
   a larger answer cap instead.
 - **Handoff** (Q17): the hub reads each worker's summary plus its answer (Q22), not the last 600
   characters.
+- **Both thinking modes for specialists** (2026-10-26): stage 1 records every specialist's answers
+  with thinking on and with thinking off (Ministral only thinks), so the mode can be chosen per
+  specialist at stage 2 and an orchestrator's choice of mode (L10) replayed offline. Personas stay
+  thinking off; the hub stays thinking off.
 - **Staged run** (Q19): stage 1 serves one model at a time and collects every worker's answers;
   stage 2 serves only the hub and runs it over the saved answers.
 - **Expert prompts** (Q12) are new, one or two per source or subject, written the same way and in
@@ -544,7 +548,7 @@ first run.
 | L7 | **Update the specialist smoke-test spec** (the 2026-10-22 smoke tests already used X1's settings) in `notes/specialists.md` (still says temperature 0 and a 4,096-token cap) to vendor sampling and X0's caps | §5 | Before any specialist is smoke-tested |
 | L8 | **Re-sync the second Spark** (`data-claude/`, env) from sparkie12 before the run, and copy results back after | Q4 | Before stage 1 / after each stage |
 | L9 | **Thinking cap and mode for thinking-on workers.** X0 shows thinking on scores below thinking off on the same folds (35B 75.0% vs 83.0%, 4B 67.5% vs 72.0%) and ~20–26% of thinking-on answers hit 30,720. Rerun the thinking-on specialists with a larger cap (e.g. 65,536), and compare each specialist with thinking off; a first thinking on/off test (tok/s, accuracy, cut-offs) is done (§7, 2026-10-26) | X0 results, 2026-10-23 | Decide before stage 1; the larger-cap rerun after it |
-| L10 | **Orchestrator chooses each agent's thinking mode.** The on/off test (§7) shows the better mode varies by specialist and task type (on helps AgentMercury, BigBang, Occamy; off helps RL-MATH, R2S, ShiningValiant3) and off costs fewer tokens at the same tok/s. Let the orchestrator pick on or off per agent and task, trading tokens for accuracy. Running stage 1 in both modes for each specialist would let this be replayed offline | User, 2026-10-26 | After X1 |
+| L10 | **Orchestrator chooses each agent's thinking mode.** The on/off test (§7) shows the better mode varies by specialist and task type (on helps AgentMercury, BigBang, Occamy; off helps RL-MATH, R2S, ShiningValiant3) and off costs fewer tokens at the same tok/s. Let the orchestrator pick on or off per agent and task, trading tokens for accuracy. Stage 1 records both modes (§1), so this replays offline over saved answers | User, 2026-10-26 | After X1; data from stage 1 |
 
 ## 7. To build before the first run
 
@@ -679,6 +683,7 @@ BF16 KV; XYZ-Aquila and Fx-Work at 0.85 memory utilisation).
 ## 8. Open decisions
 
 - Review of the draft expert personas (§3.4).
-- Thinking mode per specialist (L9, §7 thinking on vs off). Proposed: off for RL-MATH, R2S,
+- Thinking mode per specialist for the headline team result (L9, §7 thinking on vs off). No longer
+  blocks stage 1, which records both modes; decide before stage 2. Proposed: off for RL-MATH, R2S,
   SkillGym and ShiningValiant3 (or on with a stricter format instruction); on for AgentMercury,
   BigBang and Occamy; either for Agents-A1, XYZ-Aquila and Fx-Work (off is faster).
