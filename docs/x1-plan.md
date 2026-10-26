@@ -1,0 +1,708 @@
+# Plan: X1 + X2 as one fixed centralized team
+
+Started in a design session on 2026-10-22, while X0 runs. X1 (prompts) and X2 (models and
+specialists) from [§10 of the v2 plan](orchestration-v2-plan.md#10-experiments-on-the-harder-benchmarks)
+become one experiment: a **fixed team** of personas and **specialists** whose **hub** reads their
+answers and gives the final one. Terms in **bold** are defined in [`CONTEXT.md`](../CONTEXT.md). How
+each specialist was trained is in [`notes/specialists.md`](notes/specialists.md) and
+[`notes/base-models.md`](notes/base-models.md). Issues: #16 (personas), #15 (specialist gates),
+#14 (serving), #10 (agent registry), #32 (new base families).
+
+Status: inventory written; Q6–Q26 settled 2026-10-22; design still being settled (§6).
+
+---
+
+## 1. Settled so far
+
+- **A fixed team, centralized topology.** Workers answer alone; the hub reads all their answers and
+  gives the team's answer (`team_config.centralized`). Nothing is chosen per task; that is X3.
+- **One run gives everything.** A worker that reads nothing *is* answering solo, so the same run
+  yields each persona's and specialist's solo answer (X1's and X2's comparisons against the neutral
+  base), the majority vote over workers (by **replay**, if needed), and the hub's answer. No separate
+  gate runs first.
+- **Questions:** the hard pool (780) and the agentic pool (350).
+- **Where:** develop on a branch off `main` on sparkie12, push it, and pull it on the second Spark
+  (spark-6695), which runs the experiment. sparkie12 is busy with X0 until about 23 Oct.
+- **On agentic tasks** each worker runs its own episode in a fresh environment, and the hub starts a
+  fresh episode with the workers' attempts as advice (`runner.py:140-146`). The hub sees each
+  worker's final message and final answer or outcome, not its full transcript (Q10).
+- **One fixed team per source** (Q6): each source (and MMLU-Pro / GPQA subject) gets its own team of
+  matching experts and specialists, fixed before the run.
+- **Hub** (Q7): Qwen3.6-35B, thinking off, neutral prompt. A 4B (thinking off) hub is a later
+  ablation.
+- **Persona workers** (Q8) run on Qwen3.5-4B, thinking off. Each specialist runs in the thinking mode
+  it was trained for.
+- **Settings** (Q9) match X0: 30,720-token answers, vendor sampling, X0's 5 folds and question keys,
+  so every worker's solo answer is a new row of the X0 answer matrix. k = 3 samples per worker; the
+  hub runs once per sample.
+- **Record everything** (Q10, Q11): every worker's answer, correctness and token counts (thinking
+  included) are kept, as are the hub's, so solo performance is reported per worker. Results are
+  reported raw first: per-worker, majority vote, hub. Comparisons (hub vs best single worker per
+  source vs bare 35B, against cost) come afterwards.
+- **Team composition** (Q13, Q20, Q22, Q23): **4 workers per team**: 2 expert personas and 2
+  specialists. Where fewer than 2 specialists fit a source, 3 expert personas and 1 specialist.
+  No neutral worker, no commit-to-an-answer prompt, no shortlisted bank personas. The neutral
+  baselines come from X0 (4B thinking off, samples s0–s2; 35B thinking off).
+- **No matching specialist** (Q25): the slot goes to the best general-purpose or adjacent-domain
+  specialist on a served base, labelled "generalist" in results (law, GPQA biology, Plancraft;
+  engineering if needed). Candidates: `notes/model-cards.md` Part C.
+- **Teams per subject, shared across sources** (Q26): 10 teams: maths (AIME + MATH-500), physics
+  (GPQA + MMLU-Pro), chemistry (GPQA + MMLU-Pro), biology (GPQA), law, engineering (MMLU-Pro), and
+  BrowseComp-Plus, Finance-Agent, WorkBench, Plancraft. Results are still reported per source.
+- **Agentic neutral baseline** (Q24): X0 will add a neutral 4B run on the agentic pool; that is
+  left to the sessions running X0, not built here.
+- **Thinking budget** (Q21): `thinking_token_budget` 26,624 inside X0's 30,720-token answer cap,
+  leaving 4,096 for the answer. Record per worker how often the budget is exhausted (vLLM forced the
+  end of thinking) and how often the answer is still cut off, in case the budget must rise.
+- **Summary instruction** (Q22): every worker's prompt gets, before the format line: *Before your
+  final answer, write "Summary:" followed by at most five sentences giving the key steps of your
+  reasoning.* The hub gets that block plus the final answer. When a worker leaves the block out, the
+  hub gets the last 600 characters instead; report this **fallback rate** (the share of a worker's
+  answers without a usable summary) per worker.
+- **Specialists** (Q14, Q18): chosen by the user from the reviewed list (`notes/model-cards.md`),
+  for the hard pool and for tool use on the agentic pool.
+- **Specialists' other bases** (Q15): Gemma-E4B and Ministral-Instruct solo rows are deferred until
+  no experiment is running.
+- **Thinking** (Q16): cap thinking per request in vLLM (`thinking_token_budget`, which needs
+  `--reasoning-config` on the server) wherever a model supports it; where it cannot, give that model
+  a larger answer cap instead.
+- **Handoff** (Q17): the hub reads each worker's summary plus its answer (Q22), not the last 600
+  characters.
+- **Both thinking modes for specialists** (2026-10-26): stage 1 records every specialist's answers
+  with thinking on and with thinking off (Ministral only thinks), so the mode can be chosen per
+  specialist at stage 2 and an orchestrator's choice of mode (L10) replayed offline. Personas stay
+  thinking off; the hub stays thinking off.
+- **Staged run** (Q19): stage 1 serves one model at a time and collects every worker's answers;
+  stage 2 serves only the hub and runs it over the saved answers.
+- **Expert prompts** (Q12) are new, one or two per source or subject, written the same way and in
+  the same style as the bank's personas (a "You are …" first line, then "Your approach:" bullets).
+  Within a team they differ by problem-solving approach, not subject knowledge (2026-10-26).
+
+## 2. The datasets
+
+Hard pool, 780 questions (`data-claude/tagged_hard`):
+
+| Source | n | Subjects |
+|---|---|---|
+| GPQA-Diamond | 198 | Chemistry 93 (organic 72), physics 86 (quantum 25, high-energy 14, astro 13, …), biology 19 |
+| MMLU-Pro hard | 200 | Law 50, engineering 50, physics 50, chemistry 50 |
+| AIME 2022–25 | 120 | 30 per year |
+| MATH-500 L4–5 | 262 | Algebra 60, intermediate algebra 59, prealgebra 39, number theory 31, counting & probability 25, precalculus 25, geometry 23 |
+
+Agentic pool, 350 tasks (`data-claude/tagged_agentic`):
+
+| Source | n | Breakdown |
+|---|---|---|
+| Plancraft | 100 | Easy 30, medium 14, hard 41, impossible 15 |
+| WorkBench | 100 | Analytics, calendar, CRM, email 17 each; multi-domain, project management 16 each |
+| BrowseComp-Plus | 100 | 10 categories × 10 |
+| Finance-Agent | 50 | 9 question types (numerical reasoning 8, retrieval 18, beat-or-miss 7, …) |
+
+There is **no medicine and no finance QA** in either pool. Medicine exists only in the easy set's
+`pro_medicine`; finance only as the agentic Finance-Agent.
+
+## 3. Personas
+
+### 3.1 What exists
+
+All 50 personas are in `chosen_persona_bank()` (`src/personas.py:39-616`). Each was written for one
+easy-set source and runs at temperature 0, which v2's sampling rule (Q40) no longer allows.
+
+| Set | Personas | Written for |
+|---|---|---|
+| GSM8K | Conservative_Verifier, Creative_Explorer, Rigorous_Formalist, Intuitive_Estimator, Systematic_Decomposer | Grade-school maths |
+| Medicine | Cautious_Diagnostician, Evidence_Based_Analyst, Holistic_Clinician, Pattern_Recognition_Expert, Systematic_Reviewer | MMLU professional medicine |
+| Formal logic | Logical_Formalist, Commonsense_Reasoner, Critical_Analyzer, Eliminative_Reasoner, Analogical_Thinker | MMLU formal logic |
+| Coding | Defensive_Coder, Elegant_Minimalist (broken: 0% at 4B), Algorithm_Optimizer, Test_Driven_Developer, Creative_Problem_Solver | HumanEval, MBPP |
+| TruthfulQA | Decomposition_Planner, Causal_Mechanism_Reasoner, Time_Place_Category_Checker, Scope_Quantifier_Reader, Contradiction_Sanity_Checker | TruthfulQA |
+| Truth-checking extras | Consensus_Fact_Checker, Imitative_Falsehood_Spotter, Rhetoric_and_Absolutes_Filter, Causality_and_Mechanism_Auditor, Core_Claim_MinAssumption | (no paper set) |
+| ARC | Science_Exam_Solver, Concept_to_Option_Matcher, Elimination_Specialist, Diagramless_Physicist, Careful_Reader | Grade-school science |
+| PIQA | Action_Sequence_Simulator, Mechanics_Stability_Analyst, Material_Interaction_Reasoner, Human_Factors_Controller, Robustness_Comparator | Physical commonsense |
+| Winogrande | Coreference_Formalist, Scenario_Simulator, Contrastive_Tester, Bias_Resistance_Checker, Elimination_Based_Solver | Pronoun resolution |
+| Default | Careful_Analyst, Broad_Thinker, Practical_Reasoner, Detail_Oriented, Intuitive_Judge | Fallback, HellaSwag |
+
+On the easy set, personas on one model differed only by run-to-run noise (E2, team-of-one; ADR-0001).
+
+### 3.2 Per source: what exists and what is missing
+
+Every hard and agentic module has `PERSONA_SET = []`. The only existing link is the "proxy" mapping
+(`proxy_persona_source`, used by `paper_persona_baseline.py --proxy`).
+
+| Source / subject | Existing proxy personas | Source-matched expert (to write) |
+|---|---|---|
+| GPQA chemistry | none | Organic / general chemist |
+| GPQA physics | none | Physicist (quantum, high-energy, astro) |
+| GPQA biology | none | Molecular biologist / geneticist |
+| MMLU-Pro law | Formal logic set | Lawyer (US professional law) |
+| MMLU-Pro engineering | none | Electrical / mechanical engineer |
+| MMLU-Pro physics | none | Physicist |
+| MMLU-Pro chemistry | none | Chemist |
+| AIME | GSM8K set | Competition mathematician |
+| MATH-500 L4–5 | GSM8K set | Competition mathematician |
+| Plancraft | none | (task prompt already says "You are crafting in Minecraft…") |
+| WorkBench | none | Office / workplace assistant |
+| BrowseComp-Plus | none | Web research analyst |
+| Finance-Agent | none | Financial analyst (task prompt already says "You are a financial agent…") |
+
+### 3.3 The neutral prompt and other planned prompts
+
+- **Neutral prompt** today, runner path: system "You are a helpful assistant." (`runner.py:39`),
+  user = question + the scorer's format suffix (`roles.py:70-74`). Agentic: the same system message,
+  user = `env.task_prompt()`.
+- **Commit-to-an-answer** prompt: planned in the original X1, dropped (Q20–Q23); the thinking
+  budget handles cut-offs instead.
+- The hub's role text is `ROLES["hub"]` (`roles.py`), appended after its persona, if any.
+
+### 3.4 Draft expert personas (for review)
+
+Written in the bank's form (a "You are …" first line, then "Your approach:" bullets, as in
+`src/personas.py`). Run on Qwen3.5-4B, thinking off, with vendor sampling (the bank's per-persona
+temperature and top_p are not used). The summary instruction and format suffix follow, as for every
+worker.
+
+**Each team's personas differ by how they solve the problem, not by what they know** (user review,
+2026-10-26): a forward derivation against an option-by-option elimination, a symbolic model against
+a quick estimate, one action at a time against a plan made up front. Subject-knowledge splits
+(organic vs physical chemist, molecular biologist vs geneticist, electrical engineer, bar-exam
+recall) were dropped; theoretical vs applied physicist was kept as an approach split.
+Names are approach + role and match each prompt's "You are a …" line (2026-10-26). Approved by the
+user 2026-10-26.
+
+| Team | Persona A | Persona B (and C) | How they differ |
+|---|---|---|---|
+| T1 Maths | Structural_Insight_Mathematician | Systematic_Case_Mathematician | Find the structure vs exhaustive, direct calculation |
+| T2 Physics | Theoretical_Physicist | Applied_Physicist | Derive from first principles vs standard formula and magnitudes |
+| T3 Chemistry | Forward_Derivation_Chemist | Option_Testing_Chemist | Derive an answer before reading options vs test each option against the facts |
+| T4 Biology | Causal_Chain_Biologist | Evidence_First_Biologist | Predict the outcome from the mechanism vs judge what the evidence supports |
+| T5 Law | IRAC_Legal_Analyst | Option_Contrast_Legal_Analyst, Policy_Analogy_Legal_Reasoner | Rule elements vs contrasting the options vs purpose and analogous cases |
+| T6 Engineering | Model_First_Engineer | Estimate_First_Engineer | Symbolic model first vs estimate, formula, compare |
+| T7 BrowseComp-Plus | Web_Research_Analyst | Fact_Checking_Investigator | Generate candidates from the rarest clue vs verify every constraint |
+| T8 Finance-Agent | SEC_Filings_Analyst | Reconciling_Financial_Analyst | Extract from the primary filing vs plan the formula and reconcile sources |
+| T9 WorkBench | Incremental_Assistant | Plan_First_Assistant | One action at a time vs plan every change, execute, re-check |
+| T10 Plancraft | Crafting_Planner | Feasibility_First_Planner | Plan forward from the inventory vs expand the target backward first |
+
+**T1 Maths**
+
+`Structural_Insight_Mathematician`
+```
+You are a mathematician who looks for the structure behind a problem before calculating.
+Your approach:
+- Ask what would make the problem easy: a symmetry, an invariant, a substitution or a known identity
+- Reformulate the problem (complement, bijection, generating function, coordinates) when that simplifies it
+- Work with exact values; avoid decimal approximations until the end
+- Check the answer against every condition in the problem (e.g. an integer from 0 to 999 for AIME)
+- Verify with a small case or a second method
+```
+
+`Systematic_Case_Mathematician`
+```
+You are a mathematician who gets answers by direct, exhaustive case analysis.
+Your approach:
+- Restate the problem precisely and define every variable
+- Work out small cases by hand to see how the problem behaves
+- Split the problem into cases that are exhaustive and do not overlap
+- Compute each case step by step, showing the arithmetic
+- Combine the cases and check the total against the small cases
+```
+
+**T2 Physics**
+
+`Theoretical_Physicist`
+```
+You are a theoretical physicist who reasons from first principles.
+Your approach:
+- Identify the governing principles (conservation laws, symmetries, quantum postulates, relativity)
+- Set up the equations symbolically before substituting numbers
+- Check limiting cases and symmetry of the result
+- Use dimensional analysis to catch errors
+- Compare orders of magnitude with the options
+```
+
+`Applied_Physicist`
+```
+You are an applied physicist who connects theory to measurable quantities.
+Your approach:
+- List the given quantities with their units
+- Choose the standard formula or approximation that applies, and state it
+- Convert units carefully and keep track of significant figures
+- Estimate the expected magnitude to rule out options
+- Compute the result and pick the option that matches it numerically
+```
+
+**T3 Chemistry**
+
+`Forward_Derivation_Chemist`
+```
+You are a chemist who derives the answer forward from what is given, before looking at the options.
+Your approach:
+- Write down the starting materials, conditions and quantities given
+- Work through each step in order (each reaction, or each stage of the calculation), tracking atoms, electrons and units
+- Reach your own answer without reference to the options
+- Only then compare it with the options and pick the match
+- If nothing matches, find the step most likely to be wrong and redo it
+```
+
+`Option_Testing_Chemist`
+```
+You are a chemist who works backward from the options, testing each against the facts given.
+Your approach:
+- List every fact the answer must agree with (formula, atom counts, charge, conservation, spectra, units, magnitude)
+- Test each option against each fact in turn
+- Eliminate an option as soon as one fact contradicts it
+- When several options survive, find the fact that separates them
+- Choose the option that is consistent with every fact
+```
+
+**T4 Biology**
+
+`Causal_Chain_Biologist`
+```
+You are a biologist who reasons along the causal chain from cause to effect.
+Your approach:
+- Identify what is changed (a mutation, a drug, a condition) and where in the system it acts
+- Trace its effect step by step through the process (gene, RNA, protein, pathway, cell, organism)
+- Predict the outcome before reading the options
+- Consider compensating or downstream effects that could change the prediction
+- Choose the option that matches the predicted outcome
+```
+
+`Evidence_First_Biologist`
+```
+You are a biologist who reads every question as an experiment and asks what the evidence actually shows.
+Your approach:
+- Identify what was manipulated, what was measured and what the controls were
+- Separate what the data show from what the options claim
+- Eliminate options that overreach the evidence or ignore a missing control
+- Consider alternative explanations for the result
+- Choose the conclusion the evidence supports most directly
+```
+
+**T5 Law**
+
+`IRAC_Legal_Analyst`
+```
+You are a legal analyst who works through every question with IRAC.
+Your approach:
+- Issue: state the precise legal question raised
+- Rule: state the governing rule and its elements
+- Application: apply each element to the facts given
+- Conclusion: reach the result the analysis supports
+- Compare each option's reasoning, not just its outcome
+```
+
+`Option_Contrast_Legal_Analyst`
+```
+You are a legal analyst who decides by comparing the options against each other.
+Your approach:
+- Read every option before deciding and note exactly how they differ
+- Find the fact or legal element that separates the strongest options
+- Eliminate options that misstate the rule, rely on irrelevant facts or reach the right result for the wrong reason
+- Watch for options that are only partly right
+- Choose the option that is correct on every element
+```
+
+`Policy_Analogy_Legal_Reasoner`
+```
+You are a legal reasoner who argues from the purpose of the law and from analogous cases.
+Your approach:
+- Ask what the rule is for and which interests the facts put in tension
+- Recall a leading case or standard example with similar facts
+- Compare the facts here with that case: what is alike and what differs
+- Decide which way a court would lean, given the rule's purpose
+- Check that conclusion against the black-letter rule before choosing
+```
+
+**T6 Engineering**
+
+`Model_First_Engineer`
+```
+You are an engineer who builds a model of the system before calculating anything.
+Your approach:
+- Represent the system as a model: an equivalent circuit, free-body diagram, control loop or energy balance
+- State the assumptions the model makes
+- Derive the relation for the unknown symbolically
+- Substitute numbers only at the end, with consistent units
+- Check limiting cases of the formula before comparing with the options
+```
+
+`Estimate_First_Engineer`
+```
+You are a practising engineer who solves problems with standard formulas and quick estimates.
+Your approach:
+- List the givens and the unknowns with their units
+- Make a rough estimate of the answer's magnitude first
+- Pick the standard formula or design rule that applies, and state it
+- Compute step by step, keeping precision until the end
+- Compare the result with your estimate and with the spread of the options before choosing
+```
+
+**T7 BrowseComp-Plus**
+
+`Web_Research_Analyst`
+```
+You are a research analyst who finds hard-to-locate facts by searching systematically.
+Your approach:
+- Break the question into its separate clues
+- Search for the most distinctive clue first
+- Vary your queries when a search returns nothing useful
+- Open documents to confirm details rather than trusting snippets
+- Keep a list of candidate answers and stop when one satisfies every clue
+```
+
+`Fact_Checking_Investigator`
+```
+You are an investigative fact-checker who verifies every claim before answering.
+Your approach:
+- List every constraint the answer must satisfy
+- For each candidate, check each constraint against a document
+- Look for evidence that would rule a candidate out
+- Prefer primary sources over summaries
+- Answer only when every constraint is confirmed; otherwise keep searching
+```
+
+**T8 Finance-Agent**
+
+`SEC_Filings_Analyst`
+```
+You are a financial analyst who works directly from SEC filings.
+Your approach:
+- Identify the company, the period and the metric the question asks for
+- Find the right filing (10-K, 10-Q, 8-K) and the section that reports it
+- Extract exact figures with their units and fiscal periods
+- Do calculations in Python and show the formula
+- State assumptions such as GAAP versus non-GAAP
+```
+
+`Reconciling_Financial_Analyst`
+```
+You are a financial analyst who plans the calculation first and reconciles every figure.
+Your approach:
+- Before searching, write out the formula the answer needs and every input it requires
+- Find each input, noting its source, units and fiscal period
+- Where possible, get each figure from two places and reconcile any difference
+- Check that all inputs share the same period and basis (GAAP or non-GAAP, restated or not)
+- Compute in Python, and sanity-check the result against reported totals
+```
+
+**T9 WorkBench**
+
+`Incremental_Assistant`
+```
+You are an assistant who works one action at a time, checking the result of each before the next.
+Your approach:
+- Identify exactly what must change
+- Look up the current state before acting (search emails, events, contacts, records)
+- Take one action, read its result, then decide the next
+- Use the exact ids, dates and times the tools return
+- Make no changes that were not asked for
+```
+
+`Plan_First_Assistant`
+```
+You are an assistant who plans every action up front, then executes and verifies the plan.
+Your approach:
+- Translate the request into the full list of queries and updates it needs
+- Retrieve the data first and find every item that matches the conditions (dates, thresholds, owners)
+- Write out the planned changes before making any
+- Execute the plan, handling every matching item and no others
+- Query again at the end to verify the data now matches the request
+```
+
+**T10 Plancraft**
+
+`Crafting_Planner`
+```
+You are a crafting planner who works forward from the inventory, step by step.
+Your approach:
+- Identify the target recipe and every ingredient it needs
+- Plan the intermediate items in the order they must be made
+- Check the inventory quantities before each step
+- Place items in the right crafting-grid slots; shaped recipes depend on position
+- Smelt when a recipe needs it, and move each output into the inventory
+```
+
+`Feasibility_First_Planner`
+```
+You are a careful planner who checks whether a crafting goal is achievable before acting.
+Your approach:
+- List the raw materials the target needs, expanding recipes recursively
+- Compare the required counts with the inventory
+- If the target cannot be made, declare it impossible instead of trying
+- If it can, carry out the plan with as few moves as possible
+- Verify the inventory after each action
+```
+
+## 4. Specialists
+
+### 4.1 Per source
+
+| Source / subject | Specialists matching it | Base it must beat |
+|---|---|---|
+| AIME, MATH-500 | RL-MATH; Ministral-3B-Reasoning; R1-Distill-Llama-8B | Qwen3.5-4B; Ministral-3B-Instruct; Llama-3.1-8B |
+| GPQA, MMLU-Pro physics/chemistry | ShiningValiant3; RL-MATH (claims GPQA); Ministral-3B-Reasoning (GPQA); BigBang-v1 (science post-train, no GPQA number) | Gemma-4-E4B; Qwen3.5-4B; Ministral-3B-Instruct; Qwen3.6-35B |
+| MMLU-Pro engineering | none | — |
+| MMLU-Pro law | Saul-7B (excluded: Mistral-7B v0.1 host) | — |
+| GPQA biology | none (medical fine-tunes are the nearest) | — |
+| BrowseComp-Plus, Finance-Agent, WorkBench | BigBang-v1 (BrowseComp 68→77) | Qwen3.6-35B |
+| Finance-Agent | Fino1-8B, Fin-R1 (finance QA; tool calling unknown) | Llama-3.1-8B; Qwen2.5-7B |
+| Plancraft | none | — |
+| (no matching source) | Med-Qwen, HuatuoGPT-o1-8B/-7B | — |
+
+### 4.2 Every candidate
+
+**The full list for review is [`notes/model-cards.md`](notes/model-cards.md)**: a per-dataset index,
+then Part A (domain fine-tunes, below) and Part B (28 tool-use and agentic fine-tunes for the
+agentic pool, found 2026-10-22). Their Hugging Face cards, condensed, are in [`notes/model-cards.md`](notes/model-cards.md). The 11 picked in §4.4 are downloaded on the second Spark and smoke-tested (§7); no gate has run.
+
+| Specialist (HF repo) | Base | Training | Published claims | Loads on vLLM 0.21 | Serve plan / problems |
+|---|---|---|---|---|---|
+| `wflying/Qwen3.5-4B-RL-MATH` | Qwen3.5-4B | GRPO RLVR, thinking off, 15k maths prompts | AIME25 38→59, GPQA-D 71→77 (unreproduced) | Yes | 4B script with handle swapped; MTP may degrade; long outputs |
+| `mistralai/Ministral-3-3B-Reasoning-2512` | Ministral-3-3B-Base (sibling of Instruct) | Distil from Magistral, GRPO, ODPO; always thinks | AIME25 72.1, GPQA-D 53.4 | Probably | New script with `--reasoning-parser mistral`; `[THINK]` system prompt; trained to 80K reasoning |
+| `ValiantLabs/gemma-4-E4B-it-ShiningValiant3` | Gemma-4-E4B-it | SFT on R1-0528 science traces | none | Probably | Gemma script with handle swapped; no MTP |
+| `endless-frontier/BigBang-v1` (NVFP4: `TheShed/BigBang-v1-W4A16-NVFP4-MTP`) | Qwen3.6-35B-A3B | Post-train on ~10k synthetic frontier problems (science, coding, tool use) | BrowseComp 68→77; no MATH/GPQA numbers | Expected | NVFP4 script needs BF16 KV; ~23 GB; ≥128K context |
+| `adi274903/Med-Qwen-3.5-4B-Instruct` | Qwen3.5-4B-**Base** | Biomed CPT + DoRA SFT | Weak, harness looks broken | **No** (text-only) | Local wrapper; `stop_token_ids` not in client |
+| `FreedomIntelligence/HuatuoGPT-o1-8B` | Llama-3.1-8B-Instruct | Verifier-searched CoT SFT + PPO | MedQA 72.6 vs 58.7 | Yes | Needs a Llama host script (#32) |
+| `FreedomIntelligence/HuatuoGPT-o1-7B` | Qwen2.5-7B-Instruct | Same recipe | — | Yes | Needs a Qwen2.5 script |
+| `deepseek-ai/DeepSeek-R1-Distill-Llama-8B` | Llama-3.1-8B **base** | SFT on ~800k R1 samples; always thinks | MATH-500 89.1, AIME24 50.4 | Yes | Llama script; lineage exception |
+| `TheFinAI/Fino1-8B` (gated, auto-approve) | Llama-3.1-8B-Instruct | SFT + RL on GPT-4o finance paths | FinQA, DocMath, TATQA | Yes | Llama script |
+| `SUFE-AIFLM-Lab/Fin-R1` | Qwen2.5-7B-Instruct | SFT + GRPO on ~60k finance CoT | FinQA 76 vs 60 | Yes | Qwen2.5 script |
+| `Equall/Saul-7B-Instruct-v1` | Mistral-7B v0.1 | Legal CPT + instruction tuning | LegalBench-Instruct | Yes | Excluded: weak base, law only |
+
+Longer-tail candidates (Nemotron-Nano-8B/4B, Meditron3, Aloe, Med42, Qwen3.5-4B-Neo,
+MathThink-Qwen-3.5-4B, occamy and other 35B agentic fine-tunes) are listed in the notes.
+
+### 4.3 Base models needed as hosts
+
+| Base | Cached (both boxes) | Serve script | Hosts |
+|---|---|---|---|
+| Qwen3.5-4B | Yes | `vllm/qwen3.5-4b/` | RL-MATH, personas, neutral |
+| Gemma-4-E4B | Yes | `vllm/gemma4-e4b/` | ShiningValiant3 |
+| Ministral-3-3B-Instruct | Yes | `vllm/ministral3-3b/` | (Reasoning is its sibling) |
+| Qwen3.6-35B-A3B NVFP4 | Yes | `vllm/qwen3.6/run_docker_nvfp4.sh` | Hub; BigBang |
+| Llama-3.1-8B-Instruct | No | none | HuatuoGPT-o1-8B, Fino1, R1-Distill |
+| Qwen2.5-7B-Instruct | No | none | Fin-R1, HuatuoGPT-o1-7B |
+
+The second Spark also has the `nvcr.io/nvidia/vllm:26.06-py3` image; its vLLM version is unchecked
+and may matter for text-only checkpoints (#30).
+
+### 4.4 Teams (specialists picked 2026-10-22)
+
+Ten fixed teams (Q26), 4 workers each (Q23). **Expert personas run on the base model,
+Qwen3.5-4B with thinking off, never on a fine-tune; specialists get no persona** (their prompt is
+the question, the format suffix and the summary instruction, plus any system prompt their card
+requires, such as Ministral's `SYSTEM_PROMPT.txt`). The hub is Qwen3.6-35B, thinking off.
+
+| # | Team | Sources (n) | Shape | Expert personas (§3.4) | Specialists |
+|---|---|---|---|---|---|
+| T1 | Maths | AIME 120, MATH-500 L4–5 262 | 2 + 2 | Structural_Insight_Mathematician, Systematic_Case_Mathematician | RL-MATH, AgentMercury-4B |
+| T2 | Physics | GPQA 86, MMLU-Pro 50 | 2 + 2 | Theoretical_Physicist, Applied_Physicist | ShiningValiant3, BigBang |
+| T3 | Chemistry | GPQA 93, MMLU-Pro 50 | 2 + 2 | Forward_Derivation_Chemist, Option_Testing_Chemist | ShiningValiant3, BigBang |
+| T4 | Biology | GPQA 19 | 2 + 2 | Causal_Chain_Biologist, Evidence_First_Biologist | ShiningValiant3, BigBang |
+| T5 | Law | MMLU-Pro 50 | 3 + 1 | IRAC_Legal_Analyst, Option_Contrast_Legal_Analyst, Policy_Analogy_Legal_Reasoner | BigBang (generalist) |
+| T6 | Engineering | MMLU-Pro 50 | 2 + 2 | Model_First_Engineer, Estimate_First_Engineer | RL-MATH, Ministral-3B-Reasoning |
+| T7 | BrowseComp-Plus | 100 | 2 + 2 | Web_Research_Analyst, Fact_Checking_Investigator | BigBang, Agents-A1-4B |
+| T8 | Finance-Agent | 50 | 2 + 2 | SEC_Filings_Analyst, Reconciling_Financial_Analyst | XYZ-Aquila-mini, Fx-Work |
+| T9 | WorkBench | 100 | 2 + 2 | Incremental_Assistant, Plan_First_Assistant | Occamy-1.0, AgentMercury-4B |
+| T10 | Plancraft | 100 | 2 + 2 | Crafting_Planner, Feasibility_First_Planner | R2S ALFWorld student, SkillGym-4B |
+
+**Checkpoints to serve in stage 1** (11 specialists plus the 4B for personas):
+
+| Specialist | Tuned from | Teams | Build to serve | Size |
+|---|---|---|---|---|
+| RL-MATH (`wflying/Qwen3.5-4B-RL-MATH`) | Qwen3.5-4B | T1, T6 | BF16 (FP8 at load, as our 4B) | ~9 GB |
+| AgentMercury-4B (`Minbyul/AgentMercury-Qwen3.5-4B`) | Qwen3.5-4B | T1, T9 | BF16 | ~9 GB |
+| Agents-A1-4B (`InternScience/Agents-A1-4B`) | Qwen3.5-4B (unstated; config matches) | T7 | official FP8 | ~5 GB |
+| R2S ALFWorld student (`TreezzZ/r2s-alfworld-qwen3.5-4b-student`) | Qwen3.5-4B | T10 | BF16 | ~9 GB |
+| SkillGym-4B (`reasonwang/SkillGym-Qwen3.5-4B`) | Qwen3.5-4B | T10 | BF16 | ~9 GB |
+| Ministral-3B-Reasoning (`mistralai/Ministral-3-3B-Reasoning-2512`) | Ministral-3-3B-Base | T6 | BF16 | ~8 GB |
+| ShiningValiant3 (`ValiantLabs/gemma-4-E4B-it-ShiningValiant3`) | gemma-4-E4B-it | T2–T4 | BF16 | ~15 GB |
+| BigBang (`TheShed/BigBang-v1-W4A16-NVFP4-MTP`) | Qwen3.6-35B-A3B | T2–T5, T7 | community NVFP4, BF16 KV | ~22 GB |
+| XYZ-Aquila-mini (`XYZAILab/XYZ-Aquila-mini`) | Qwen3.6-35B-A3B | T8 | BF16, or community NVFP4 `r0b0tlab/XYZ-Aquila-mini-NVFP4` | ~67 / ~22 GB |
+| Fx-Work (`endless-frontier/Fx-Work`) | Qwen3.6-35B-A3B | T8 | BF16 (no quants) | ~67 GB |
+| Occamy-1.0 (`Accio-Lab/occamy-1.0`) | Qwen3.6-35B-A3B | T9 | official NVFP4 | ~24 GB |
+
+Caveat: AgentMercury-4B is credibility 1 (individual author, card lists only the benchmarks it
+improved).
+
+## 5. Gaps
+
+- No persona is written for any hard or agentic source.
+- No specialist for MMLU-Pro engineering, GPQA biology or Plancraft; law only via the excluded Saul.
+- Med-Qwen and the HuatuoGPT models match no source in either pool.
+- The smoke-test spec in `notes/specialists.md` still says temperature 0 and a 4,096-token cap,
+  which conflicts with Q40 and X0's 30,720-token answers.
+- `src` has no per-agent thinking control beyond `chat_template_kwargs`, no `reasoning_effort`, no
+  `stop_token_ids`, and no agent registry with specialists in it (#10, #11).
+
+## 6. Later: ablations and deferred work
+
+Everything flagged during the design session as "later" or "ablation". Nothing here blocks the
+first run.
+
+| # | Item | From | When |
+|---|---|---|---|
+| L1 | **4B hub ablation**: rerun stage 2 with Qwen3.5-4B (thinking off) as the hub over the same saved worker answers | Q7 | After the first run; stage 1 answers are reused |
+| L2 | **Comparisons**: hub vs best single worker per source vs bare 35B vs majority vote (replay), on accuracy against cost | Q11 | After the raw results are reported |
+| L3 | **Solo rows for specialists' other bases**: Gemma-4-E4B (for ShiningValiant3) and Ministral-3-3B-Instruct (for Ministral-R) on the same questions and settings, so each specialist has its paired base | Q15 | When no experiment is running |
+| L4 | **Fuller handoff ablation**: hub served at 131k context, reading each worker's last N tokens (or full answer) instead of its summary | Q17 | After the first run; reuses stage 1 answers |
+| L5 | **Second wave of specialists** needing new hosts (Llama-3.1-8B, Qwen2.5-7B: R1-Distill-Llama-8B, Fino1-8B, Fin-R1, …), if the user picks any | Q14 | After the Llama / Qwen2.5 serve scripts exist (#32) |
+| L6 | **Text-only checkpoints** (Med-Qwen and other `Qwen3_5ForCausalLM` fine-tunes): local wrapper or vLLM ≥ 0.27; check the `26.06-py3` image on the second Spark | §4 | Only if one is picked (#30) |
+| L7 | **Update the specialist smoke-test spec** (the 2026-10-22 smoke tests already used X1's settings) in `notes/specialists.md` (still says temperature 0 and a 4,096-token cap) to vendor sampling and X0's caps | §5 | Before any specialist is smoke-tested |
+| L8 | **Re-sync the second Spark** (`data-claude/`, env) from sparkie12 before the run, and copy results back after | Q4 | Before stage 1 / after each stage |
+| L9 | **Thinking cap and mode for thinking-on workers.** X0 shows thinking on scores below thinking off on the same folds (35B 75.0% vs 83.0%, 4B 67.5% vs 72.0%) and ~20–26% of thinking-on answers hit 30,720. Rerun the thinking-on specialists with a larger cap (e.g. 65,536), and compare each specialist with thinking off; a first thinking on/off test (tok/s, accuracy, cut-offs) is done (§7, 2026-10-26) | X0 results, 2026-10-23 | Decide before stage 1; the larger-cap rerun after it |
+| L10 | **Orchestrator chooses each agent's thinking mode.** The on/off test (§7) shows the better mode varies by specialist and task type (on helps AgentMercury, BigBang, Occamy; off helps RL-MATH, R2S, ShiningValiant3) and off costs fewer tokens at the same tok/s. Let the orchestrator pick on or off per agent and task, trading tokens for accuracy. Stage 1 records both modes (§1), so this replays offline over saved answers | User, 2026-10-26 | After X1; data from stage 1 |
+
+## 7. To build before the first run
+
+- Expert prompts for every source and subject, in the bank's style (Q12), written into this plan
+  for review before coding.
+- A worker instruction to end with a short summary of its reasoning, and a `summary` handoff that
+  passes it to the hub (Q17).
+- Per-agent thinking budget: `THINKING_TOKEN_BUDGET` is one global environment variable today
+  (`model/openai_compat.py:17-23`), and vLLM rejects the field on servers without
+  `--reasoning-config` (#11).
+- Stage 2 runner: feed saved worker answers to the hub without rerunning the workers (Q19).
+- Serve scripts and smoke tests for the chosen specialists on the second Spark (#14), including
+  whether `--reasoning-config` can cap Gemma-4's and Ministral's thinking (Q16).
+- Team configs for T1–T10 (§4.4).
+- For each specialist, its trained thinking mode and required prompt or chat-template settings
+  (from its card, confirmed by the smoke test), and whether its tool calls parse with our
+  `qwen3_coder` / `qwen3_xml` / Mistral parsers on the agentic tasks.
+
+Found by the smoke tests on the second Spark (2026-10-22):
+
+- **Absolute paths in the agentic pool.** `data-claude/tagged_agentic` stores sparkie12's absolute
+  data root (`/home/syuen/...`) in the metadata of all 100 BrowseComp-Plus and 50 Finance-Agent
+  tasks, so they fail on any other machine. Resolve `root` relative to the repo's `data-claude/`
+  (or `--data_dir`) instead of trusting the stored path. The BrowseComp-Plus index has the same
+  bug: `bm25/docmap.json` stores the absolute `corpus_dir`, so on another machine search runs but
+  every document read fails ("file not found" to the model). Resolve it relative to the index.
+- **Benchmark registry race.** `benchmarks._load_registry()` fills `_REGISTRY` one module at a time
+  and returns early once it is non-empty, so threads that call `benchmarks.get` concurrently on a
+  cold registry can see only `gsm8k`. Load it once before starting worker threads, or guard it with
+  a lock.
+- **Thinking budget vs answer length.** vLLM enforces `thinking_token_budget` (it inserts the
+  end-of-thinking text at the budget), but the Qwen3.5-4B fine-tunes then keep reasoning in the
+  visible answer: with a 512-token budget, answers ran past 3,500 tokens. With 26,624 + 4,096, check
+  how often answers are cut off after a forced end, and raise the answer share if needed.
+  Gemma (ShiningValiant3) and the four 35B specialists stop cleanly after a forced end.
+- **Ministral's thinking budget is not enforced.** With `--reasoning-config` markers `[THINK]` /
+  `[/THINK]`, no forced end ever appeared; one AIME answer reasoned for the full 30,720 tokens.
+  Probably the markers tokenise as text, not as Mistral's control tokens. Until fixed, Ministral is
+  capped only by the 30,720 total (Q16 fallback). It also skipped `[THINK]` entirely on the
+  512-token probe, despite its system prompt.
+- **No `chat_template_kwargs` for Ministral.** vLLM rejects any request carrying them for Mistral
+  tokenizers (400, "chat_template is not supported"). The workers must omit `enable_thinking` for
+  Ministral; it always thinks, and needs its card's `SYSTEM_PROMPT.txt`.
+- **35B specialists think to the budget on GPQA.** BigBang, Occamy and Fx-Work hit the 26,624
+  budget on 4 of 5 GPQA questions (XYZ-Aquila stopped at 7.8k). Fx-Work (BF16, ~67 GB) took 45 min
+  for one GPQA question and one Finance-Agent task: stage 1 time for T8 needs estimating.
+
+Smoke results (a few samples each; hard = correct / asked at the X1 settings; cut off = hit 30,720):
+
+| Specialist | Thinking | Ready | Tool call | 512-token budget probe | Hard | Cut off | Agentic |
+|---|---|---|---|---|---|---|---|
+| RL-MATH | off | 161 s | parsed | — | 5/6 (AIME, MATH-500, MMLU-Pro eng.) | 0 | — |
+| AgentMercury-4B | on | 161 s | parsed | cut; answer ran to 4,096 | 4/4 (AIME, MATH-500) | 0 | WorkBench 1/1 |
+| AgentMercury-4B | off | 161 s | parsed | — | 3/4 | 0 | WorkBench 1/1 |
+| Agents-A1-4B (FP8) | on | 171 s | parsed | cut; answer ran to 4,096 | GPQA 1/1 | 0 | BrowseComp-Plus 1/1 (rerun after the corpus-path fix) |
+| R2S ALFWorld student | off | 181 s | parsed | — | — | — | Plancraft 1/1 |
+| R2S ALFWorld student | on | 181 s | parsed | cut; answer ran to 4,096 | AIME 0/1 | 1 | Plancraft 1/1 |
+| SkillGym-4B | on | 171 s | parsed | cut; answer ran to 4,096 | AIME 0/1 | 1 | Plancraft 1/1 |
+| SkillGym-4B | off | 190 s | parsed | — | — | — | Plancraft 1/1 |
+| Ministral-3B-Reasoning | always | 81 s | parsed | no thinking block | 3/4 (MMLU-Pro eng., AIME) | 1 | — |
+| ShiningValiant3 | on | 211 s | parsed | cut, clean | 3/6 (GPQA, MMLU-Pro phys., chem.) | 1 | — |
+| BigBang | on | 291 s | parsed | cut, clean | 3/4 (GPQA, MMLU-Pro law) | 0 | BrowseComp-Plus 0/1 (rerun; hit the 30-step limit, no answer) |
+| Occamy-1.0 (NVFP4) | on | 311 s | parsed | cut, clean | GPQA 1/1 | 0 | WorkBench 1/1 |
+| XYZ-Aquila-mini (BF16) | on | 702 s | parsed | cut, clean | GPQA 1/1 | 0 | Finance-Agent 0/1 (40-step limit) |
+| Fx-Work (BF16) | on | 282 s | parsed | cut, clean | GPQA 0/1 | 0 | Finance-Agent 0/1 (answered, judged wrong) |
+
+Speed tests (2026-10-22, second Spark). `vllm bench serve` (random 2000 in / 500 out, temperature 0)
+and a real X1 request (one GPQA question, thinking on, X1 sampling, `thinking_token_budget` 2048,
+3,072 max tokens); tokens/s, one stream / 4 concurrent:
+
+| Config | Bench c1 | Bench c4 | Real c1 | Real c4 | Thinking budget forced an end |
+|---|---|---|---|---|---|
+| Fx-Work BF16 (smoke config) | 28.9 | 77.5 | 29.9 | 74.0 | 6/6 |
+| Fx-Work FP8 at load | 48.2 | 126.3 | 49.2 | 117.0 | 6/6 |
+| Fx-Work BF16 + MTP k=3 | 57.4 | 130.5 | 39.2 | 86.8 | 4/6 |
+| Fx-Work FP8 + MTP k=3 | 75.7 | 199.9 | 49.9 | 134.6 | 3/6 |
+| BigBang NVFP4 (smoke config) | 70.9 | 165.3 | 72.0 | 169.4 | 6/6, then 8/8 |
+| BigBang NVFP4 + MTP k=3 | 102.3 | 223.9 | 86.7 | 185.9 | 4/6, then 3/8 |
+
+- **Serve Fx-Work with FP8 at load (`--quantization fp8`)**: 1.6× on real requests, and KV memory
+  grows from 37 to 60 GiB. Do the same for XYZ-Aquila (also BF16; untested). Both are then served at
+  a lower precision than published, like our Qwen3.5-4B.
+- **No MTP speculation in X1.** It breaks the thinking budget: in 8 BigBang requests with MTP, 3
+  showed the forced end, 1 thought past the budget to the 3,072 cap with no answer, and 2 hit the
+  cap; without MTP, 8/8 forced an end and stopped. It also gains little at temperature 1.0
+  (acceptance 55–62% vs 80–94% at temperature 0 in `vllm/qwen3.6/README.md`): wall-clock for the
+  same 8 requests was 111 s vs 116 s.
+- Keep the thinking cap at 26,624 / 30,720 for comparability with X0; speed comes from FP8 and
+  running requests concurrently (about 2.4× aggregate at 4 concurrent).
+
+Thinking on vs off (2026-10-23 to 2026-10-26, second Spark). Each specialist on its own sources'
+hardest questions, both modes on one server; X1 settings (on: budget 26,624, agentic 12,288; off:
+no budget; 30,720 max either way); 8 hard and 4 agentic requests at once. Correct / asked, mean
+completion tokens, answers cut off at 30,720:
+
+| Specialist | Questions | Hard on | Hard off | Mean tokens on / off | Cut off on / off | Agentic | Agentic on | Agentic off |
+|---|---|---|---|---|---|---|---|---|
+| RL-MATH | AIME, MATH-500, MMLU-Pro eng. | 19/24 | 22/24 | 16.7k / 4.9k | 3 / 0 | — | — | — |
+| AgentMercury-4B | AIME, MATH-500 | 16/16 | 13/16 | 13.2k / 3.9k | 0 / 0 | WorkBench | 3/6 | 3/6 |
+| Agents-A1-4B (FP8) | GPQA | 5/6 | 5/6 | 15.1k / 8.0k | 0 / 1 | BrowseComp-Plus | 0/4 | 0/4 |
+| R2S ALFWorld student | — | — | — | — | — | Plancraft | 1/8 | 6/8 |
+| SkillGym-4B | — | — | — | — | — | Plancraft | 1/8 | 2/8 |
+| ShiningValiant3 | GPQA, MMLU-Pro phys., chem. | 4/18 | 10/18 | 11.1k / 5.7k | 0 / 0 | — | — | — |
+| BigBang | GPQA, MMLU-Pro law | 18/20 | 15/20 | 7.6k / 6.1k | 0 / 3 | BrowseComp-Plus | 0/4 | 0/4 |
+| Occamy-1.0 (NVFP4) | GPQA | 5/6 | 5/6 | 22.9k / 6.3k | 0 / 0 | WorkBench | 6/6 | 5/6 |
+| XYZ-Aquila-mini (FP8) | GPQA | 4/6 | 5/6 | 16.2k / 10.3k | 0 / 1 | Finance-Agent | 0/4 | 0/4 |
+| Fx-Work (FP8) | GPQA | 5/6 | 6/6 | 22.2k / 15.6k | 0 / 0 | Finance-Agent | 0/4 | 0/4 |
+| **Total** | | **76/102** | **81/102** | | **3 / 5** | | **11/44** | **16/44** |
+
+- Per-token speed is the same in both modes; thinking off saves time only by writing fewer tokens
+  (hard questions: 135 vs 83 wall-clock minutes for all specialists but ShiningValiant3, which took
+  16.2 vs 8.4).
+- Thinking on wins for AgentMercury and BigBang, loses for RL-MATH, R2S and ShiningValiant3, and
+  ties elsewhere; samples are small (6–24 questions), so only the large gaps mean much.
+- **ShiningValiant3 with thinking on mostly loses on format**: 7 of its 14 misses name the right
+  letter but as `\boxed{(D)}` or `\[\{\text{final answer: (D)}\}\]`, which the strict parser rejects
+  (1 such miss with thinking off). With the letter read leniently it is 11/18 in both modes.
+- R2S with thinking on declared Plancraft tasks impossible; SkillGym with thinking on ran to the
+  token cap without a tool call.
+- BrowseComp-Plus and Finance-Agent are 0 in both modes: every BigBang search ran to the 30-step
+  limit, and the finance specialists never submitted within 40 steps (the base 35B got 1 of the
+  same 4 Finance-Agent tasks).
+- **Judge.** These smoke tests used each specialist as its own judge for BrowseComp-Plus and
+  Finance-Agent (Agents-A1's "claude beri langmann" was judged against "Claude Berel Langmann").
+  X1 judges both with the 35B, as the repo intends, scored in stage 2 with the hub.
+- Ministral is not in the table: it always thinks (no `enable_thinking` switch).
+
+Serve settings that worked are in `~sizhey/orchestrator/x1-smoke/serve.sh` and `queue.sh` on the
+second Spark (vLLM 0.21, `--reasoning-config`, default thinking kwargs per mode; Qwen 35B with
+BF16 KV; XYZ-Aquila and Fx-Work at 0.85 memory utilisation).
+
+**Built (2026-10-26)** on branch `experiments/x1-teams` (worktree `Agent-Scaling-Orchestration-x1`):
+`configs/x1_teams.json`, `scripts/x1_plan.py`, `x1_stage1.sh` (one model at a time, stall
+watchdog), `x1_hub.py`, `x1_stage2.sh`, `src/expert_personas.py`, deferred judging in
+`src/judge.py`, and the path and registry fixes above. Results go to `data-claude/x1-teams/`:
+`stage1/<pool>/<worker>-<mode>/fold<f>/s<k>/` and `stage2/<headline|on|off>/<team>/fold<f>/s<k>/`.
+
+End-to-end check on the second Spark (T6 and T7, fold 0, sample 0, 2 questions per worker, both
+stages; 1 h 37 min, `data-claude/x1-teams-test/`):
+
+| Team | Hub | Vote | Workers correct | Summary fallbacks |
+|---|---|---|---|---|
+| T6 Engineering (headline) | 2/2 | 1/2 | personas 1 + 1, RL-MATH 1, Ministral 0 | 0 |
+| T7 BrowseComp-Plus (headline) | 0/2 | 0/2 | all 0 | — |
+
+- Every stage ran with no stalls; the 35B regraded every deferred judge call in stage 2.
+- T7: three workers and the hub answered "Claude Beri Langmann" (gold "Claude Berel Langmann"),
+  judged wrong; nobody answered the other question, and BigBang ran to the 30-step limit again.
+
+## 8. Open decisions
+
+- Thinking mode per specialist for the headline team result (L9, §7 thinking on vs off). No longer
+  blocks stage 1, which records both modes; decide before stage 2. Proposed: off for RL-MATH, R2S,
+  SkillGym and ShiningValiant3 (or on with a stricter format instruction); on for AgentMercury,
+  BigBang and Occamy; either for Agents-A1, XYZ-Aquila and Fx-Work (off is faster).
