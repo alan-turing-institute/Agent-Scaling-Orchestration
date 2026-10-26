@@ -682,6 +682,24 @@ Serve settings that worked are in `~sizhey/orchestrator/x1-smoke/serve.sh` and `
 second Spark (vLLM 0.21, `--reasoning-config`, default thinking kwargs per mode; Qwen 35B with
 BF16 KV; XYZ-Aquila and Fx-Work at 0.85 memory utilisation).
 
+**Built (2026-10-26)** on branch `experiments/x1-teams` (worktree `Agent-Scaling-Orchestration-x1`):
+`configs/x1_teams.json`, `scripts/x1_plan.py`, `x1_stage1.sh` (one model at a time, stall
+watchdog), `x1_hub.py`, `x1_stage2.sh`, `src/expert_personas.py`, deferred judging in
+`src/judge.py`, and the path and registry fixes above. Results go to `data-claude/x1-teams/`:
+`stage1/<pool>/<worker>-<mode>/fold<f>/s<k>/` and `stage2/<headline|on|off>/<team>/fold<f>/s<k>/`.
+
+End-to-end check on the second Spark (T6 and T7, fold 0, sample 0, 2 questions per worker, both
+stages; 1 h 37 min, `data-claude/x1-teams-test/`):
+
+| Team | Hub | Vote | Workers correct | Summary fallbacks |
+|---|---|---|---|---|
+| T6 Engineering (headline) | 2/2 | 1/2 | personas 1 + 1, RL-MATH 1, Ministral 0 | 0 |
+| T7 BrowseComp-Plus (headline) | 0/2 | 0/2 | all 0 | — |
+
+- Every stage ran with no stalls; the 35B regraded every deferred judge call in stage 2.
+- T7: three workers and the hub answered "Claude Beri Langmann" (gold "Claude Berel Langmann"),
+  judged wrong; nobody answered the other question, and BigBang ran to the 30-step limit again.
+
 ## 8. Open decisions
 
 - Thinking mode per specialist for the headline team result (L9, §7 thinking on vs off). No longer
