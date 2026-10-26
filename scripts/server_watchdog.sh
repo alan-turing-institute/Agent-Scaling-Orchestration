@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Restart a vLLM container whose engine has stuck: requests running but no tokens generated for
 # STALL_MINUTES, or /metrics not answering for that long while the container is up. On the GB10
-# the engine has stuck this way four times (2026-10-22, -23), each time holding a run for hours.
+# the engine has stuck this way a dozen times (2026-10-22, -23), each time holding a run for hours.
 #
 # Twice on 2026-10-23 a running engine stuck while the other container was starting up (loading
 # and compiling), so a restart is done with every other listed container paused (`docker pause`
 # freezes it; open requests resume when it is unpaused), and they are unpaused once the restarted
 # one answers and has run for SETTLE_SECONDS. `docker restart` keeps the container's flags.
-# Every stalled check, pause and restart is logged with a timestamp, to report afterwards.
+# A container that has exited (on 2026-10-23 the 4B died restarting while DNS was down, and sat
+# dead for 2.8 days) is started again the same way. Every stalled check, pause and restart is
+# logged with a timestamp, to report afterwards.
 #
 #   ./scripts/server_watchdog.sh qwen3.5-4b-vllm:8003 qwen3.6-orch:8002
 set -u
@@ -44,6 +46,12 @@ targets=("$@")
 while true; do
     for entry in "${targets[@]}"; do
         name=${entry%%:*} port=${entry##*:}
+        if docker ps -q -f "name=^${name}$" -f status=exited | grep -q .; then
+            # Died, e.g. on a restart that could not reach the network; nothing else will bring it back.
+            log "$name: container has exited; starting it again"
+            restart "$name" "$port"
+            continue
+        fi
         running "$name" || { stalled[$name]=0; continue; }
         tokens=$(metric "$port" generation_tokens_total)
         reqs=$(metric "$port" num_requests_running)
