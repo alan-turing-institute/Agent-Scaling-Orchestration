@@ -8,6 +8,7 @@
 #
 #   ./scripts/x1_stage2.sh
 #   FOLDS=0 SAMPLES=0 MODES=headline ./scripts/x1_stage2.sh
+#   HUB_ARGS="--teams T6,T7" ROOT=data-claude/x1-teams-test FOLDS=0 SAMPLES=0 ./scripts/x1_stage2.sh
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -31,7 +32,7 @@ for fold in $FOLDS; do
     for sample in $SAMPLES; do
         for modes in $MODES; do
             echo "=== fold $fold sample $sample modes $modes $(date -u +%FT%TZ)"
-            $PYTHON -u scripts/x1_hub.py --root "$ROOT" --api "$API" --fold "$fold" --sample "$sample" --modes "$modes" \
+            $PYTHON -u scripts/x1_hub.py --root "$ROOT" --api "$API" --fold "$fold" --sample "$sample" --modes "$modes" ${HUB_ARGS:-} \
                 > "$LOG_DIR/fold${fold}_s${sample}_${modes}.log" 2>&1
             echo "status $?"; grep -E "^T[0-9]+: hub" "$LOG_DIR/fold${fold}_s${sample}_${modes}.log"
         done

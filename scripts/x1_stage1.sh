@@ -14,6 +14,7 @@
 #   ./scripts/x1_stage1.sh                        # every model
 #   MODELS="rl-math bigbang" ./scripts/x1_stage1.sh
 #   FOLDS=0 SAMPLES=0 ./scripts/x1_stage1.sh      # one replicate first
+#   PLAN_ARGS="--teams T6,T7 --limit 2" ROOT=data-claude/x1-teams-test ./scripts/x1_stage1.sh   # a check
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -30,6 +31,8 @@ MODELS=${MODELS:-$($PYTHON scripts/x1_plan.py models | cut -f1)}
 SELECT=()
 [ -n "${FOLDS:-}" ] && SELECT+=(--folds "$FOLDS")
 [ -n "${SAMPLES:-}" ] && SELECT+=(--samples "$SAMPLES")
+read -r -a EXTRA <<< "${PLAN_ARGS:-}"
+SELECT+=(--root "$ROOT" "${EXTRA[@]}")
 mkdir -p "$LOG_DIR"
 
 stalled() {  # every engine report in the window says nothing moved while requests were open
