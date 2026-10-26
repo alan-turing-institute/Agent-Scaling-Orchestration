@@ -159,6 +159,19 @@ class Benchmark(Protocol):
         ...
 
 
+def local_root(stored, default):
+    """A data root recorded in a task's metadata, or `default` when it is not on this machine.
+
+    The tagged pools store the absolute root of the machine that built them
+    (`/home/<user>/...`), so on any other machine every task pointed at a path that
+    did not exist. The stored root still wins where it exists.
+    """
+    from pathlib import Path
+    if stored and Path(stored).exists():
+        return Path(stored)
+    return Path(default)
+
+
 def question_id(benchmark_name: str, question: str) -> str:
     """A stable id for a question that came without one: its benchmark and text hash."""
     return f"{benchmark_name}:{hashlib.sha1((question or '').encode('utf-8')).hexdigest()[:12]}"

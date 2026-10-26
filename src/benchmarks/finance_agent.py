@@ -66,7 +66,7 @@ import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
-from benchmarks.base import Instance
+from benchmarks.base import Instance, local_root
 from benchmarks.environment import Outcome, function_tool
 
 _DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "data-claude" / "benchmarks" / "finance-agent"
@@ -205,7 +205,7 @@ class FinanceTask:
             raise ValueError("finance_agent is graded by an LLM judge: pass --judge_model")
         self.metadata = metadata
         self.judge = judge
-        self.root = metadata.get("root") or str(_DEFAULT_ROOT)
+        self.root = str(local_root(metadata.get("root"), _DEFAULT_ROOT))
         self.pages = {}
         self.final = None
         self.done = False

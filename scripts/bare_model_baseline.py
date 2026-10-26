@@ -14,6 +14,12 @@ prefix - and that one model answers instead of four.
 
 Output is written in the shape `holdout_records.jsonl` and `holdout_summary.json`
 take, so `scripts/report_run.py` reads this run like any other arm.
+
+X1's stage 1 runs each team worker through this script alone: `--persona` (an expert
+persona, `expert_personas.py`) or `--system_file` (a specialist's required system prompt),
+`--summary` (end with a short summary for the hub), `--thinking_budget`, `--sources` (the
+team's questions only) and `--defer_judge` (record the judge's questions for stage 2).
+Without them every request is what X0 sent.
 """
 
 import argparse
@@ -36,13 +42,18 @@ import benchmarks
 from benchmarks import score_responses
 from holdout_evaluation import _batch_indices, limit_summary, with_server_retry
 from episode import run_episode
-from judge import judge_from_args
+from expert_personas import EXPERT_PERSONAS
+from judge import DeferredJudge, judge_from_args
 from predictions import SCHEMA_VERSION, split_traces, traces_path, write_predictions
 from runner import question_key
 from model.openai_compat import OpenAICompatChatWrapper, is_context_limit, limit_of
 
 # Named so the report tables read sensibly: it occupies the slot a persona would.
 AGENT_NAME = "bare_model"
+
+# X1 (Q22): every worker ends with a short account of its reasoning, which the hub reads.
+SUMMARY_INSTRUCTION = ("Before your final answer, write \"Summary:\" followed by at most five sentences "
+                       "giving the key steps of your reasoning.")
 
 
 def parse_args():
@@ -61,6 +72,7 @@ def parse_args():
     parser.add_argument("--top_k", type=int, default=None, help="Sent only when set (vLLM extension)")
     parser.add_argument("--min_p", type=float, default=None, help="Sent only when set (vLLM extension)")
     parser.add_argument("--presence_penalty", type=float, default=None, help="Sent only when set")
+    parser.add_argument("--repetition_penalty", type=float, default=None, help="Sent only when set (vLLM extension)")
     parser.add_argument("--thinking", choices=["server", "on", "off"], default="server",
                         help="on/off sets enable_thinking per request; server keeps the server's default")
     parser.add_argument("--max_tokens", type=int, default=4096)
@@ -75,6 +87,23 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=0, help="Answer only the first N held-out questions; 0 means all")
     parser.add_argument("--response_chars", type=int, default=0,
                         help="Clip stored responses to this many characters; 0 keeps them whole")
+    parser.add_argument("--agent_name", default=AGENT_NAME,
+                        help="The answering agent's name in records and reports (X1: one per worker)")
+    parser.add_argument("--persona", default=None, choices=sorted(EXPERT_PERSONAS),
+                        help="An expert persona's prompt, placed before the question as a team solver's is")
+    parser.add_argument("--system_file", default=None,
+                        help="A system prompt the model's card requires (Ministral's SYSTEM_PROMPT.txt)")
+    parser.add_argument("--summary", action="store_true",
+                        help="Ask for a 'Summary:' block before the final answer, for X1's hub")
+    parser.add_argument("--thinking_budget", type=int, default=None,
+                        help="thinking_token_budget per request; needs a server with --reasoning-config")
+    parser.add_argument("--sources", default=None,
+                        help="Answer only these held-out questions: comma-separated dataset or "
+                             "dataset:subject (GPQA domain, MMLU-Pro category), e.g. gpqa_diamond:Physics,mmlu_pro:physics")
+    parser.add_argument("--defer_judge", action="store_true",
+                        help="Judged tasks: record the judge's questions instead of asking them (no judge "
+                             "served); scripts/x1_hub.py grades them later. Their rows score as not correct")
+    parser.add_argument("--sample", type=int, default=None, help="Which repeated sample this run is; recorded only")
     parser.add_argument("--out_dir", default="data-claude/orchestrator/bare_model")
     parser.add_argument("--resume", action="store_true",
                         help="Keep the batches an interrupted run already wrote to --out_dir and answer only the rest")
@@ -84,9 +113,12 @@ def parse_args():
 def sampling_kwargs(args):
     """The request fields beyond temperature and top_p: vLLM's sampling extensions and the
     per-request thinking switch. Unset ones are left out, so older runs' requests are unchanged."""
-    extra = {key: getattr(args, key) for key in ("top_k", "min_p") if getattr(args, key) is not None}
+    extra = {key: getattr(args, key) for key in ("top_k", "min_p", "repetition_penalty")
+             if getattr(args, key, None) is not None}
     if args.thinking != "server":
         extra["chat_template_kwargs"] = {"enable_thinking": args.thinking == "on"}
+    if getattr(args, "thinking_budget", None):
+        extra["thinking_token_budget"] = args.thinking_budget
     kwargs = {"extra_body": extra} if extra else {}
     if args.presence_penalty is not None:
         kwargs["presence_penalty"] = args.presence_penalty
@@ -95,8 +127,40 @@ def sampling_kwargs(args):
 
 def sampling_settings(args):
     """What the run sent, recorded with its results so every result says how it was sampled."""
-    return {key: getattr(args, key) for key in
-            ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "thinking", "max_tokens")}
+    settings = {key: getattr(args, key) for key in
+                ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "thinking", "max_tokens")}
+    # X1's worker settings, recorded only when set, so X0's records keep their shape.
+    for key in ("repetition_penalty", "persona", "system_file", "summary", "thinking_budget", "sources", "defer_judge", "sample"):
+        if getattr(args, key, None) not in (None, False):
+            settings[key] = getattr(args, key)
+    return settings
+
+
+def system_text(args):
+    return Path(args.system_file).read_text(encoding="utf-8").strip() if getattr(args, "system_file", None) else None
+
+
+def question_prompt(question, suffix, args):
+    """The user message for a static question: persona, question, summary request, format line.
+
+    With none of X1's options it is X0's prompt, the question and its format line. A persona
+    comes first, separated by a blank line, as a team solver's always has."""
+    body = question + (f"\n\n{SUMMARY_INSTRUCTION}" if getattr(args, "summary", False) else "") + suffix
+    persona = EXPERT_PERSONAS[args.persona] if getattr(args, "persona", None) else ""
+    return f"{persona}\n\n{body}" if persona else body
+
+
+def matches_sources(sample, sources):
+    """Whether a pool row is one of `sources` (dataset, or dataset:subject)."""
+    if not sources:
+        return True
+    metadata = json.loads(sample.get("metadata") or "{}")
+    subject = metadata.get("domain") or metadata.get("category")
+    for item in sources.split(","):
+        dataset, _, wanted = item.strip().partition(":")
+        if sample["dataset"] == dataset and (not wanted or (subject or "").lower() == wanted.lower()):
+            return True
+    return False
 
 
 def attempt_task(agent, sample, scorer, answer_type, args):
@@ -107,10 +171,13 @@ def attempt_task(agent, sample, scorer, answer_type, args):
     """
     benchmark = benchmarks.get(sample["dataset"])
     instance = benchmarks.instance_of(sample)
-    env = benchmark.environment_for(judge_from_args(args))(instance)
+    deferred = DeferredJudge() if args.defer_judge and benchmark.judged else None
+    env = benchmark.environment_for(deferred or judge_from_args(args))(instance)
+    persona = EXPERT_PERSONAS[args.persona] if args.persona else ""
+    user = f"{persona}\n\n{env.task_prompt()}" if persona else env.task_prompt()
     episode, error_text = None, None
     try:
-        episode = run_episode(agent, env, system="You are a helpful assistant.", user=env.task_prompt(),
+        episode = run_episode(agent, env, system=system_text(args) or "You are a helpful assistant.", user=user,
                               max_steps=benchmark.max_steps or 30, max_tokens=args.max_tokens,
                               temperature=args.temperature, top_p=args.top_p,
                               sampling=sampling_kwargs(args))
@@ -136,6 +203,8 @@ def attempt_task(agent, sample, scorer, answer_type, args):
         "episode": episode,
         "error": error_text,
         "limit": (episode or {}).get("limit"),
+        # What the judge would have been asked; graded in X1's stage 2 (scripts/x1_hub.py).
+        "judge_deferred": deferred.asked if deferred is not None else None,
     }
 
 
@@ -149,11 +218,13 @@ def answer_one(agent, sample, scorers, args):
     # The tagged dataset stores every answer as a string, numeric ones included.
     answer = scorer.normalise_gold(answer)
 
-    prompt = question + scorer.instruction_suffix()
+    prompt = question_prompt(question, scorer.instruction_suffix(), args)
+    system = system_text(args)
+    messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
     completion, error_text = None, None
     try:
         completion = agent.generate(
-            [{"role": "user", "content": prompt}],
+            messages,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
@@ -172,7 +243,7 @@ def answer_one(agent, sample, scorers, args):
     limit = "context" if error_text and is_context_limit(error_text) else (
         limit_of(completion.finish_reason) if completion else None)
 
-    result = score_responses(scorer, {AGENT_NAME: text}, answer, instance=benchmarks.instance_of(sample))
+    result = score_responses(scorer, {args.agent_name: text}, answer, instance=benchmarks.instance_of(sample))
     prediction = result.predictions[0]
 
     # With one respondent the majority answer is that respondent's, so the team
@@ -239,7 +310,7 @@ def prediction_row(r, batch_index, question_index, args):
         response = response[:args.response_chars]
         reasoning = reasoning[:args.response_chars]
     stage = {
-        "id": AGENT_NAME, "persona": None, "role": "solver", "model": args.model_name,
+        "id": args.agent_name, "persona": args.persona, "role": "solver", "model": args.model_name,
         "inputs": [], "max_tokens": args.max_tokens, "seed": None,
         "response": response,
         "reasoning": reasoning,
@@ -260,9 +331,11 @@ def prediction_row(r, batch_index, question_index, args):
         stage.update({key: episode.get(key) for key in
                       ("prompt_tokens", "completion_tokens", "finish_reason", "steps", "stopped",
                        "outcome", "calls", "tool_calls")})
+    if r.get("judge_deferred") is not None:
+        stage["judge_deferred"] = r["judge_deferred"]
     return {
         "schema": SCHEMA_VERSION,
-        "arm": "bare_model",
+        "arm": args.agent_name,
         "batch": batch_index,
         "question_index": question_index,
         "question_key": question_key(r.get("question")),
@@ -272,9 +345,9 @@ def prediction_row(r, batch_index, question_index, args):
         "tags": r["tags"],
         "question": r.get("question"),
         "gold": r.get("gold"),
-        "team": [AGENT_NAME],
+        "team": [args.agent_name],
         "config_id": None,
-        "aggregation": {"rule": "stage", "over": [AGENT_NAME], "tie_break": None},
+        "aggregation": {"rule": "stage", "over": [args.agent_name], "tie_break": None},
         "limit": r.get("limit"),
         "team_answer": r["prediction"],
         "team_correct": r["correct"],
@@ -294,6 +367,11 @@ def main():
 
     dataset = load_from_disk(args.dataset_path)
     _, test_dataset = make_split(dataset, args)
+    if args.sources:
+        # Filtered after the split, so a fold holds the same questions it does for X0.
+        test_dataset = test_dataset.filter(lambda row: matches_sources(row, args.sources), keep_in_memory=True)
+        if not len(test_dataset):
+            raise SystemExit(f"no held-out question matches --sources {args.sources}")
     if args.limit:
         test_dataset = test_dataset.select(range(min(args.limit, len(test_dataset))))
     print(f"✓ Held out: {len(test_dataset)} questions [{split_label(args)}]")
@@ -313,7 +391,7 @@ def main():
     scorers = benchmarks.ScorerSet(mode=args.parse_mode)
     for sample in test_dataset:
         scorers.for_sample(sample)
-    judge = judge_from_args(args)
+    judge = DeferredJudge() if args.defer_judge else judge_from_args(args)
     for name in set(test_dataset["dataset"]):
         benchmarks.get(name).environment_for(judge)  # a judged benchmark without a judge stops here
 
@@ -375,15 +453,15 @@ def main():
             "batch": batch_index,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "question_indices": indices,
-            "selected_team": [AGENT_NAME],
+            "selected_team": [args.agent_name],
             "invalid_agents": [],
             "reasoning": "No selection: the bare model answers every question itself",
             "report": {
                 "n_samples": len(results),
                 "team_correct": batch_correct,
                 "team_accuracy": batch_correct / len(results) if results else 0.0,
-                "per_agent_correct": {AGENT_NAME: batch_correct},
-                "per_agent_accuracy": {AGENT_NAME: batch_correct / len(results) if results else 0.0},
+                "per_agent_correct": {args.agent_name: batch_correct},
+                "per_agent_accuracy": {args.agent_name: batch_correct / len(results) if results else 0.0},
                 "answer_types": [r["answer_type"] for r in results],
                 "context_limited": sum(r.get("limit") == "context" for r in results),
                 "context_limited_correct": sum(r.get("limit") == "context" and r["correct"] for r in results),
@@ -412,7 +490,7 @@ def main():
         **limit_summary({"questions": total, "team_correct": correct, **limits}),
         # Keyed the way report_run.py reads an arm: "questions" answered,
         # "selected" batches it was picked for - here, every batch.
-        "agents": {AGENT_NAME: {"correct": correct, "questions": total, "selected": len(batches)}},
+        "agents": {args.agent_name: {"correct": correct, "questions": total, "selected": len(batches)}},
         "tags": {t: {"correct": tag_correct[t], "questions": tag_counts[t]} for t in sorted(tag_counts)},
     }
     summary_path = out_dir / "holdout_summary.json"

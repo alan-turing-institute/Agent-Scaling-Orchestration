@@ -139,6 +139,58 @@ class Judge:
         return self.ask(template.format(question=question, response=response, criterion=criterion))
 
 
+DEFERRED = "deferred: graded later by regrade()"
+
+
+class DeferredJudge:
+    """Stands in for the judge when it is not being served: records what would be asked.
+
+    X1's stage 1 serves one worker model at a time, so the 35B judge is not up while
+    BrowseComp-Plus and Finance-Agent episodes run. Every question put to this judge is
+    recorded as `(method, arguments)` and answered "not correct"; `regrade` later asks
+    the real judge the same questions. One per episode, so its record belongs to it.
+    """
+
+    def __init__(self):
+        self.asked = []
+        self._lock = threading.Lock()
+
+    def answer_matches(self, question: str, response: str, correct_answer: str) -> Tuple[bool, str]:
+        with self._lock:
+            self.asked.append(["answer_matches", [question, response, correct_answer]])
+        return False, DEFERRED
+
+    def criterion(self, question: str, response: str, criterion: str, operator: str) -> Tuple[bool, str]:
+        if operator not in CRITERION_TEMPLATES:
+            raise ValueError(f"unknown rubric operator {operator!r}; known: {sorted(CRITERION_TEMPLATES)}")
+        with self._lock:
+            self.asked.append(["criterion", [question, response, criterion, operator]])
+        return False, DEFERRED
+
+
+def regrade(dataset: str, asked, judge: Judge) -> Tuple[bool, dict]:
+    """Whether a deferred episode succeeded, asking `judge` what `DeferredJudge` recorded.
+
+    Mirrors each environment's own rule: BrowseComp-Plus succeeds when its one answer
+    matches; Finance-Agent when at least `PASS_FRACTION` of its rubric lines pass. An
+    episode that never submitted recorded nothing, and fails as it did.
+    """
+    if not asked:
+        return False, {}
+    verdicts = [getattr(judge, method)(*arguments) for method, arguments in asked]
+    if dataset == "browsecomp_plus":
+        correct, text = verdicts[-1]
+        return bool(correct), {"judge": text[-600:]}
+    if dataset == "finance_agent":
+        from benchmarks.finance_agent import PASS_FRACTION
+        passed = [bool(v[0]) for v in verdicts]
+        score = sum(passed) / len(passed)
+        return score >= PASS_FRACTION, {"rubric_score": round(score, 3),
+                                        "criteria": [{"operator": a[1][3], "passed": p}
+                                                     for a, p in zip(asked, passed)]}
+    raise ValueError(f"no regrade rule for {dataset!r}")
+
+
 @lru_cache(maxsize=4)
 def _judge(model_name: str, base_url: str, api_key: str) -> Judge:
     from model.openai_compat import OpenAICompatChatWrapper

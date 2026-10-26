@@ -110,11 +110,20 @@ class ModuleBenchmark:
 
 
 _REGISTRY: dict[str, ModuleBenchmark] = {}
+_REGISTRY_LOCK = threading.Lock()
 
 
 def _load_registry() -> dict[str, ModuleBenchmark]:
-    if _REGISTRY:
-        return _REGISTRY
+    # Filled module by module: without the lock, a thread arriving mid-fill saw a
+    # non-empty registry holding only the first few benchmarks.
+    with _REGISTRY_LOCK:
+        if not _REGISTRY:
+            _fill_registry()
+    return _REGISTRY
+
+
+def _fill_registry():
+    filled = {}
     for path in _MODULES:
         module = importlib.import_module(path)
         benchmark = ModuleBenchmark(
@@ -133,8 +142,8 @@ def _load_registry() -> dict[str, ModuleBenchmark]:
             raise TypeError(f"{path}: answer type 'outcome' and ENVIRONMENT go together")
         if benchmark._load is None and benchmark._instances is None:
             raise TypeError(f"{path} defines neither load nor load_instances")
-        _REGISTRY[benchmark.name] = benchmark
-    return _REGISTRY
+        filled[benchmark.name] = benchmark
+    _REGISTRY.update(filled)  # all at once, so a failed import leaves it empty, not partial
 
 
 def get(name: str) -> ModuleBenchmark:
