@@ -73,6 +73,9 @@ def parse_args():
     parser.add_argument("--parse_mode", choices=["strict", "lenient"], default="strict",
                         help="strict reproduces the parsers every result so far used; lenient fixes them")
     parser.add_argument("--limit", type=int, default=0, help="Answer only the first N held-out questions; 0 means all")
+    parser.add_argument("--only", default=None,
+                        help="File of question ids and/or benchmark names, one per line: answer only the held-out "
+                             "questions it names (e.g. a rerun of the ones a run cut off)")
     parser.add_argument("--response_chars", type=int, default=0,
                         help="Clip stored responses to this many characters; 0 keeps them whole")
     parser.add_argument("--out_dir", default="data-claude/orchestrator/bare_model")
@@ -296,6 +299,10 @@ def main():
     _, test_dataset = make_split(dataset, args)
     if args.limit:
         test_dataset = test_dataset.select(range(min(args.limit, len(test_dataset))))
+    if args.only:
+        wanted = {line.strip() for line in Path(args.only).read_text(encoding="utf-8").splitlines() if line.strip()}
+        test_dataset = test_dataset.filter(
+            lambda row: row["dataset"] in wanted or benchmarks.instance_of(row).id in wanted)
     print(f"✓ Held out: {len(test_dataset)} questions [{split_label(args)}]")
 
     agent = OpenAICompatChatWrapper(
