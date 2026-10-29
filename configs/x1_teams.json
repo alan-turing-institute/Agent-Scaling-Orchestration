@@ -35,7 +35,7 @@
                     "modes": {"always": "ministral"}, "headline": "always",
                     "system_file": "configs/x1/ministral_system_prompt.txt"},
     "shiningvaliant3": {"handle": "ValiantLabs/gemma-4-E4B-it-ShiningValiant3", "profile": "gemma", "quant": "fp8",
-                        "modes": {"off": "gemma", "on": "gemma"}, "headline": "off"},
+                        "modes": {"off": "gemma", "on": "gemma"}, "headline": "off", "batch_size": 8},
     "bigbang": {"handle": "TheShed/BigBang-v1-W4A16-NVFP4-MTP", "profile": "qwen35b", "quant": "",
                 "modes": {"on": "qwen_on", "off": "qwen_off"}, "headline": "on"},
     "occamy": {"handle": "Accio-Lab/occamy-1.0-NVFP4", "profile": "qwen35b", "quant": "",

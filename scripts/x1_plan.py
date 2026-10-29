@@ -98,7 +98,7 @@ def command(config, run, api, python="./env/bin/python", limit=0):
             "--dataset_path", POOLS[run["pool"]], "--model_name", entry["handle"], "--api_base_url", api,
             "--split_seed", str(settings["split_seed"]), "--n_folds", str(settings["folds"]),
             "--fold", str(run["fold"]), "--sample", str(run["sample"]),
-            "--workers", str(pool["workers"]), "--test_batch_size", str(pool["workers"] * 3),
+            "--workers", str(pool["workers"]), "--test_batch_size", str(entry.get("batch_size", pool["workers"] * 3)),
             "--max_tokens", str(pool["max_tokens"]), "--request_timeout", str(settings["request_timeout"]),
             "--thinking", thinking, "--sources", run["sources"],
             "--agent_name", f"{run['worker']}-{run['mode']}", "--resume", "--out_dir", run["out_dir"]]

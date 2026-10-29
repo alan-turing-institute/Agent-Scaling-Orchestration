@@ -14,6 +14,7 @@
 #   ./scripts/x1_stage1.sh                        # every model
 #   MODELS="rl-math bigbang" ./scripts/x1_stage1.sh
 #   FOLDS=0 SAMPLES=0 ./scripts/x1_stage1.sh      # one replicate first
+#   ATTEMPTS=10 PASSES=3 ./scripts/x1_stage1.sh   # full run: more restarts per model, then retry what is left
 #   PLAN_ARGS="--teams T6,T7 --limit 2" ROOT=data-claude/x1-teams-test ./scripts/x1_stage1.sh   # a check
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -27,6 +28,7 @@ NAME=${NAME:-x1-serve}
 PARALLEL=${PARALLEL:-2}
 ATTEMPTS=${ATTEMPTS:-3}
 STALL_SECONDS=${STALL_SECONDS:-300}
+PASSES=${PASSES:-1}
 MODELS=${MODELS:-$($PYTHON scripts/x1_plan.py models | cut -f1)}
 SELECT=()
 [ -n "${FOLDS:-}" ] && SELECT+=(--folds "$FOLDS")
@@ -61,6 +63,8 @@ serve() {  # model key
     return 1
 }
 
+for pass in $(seq 1 "$PASSES"); do
+echo "##### pass $pass $(date -u +%FT%TZ)"
 for model in $MODELS; do
     for attempt in $(seq 1 "$ATTEMPTS"); do
         $PYTHON scripts/x1_plan.py commands --model "$model" --api "$API" --pending "${SELECT[@]}" > "$LOG_DIR/$model.pending"
@@ -91,4 +95,6 @@ for model in $MODELS; do
     left=$($PYTHON scripts/x1_plan.py commands --model "$model" --pending "${SELECT[@]}" | wc -l)
     echo "=== $model finished $(date -u +%FT%TZ): $left runs still pending"
 done
-echo "STAGE1 DONE $(date -u +%FT%TZ)"
+done
+left=$($PYTHON scripts/x1_plan.py commands --pending "${SELECT[@]}" | wc -l)
+echo "STAGE1 DONE $(date -u +%FT%TZ): $left runs pending"
