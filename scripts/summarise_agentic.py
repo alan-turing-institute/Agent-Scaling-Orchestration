@@ -59,6 +59,18 @@ def stats(rows):
             "mean_calls": sum(r["calls"] for r in rows) / n if n else 0}
 
 
+def with_reruns(runs, long):
+    """The main runs, with the 35B's BrowseComp-Plus and Finance-Agent rows taken from the 131k rerun
+    once all five of its folds have finished."""
+    out = dict(runs)
+    for label in RERUN:
+        if len(long.get(label, {})) < 5:
+            continue
+        out[label] = {f: {q: (long[label][f][q] if r["dataset"] in RERUN_BENCHMARKS else r) for q, r in rows.items()}
+                      for f, rows in runs[label].items()}
+    return out
+
+
 def per_agent(runs):
     out = {}
     for label, folds in runs.items():
@@ -186,7 +198,7 @@ def page(body, findings, now, status_lines, done):
     </div>
     <ul class="caveats">
       <li>Same sampling as X0: thinking on at temperature 1.0, top_p 0.95; thinking off at temperature 0.7, top_p 0.8; top_k 20 and presence penalty 1.5 for both. The judge (the 35B, for BrowseComp-Plus and Finance-Agent) runs at temperature 0.</li>
-      <li>Context: the 4B's server allows 131k tokens; the 35B's allowed 32k for the main run. A task that runs out of context is graded on the state it reached.</li>
+      <li>Context: the 4B's server allows 131k tokens. The 35B's allowed 32k for the main run; its BrowseComp-Plus and Finance-Agent tasks were rerun at 131k, and once all five rerun folds finish the tables use the rerun for those two. A task that runs out of context is graded on the state it reached.</li>
       <li>BrowseComp-Plus searches its fixed corpus with BM25, not the paper's dense retriever. Finance-Agent searches the live web and EDGAR, with responses cached.</li>
 {findings.get("caveats", "")}    </ul>
   </section>
@@ -210,7 +222,8 @@ def main():
     root = Path(args.root)
     runs = load(root, [a for a, _ in AGENTS])
     long = load(Path(args.rerun_root), RERUN)
-    agents, orc, rr = per_agent(runs), oracle(runs), rerun(runs, long)
+    merged = with_reruns(runs, long)
+    agents, orc, rr = per_agent(merged), oracle(merged), rerun(runs, long)
     raw = json.loads(Path(args.findings).read_text()) if args.findings else {}
     findings = {k: ("    <ul class=\"findings\">\n" + "".join(f"      <li>{b}</li>\n" for b in v) + "    </ul>\n")
                 if k != "caveats" else "".join(f"      <li>{b}</li>\n" for b in v) for k, v in raw.items()}
