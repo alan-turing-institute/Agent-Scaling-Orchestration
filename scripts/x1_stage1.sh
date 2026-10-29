@@ -35,10 +35,15 @@ read -r -a EXTRA <<< "${PLAN_ARGS:-}"
 SELECT+=(--root "$ROOT" "${EXTRA[@]}")
 mkdir -p "$LOG_DIR"
 
-stalled() {  # every engine report in the window says nothing moved while requests were open
-    docker logs --since "${STALL_SECONDS}s" "$NAME" 2>&1 | grep "Engine 000" > "$LOG_DIR/.engine" || return 1
-    [ "$(wc -l < "$LOG_DIR/.engine")" -ge $((STALL_SECONDS / 10 - 2)) ] || return 1
-    ! grep -qvE "prompt throughput: 0\.0 tokens/s, Avg generation throughput: 0\.0 tokens/s, Running: [1-9]" "$LOG_DIR/.engine"
+ZERO="prompt throughput: 0\.0 tokens/s, Avg generation throughput: 0\.0 tokens/s, Running: [1-9]"
+stalled() {  # nothing moved for the whole window while requests were open
+    docker logs --since "${STALL_SECONDS}s" "$NAME" 2>&1 | grep "Engine 000" > "$LOG_DIR/.engine"
+    grep -qvE "$ZERO" "$LOG_DIR/.engine" && return 1  # something moved
+    [ "$(wc -l < "$LOG_DIR/.engine")" -ge $((STALL_SECONDS / 10 - 2)) ] && return 0
+    # vLLM may log the zero once and then go quiet (2026-10-28): stalled if the window is silent
+    # and the engine's last report had requests open and nothing moving.
+    [ -s "$LOG_DIR/.engine" ] && return 1
+    docker logs --tail 20000 "$NAME" 2>&1 | grep "Engine 000" | tail -1 | grep -qE "$ZERO"
 }
 
 serve() {  # model key
