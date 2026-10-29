@@ -35,8 +35,10 @@ qwen35b)
 gemma)
 	UTIL=${UTIL:-0.5}
 	QUANT=${QUANT-fp8}
+	# Eager: with CUDA graphs Gemma hangs vLLM 0.21 within minutes on thinking-on requests (GPU busy,
+	# 0 tokens/s; 5 of 5 attempts on 2026-10-29); eager ran the same 55 questions without a stall.
 	FLAGS="--kv-cache-dtype fp8 --language-model-only --enable-auto-tool-choice --tool-call-parser gemma4
-	       --reasoning-parser gemma4 --max-num-seqs 16"
+	       --reasoning-parser gemma4 --max-num-seqs 16 --enforce-eager"
 	RCFG='{"reasoning_start_str": "<|channel>", "reasoning_end_str": "I have to give the solution based on the reasoning directly now.<channel|>"}'
 	;;
 ministral)
