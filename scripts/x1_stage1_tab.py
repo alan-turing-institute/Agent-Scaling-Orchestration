@@ -3,7 +3,8 @@
     python scripts/x1_stage1_tab.py --summary spark.json local.json --notes notes.json LIVE.html OUT.html
 
 `--summary` takes x1_stage1_summary.py output from each box running stage 1; a run present in
-more than one is counted once. `--notes` is a JSON file of the hand-written parts: "eyebrow",
+more than one is counted once. In the notes, "{done}" and "{planned}" become the counts of finished
+and planned runs. `--notes` is a JSON file of the hand-written parts: "eyebrow",
 "kicker", "hard" and "agentic" (finding bullets, HTML) and "status" (paragraphs, HTML). The stage 1
 section, the eyebrow and the status box of the tab between <!-- X1:START --> and <!-- X1:END -->
 are replaced; everything else on the page is kept.
@@ -21,7 +22,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 
-from x1_plan import load_config
+from x1_plan import load_config, workers
 
 TEAMS = {"T1": "Maths", "T2": "Physics", "T3": "Chemistry", "T4": "Biology", "T5": "Law", "T6": "Engineering",
          "T7": "BrowseComp-Plus", "T8": "Finance-Agent", "T9": "WorkBench", "T10": "Plancraft"}
@@ -127,7 +128,11 @@ def main():
     for r in rows:
         r["pool"] = pools[r["team"]]
     total = config["settings"]["folds"] * config["settings"]["samples"]
-    notes = json.load(open(args.notes))
+    # A run answers every team that shares its pool, so count each (pool, worker, mode, run) once.
+    done = len({(r["pool"], r["worker"], r["mode"], k) for r in rows for k in r["by_run"]})
+    planned = len({(w["pool"], w["worker"], w["mode"]) for w in workers(config)}) * total
+    fill = lambda s: s.replace("{done}", str(done)).replace("{planned}", str(planned))
+    notes = json.loads(fill(Path(args.notes).read_text()))
     section = "\n".join([
         "  <section>",
         f"    <div class=\"sec-head\"><div class=\"kicker\">{notes['kicker']}</div><h2>Workers answering alone, so far</h2></div>",
