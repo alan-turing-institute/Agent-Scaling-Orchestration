@@ -23,7 +23,12 @@ CONF=${CONF:-data-claude/searxng}
 # lets the container take ownership of it.
 mkdir -p "$CONF"
 [ -f "$CONF/secret_key" ] || python3 -c "import secrets; print(secrets.token_hex(32))" > "$CONF/secret_key"
-sed "s/set-by-run.sh/$(cat "$CONF/secret_key")/" scripts/searxng/settings.yml > "$CONF/settings.yml"
+# Wikimedia wants a contact in the User-Agent; reuse the SEC contact (git-ignored), never committed.
+CONTACT=${SEARXNG_CONTACT:-$(cat data-claude/benchmarks/finance-agent/sec_user_agent.txt 2>/dev/null)}
+[ -n "$CONTACT" ] || { echo "no contact: set SEARXNG_CONTACT or data-claude/benchmarks/finance-agent/sec_user_agent.txt"; exit 1; }
+# Whole quoted placeholders only, so neither value can land in the other's field.
+sed -e "s|\"CONTACT_SET_BY_RUN_SH\"|\"(agent-scaling research; $(echo "$CONTACT" | tr -d '|"\n'))\"|" \
+    -e "s|\"set-by-run.sh\"|\"$(cat "$CONF/secret_key")\"|" scripts/searxng/settings.yml > "$CONF/settings.yml"
 docker rm -f searxng >/dev/null 2>&1 || true
 docker run -d --name searxng --restart unless-stopped \
     -p "127.0.0.1:$PORT:8080" -v "$PWD/$CONF/settings.yml:/etc/searxng/settings.yml:ro" "$IMAGE" >/dev/null
