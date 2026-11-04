@@ -2,6 +2,9 @@
 
     python scripts/x1_stage1_tab.py --summary spark.json local.json --notes notes.json LIVE.html OUT.html
 
+`--stage2` (optional) takes a JSON list of stage 2 holdout_summary.json records; with it, a
+"Hub with its team" section (notes "stage2_kicker" and "stage2" bullets) goes above stage 1.
+
 `--summary` takes x1_stage1_summary.py output from each box running stage 1; a run present in
 more than one is counted once. In the notes, "{done}" and "{planned}" become the counts of finished
 and planned runs. `--notes` is a JSON file of the hand-written parts: "eyebrow",
@@ -111,6 +114,45 @@ def table(rows, pool, total_runs):
     return "\n".join(out)
 
 
+MODES = {"headline": "headline", "on": "all on", "off": "all off"}
+
+
+def stage2_table(records):
+    groups = {}
+    for r in records:
+        groups.setdefault((r["team"], r["modes"]), []).append(r)
+    caption = ("Hub (35B, thinking off) reading its team's four answers, summed over the fold/sample runs finished "
+               "(of 15); specialists' thinking: headline = each one's better stage 1 mode, personas always off; "
+               "best worker = the team member with most correct over the same runs, picked in hindsight; "
+               "fixed / broke = questions where the hub is right and the majority vote wrong, and the reverse.")
+    head = "".join(f"<th>{h}</th>" for h in ("Team", "Thinking", "Best worker"))
+    head += "".join(f"<th class='num'>{h}</th>" for h in ("Runs", "Hub", "Vote", "Best worker", "Fixed", "Broke"))
+    out = [f"    <div class=\"tablewrap\"><table><caption>{caption}</caption>",
+           f"    <thead><tr>{head}</tr></thead><tbody>"]
+    teams = [t for t in TEAMS if any(k[0] == t for k in groups)]
+    for i, team in enumerate(teams):
+        for j, mode in enumerate(m for m in MODES if (team, m) in groups):
+            rs = groups[(team, mode)]
+            q = sum(r["questions"] for r in rs)
+            ws = {}
+            for r in rs:
+                for w, c in r["workers_correct"].items():
+                    ws[w] = ws.get(w, 0) + c
+            best = max(ws, key=ws.get)
+            label = SPECIALISTS[best][0] if best in SPECIALISTS else best
+            sumk = lambda k: sum(r[k] for r in rs)
+            trans = lambda k: sum(r["hub_transitions"][k] for r in rs)
+            cls = " class='group-gap'" if j == 0 and i else ""
+            first = f"<strong>{team}</strong> {TEAMS[team]}" if j == 0 else ""
+            tds = f"<td>{first}</td><td>{MODES[mode]}</td><td><span class='arm'>{label}</span></td>"
+            tds += f"<td class='num'>{len(rs)}</td>"
+            tds += pct(sumk("hub_correct"), q) + pct(sumk("vote_correct"), q) + pct(ws[best], q)
+            tds += f"<td class='num'>{trans('fixed')}</td><td class='num'>{trans('broke')}</td>"
+            out.append(f"<tr{cls}>{tds}</tr>")
+    out.append("</tbody></table></div>")
+    return "\n".join(out)
+
+
 def bullets(items):
     return "\n".join(["    <ul class=\"findings\">", *(f"      <li>{b}</li>" for b in items), "    </ul>"])
 
@@ -119,6 +161,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--summary", nargs="+", required=True)
     parser.add_argument("--notes", required=True)
+    parser.add_argument("--stage2")
     parser.add_argument("live")
     parser.add_argument("out")
     args = parser.parse_args()
@@ -154,6 +197,17 @@ def main():
     tab, n3 = re.subn(r"(<div class=\"eyebrow\">)[^<]*(</div>)", lambda m: m[1] + notes["eyebrow"] + m[2], tab, count=1)
     if (n1, n2, n3) != (1, 1, 1):
         sys.exit(f"X1 tab layout changed: stage 1 section {n1}, status {n2}, eyebrow {n3}")
+    if args.stage2:
+        hub = "\n".join([
+            "  <section>",
+            f"    <div class=\"sec-head\"><div class=\"kicker\">{notes['stage2_kicker']}</div><h2>Hub with its team, so far</h2></div>",
+            stage2_table(json.load(open(args.stage2))), bullets(notes["stage2"]),
+            "  </section>"])
+        pattern = r"  <section>\n    <div class=\"sec-head\"><div class=\"kicker\">[^<]*</div><h2>Hub with its team, so far</h2>.*?\n  </section>"
+        tab, n4 = re.subn(pattern, lambda _: hub, tab, count=1, flags=re.S)
+        if not n4:
+            at = tab.index(section)
+            tab = tab[:at] + hub + "\n\n" + tab[at:]
     Path(args.out).write_text(page[:start] + tab + page[end:])
 
 
