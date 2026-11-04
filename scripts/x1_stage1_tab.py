@@ -17,7 +17,9 @@ have finished, so workers are compared on the same questions.
 """
 
 import argparse
+import html
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -60,11 +62,144 @@ def merge(paths):
     return list(rows.values())
 
 
-def pct(num, den, sub=True):
+def pct(num, den, sub=True, bold=False):
     if not den:
         return "<td class='num' style='color:var(--faint)'>—</td>"
     s = f"<span class='sub'>{num}/{den}</span>" if sub else ""
-    return f"<td class='num'>{100 * num / den:.0f}%{s}</td>"
+    v = f"<strong>{100 * num / den:.0f}%</strong>" if bold else f"{100 * num / den:.0f}%"
+    return f"<td class='num'>{v}{s}</td>"
+
+
+def matched_stats(members):
+    """Per row: correct and answers over the runs every member of the team has finished, and the number of
+    distinct questions behind them (the samples of a fold repeat the same questions)."""
+    shared = set.intersection(*(set(r["by_run"]) for r in members))
+    for r in members:
+        runs = [r["by_run"][k] for k in shared]
+        r["m_q"] = sum(m["questions"] for m in runs)
+        r["m_c"] = sum(m["correct"] for m in runs)
+        r["m_a"] = sum(m["answered"] for m in runs)
+        folds = {}
+        for k in shared:
+            fold = k.split("s")[0]
+            folds[fold] = max(folds.get(fold, 0), r["by_run"][k]["questions"])
+        r["m_distinct"] = sum(folds.values())
+    scored = [r for r in members if not r["judged"] and r["m_q"]]
+    top = max((r["m_c"] / r["m_q"] for r in scored), default=None)
+    for r in members:
+        r["best"] = top is not None and not r["judged"] and bool(r["m_q"]) and r["m_c"] / r["m_q"] == top
+
+
+def wilson(p, n, z=1.96):
+    if not n:
+        return 0.0, 0.0
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def label_of(r):
+    if r["persona"]:
+        return r["worker"], "Qwen3.5-4B"
+    return SPECIALISTS[r["worker"]][0], SPECIALISTS[r["worker"]][1]
+
+
+def charts(rows, pool):
+    """One horizontal bar chart per scored team: matched accuracy per worker, with a 95% interval."""
+    teams = [t for t in TEAMS if any(r["team"] == t and r["pool"] == pool and not r["judged"] for r in rows)]
+    if not teams:
+        return ""
+    W, LX, X0, X1, VX, RH, TOP = 520, 272, 278, 462, 518, 24, 6
+    unit = "questions" if pool == "hard" else "tasks"
+    sx = lambda v: X0 + (X1 - X0) * v
+    figs = []
+    for team in teams:
+        members = [r for r in rows if r["team"] == team]
+        h = TOP + RH * len(members) + 22
+        svg = [f"<svg viewBox='0 0 {W} {h}' role='img' aria-label='{team} {TEAMS[team]}: accuracy of each worker alone' "
+               "font-family='IBM Plex Mono, ui-monospace, monospace' font-size='11'>"]
+        for t in (0, 0.25, 0.5, 0.75, 1):
+            x = sx(t)
+            svg.append(f"<line x1='{x:.1f}' y1='{TOP - 2}' x2='{x:.1f}' y2='{h - 20}' stroke='var(--rule)' stroke-width='1'/>")
+            svg.append(f"<text x='{x:.1f}' y='{h - 6}' text-anchor='middle' fill='var(--faint)' font-size='10'>{int(t * 100)}%</text>")
+        for i, r in enumerate(members):
+            y = TOP + RH * i
+            cy = y + RH / 2
+            name, base = label_of(r)
+            weight = " font-weight='700'" if r["best"] else ""
+            ink = "var(--ink)" if r["best"] else "var(--muted)"
+            short = name if len(name) <= 40 else name[:39] + "…"
+            svg.append(f"<text x='{LX}' y='{cy + 4:.1f}' text-anchor='end' fill='{ink}'{weight}>{short} · {r['mode']}</text>")
+            if not r["m_q"]:
+                continue
+            p = r["m_c"] / r["m_q"]
+            lo, hi = wilson(p, r["m_distinct"])
+            colour = "var(--s-random)" if r["persona"] else "var(--s-no_memory)"
+            bw = max(sx(p) - X0, 0.5)
+            bh = 14
+            rad = min(4, bw)
+            x, top = X0, cy - bh / 2
+            path = (f"M{x},{top} h{bw - rad:.1f} a{rad},{rad} 0 0 1 {rad},{rad} v{bh - 2 * rad} "
+                    f"a{rad},{rad} 0 0 1 -{rad},{rad} h-{bw - rad:.1f} z")
+            kind = "persona" if r["persona"] else "specialist"
+            tip = (f"<b>{name}</b> · thinking {r['mode']}<br><span class=m>{kind} · {base}</span><br>"
+                   f"{100 * p:.1f}% ({r['m_c']}/{r['m_q']} answers)<br>95% interval {100 * lo:.0f}–{100 * hi:.0f}% "
+                   f"over {r['m_distinct']} questions")
+            svg.append(f"<g class='x1-bar' tabindex='0' data-tip='{html.escape(tip, quote=True)}'>"
+                       f"<rect x='0' y='{y}' width='{W}' height='{RH}' fill='transparent'/>"
+                       f"<path d='{path}' fill='{colour}'/>"
+                       f"<line x1='{sx(lo):.1f}' y1='{cy}' x2='{sx(hi):.1f}' y2='{cy}' stroke='var(--ink)' stroke-width='1.5'/>"
+                       f"<line x1='{sx(lo):.1f}' y1='{cy - 4}' x2='{sx(lo):.1f}' y2='{cy + 4}' stroke='var(--ink)' stroke-width='1.5'/>"
+                       f"<line x1='{sx(hi):.1f}' y1='{cy - 4}' x2='{sx(hi):.1f}' y2='{cy + 4}' stroke='var(--ink)' stroke-width='1.5'/>"
+                       f"<text x='{VX}' y='{cy + 4:.1f}' text-anchor='end' fill='{ink}'{weight}>{100 * p:.0f}%</text></g>")
+        svg.append("</svg>")
+        n = members[0]["m_distinct"]
+        figs.append(f"      <div class='x1-chart'><h3>{team} {TEAMS[team]} <span>{n} {unit} × {members[0]['m_q'] // max(n, 1)} samples</span></h3>"
+                    f"<div class='x1-svg'>{''.join(svg)}</div></div>")
+    what = "questions" if pool == "hard" else "tasks"
+    return "\n".join([
+        "    <figure>",
+        f"      <figcaption>Accuracy of each worker alone on its team's {what}, over the runs every worker of the team has "
+        f"finished; whiskers = 95% Wilson interval over the team's distinct {what}; best worker in bold.</figcaption>",
+        "      <div class='legend'><span><i class='swatch sq' style='background:var(--s-random)'></i> persona (Qwen3.5-4B)</span>"
+        "<span><i class='swatch sq' style='background:var(--s-no_memory)'></i> specialist</span></div>",
+        "      <div class='x1-charts'>", *figs, "      </div>",
+        "    </figure>"])
+
+
+CHART_STYLE = """  <style>
+    #x1-teams table.x1-workers { min-width: 760px; }
+    #x1-teams table.x1-workers th, #x1-teams table.x1-workers td { white-space: nowrap; padding-right: 10px; }
+    #x1-teams table.x1-workers td.num, #x1-teams table.x1-workers th.num { padding-left: 14px; padding-right: 0; }
+    #x1-teams .x1-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: 24px 36px; }
+    #x1-teams .x1-chart h3 { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 0.8rem; font-weight: 500; letter-spacing: 0.04em; margin-bottom: 6px; }
+    #x1-teams .x1-chart h3 span { color: var(--faint); font-weight: 400; margin-left: 6px; }
+    #x1-teams .x1-svg { overflow-x: auto; }
+    #x1-teams .x1-svg svg { min-width: 420px; width: 100%; height: auto; display: block; }
+    #x1-teams .x1-bar { cursor: default; outline: none; }
+    #x1-teams .x1-bar:hover rect, #x1-teams .x1-bar:focus rect { fill: var(--accent-soft); }
+  </style>"""
+
+CHART_SCRIPT = """  <script>
+  (function () {
+    var panel = document.getElementById('x1-teams');
+    if (!panel) return;
+    var tip = document.createElement('div');
+    tip.className = 'tip'; tip.hidden = true; document.body.appendChild(tip);
+    function show(g, x, y) {
+      tip.innerHTML = g.getAttribute('data-tip'); tip.hidden = false;
+      var w = tip.offsetWidth, hgt = tip.offsetHeight;
+      tip.style.left = Math.min(x + 14, window.innerWidth - w - 8) + 'px';
+      tip.style.top = Math.max(8, y - hgt - 10) + 'px';
+    }
+    panel.querySelectorAll('.x1-bar').forEach(function (g) {
+      g.addEventListener('mousemove', function (e) { show(g, e.clientX, e.clientY); });
+      g.addEventListener('mouseleave', function () { tip.hidden = true; });
+      g.addEventListener('focus', function () { var b = g.getBoundingClientRect(); show(g, b.left + b.width / 2, b.top); });
+      g.addEventListener('blur', function () { tip.hidden = true; });
+    });
+  })();
+  </script>"""
 
 
 def table(rows, pool, total_runs):
@@ -78,31 +213,27 @@ def table(rows, pool, total_runs):
         caption = ("Agentic tasks: success rate over the runs finished "
                    f"(of {total_runs}); matched = only the runs every row of the team has finished{judged_note}.")
         last = ("Answered", "Tokens")
-    head = "".join(f"<th>{h}</th>" for h in ("Team", "Worker", "Kind", "Base model", "Size", "Thinking"))
+    head = "".join(f"<th>{h}</th>" for h in ("Team", "Worker", "Model", "Thinking"))
     head += "".join(f"<th class='num'>{h}</th>" for h in ("Runs", "Correct", "Matched", *last))
-    out = [f"    <div class=\"tablewrap\"><table><caption>{caption}</caption>",
+    out = [f"    <div class=\"tablewrap\"><table class=\"x1-workers\"><caption>{caption}</caption>",
            f"    <thead><tr>{head}</tr></thead><tbody>"]
     teams = [t for t in TEAMS if any(r["team"] == t and r["pool"] == pool for r in rows)]
     for i, team in enumerate(teams):
         members = [r for r in rows if r["team"] == team]
-        shared = set.intersection(*(set(r["by_run"]) for r in members))
         for j, r in enumerate(members):
-            if r["persona"]:
-                label, base, size = r["worker"], "Qwen3.5-4B", "4B dense"
-            else:
-                label, base, size = SPECIALISTS[r["worker"]]
+            label, base = label_of(r)
             cls = " class='group-gap'" if j == 0 and i else ""
             first = f"<strong>{team}</strong> {TEAMS[team]}" if j == 0 else ""
-            cells = [first, f"<span class='arm'>{label}</span>", "persona" if r["persona"] else "specialist", base, size, r["mode"]]
+            name = f"<strong>{label}</strong>" if r["best"] else label
+            model = "persona" if r["persona"] else base.replace("-Base-2512", "-Base")
+            cells = [first, f"<span class='arm'>{name}</span>", model, r["mode"]]
             tds = "".join(f"<td>{c}</td>" for c in cells)
             tds += f"<td class='num'>{r['runs']}</td>"
-            matched = [r["by_run"][k] for k in shared]
-            mq, mc, ma = (sum(m[k] for m in matched) for k in ("questions", "correct", "answered"))
             if r["judged"]:
                 stage2 = "<td class='num' style='color:var(--faint)'>stage 2</td>"
                 tds += stage2 + stage2 + pct(r["answered"], r["questions"])
             else:
-                tds += pct(r["correct"], r["questions"]) + pct(mc, mq, sub=False)
+                tds += pct(r["correct"], r["questions"], bold=r["best"]) + pct(r["m_c"], r["m_q"], sub=False, bold=r["best"])
                 if pool == "hard":
                     tds += pct(r["cut_off"], r["questions"], sub=False) if r["questions"] else pct(0, 0)
                 else:
@@ -170,6 +301,10 @@ def main():
     rows = merge(args.summary)
     for r in rows:
         r["pool"] = pools[r["team"]]
+    for team in TEAMS:
+        members = [r for r in rows if r["team"] == team]
+        if members:
+            matched_stats(members)
     total = config["settings"]["folds"] * config["settings"]["samples"]
     # A run answers every team that shares its pool, so count each (pool, worker, mode, run) once.
     done = len({(r["pool"], r["worker"], r["mode"], k) for r in rows for k in r["by_run"]})
@@ -179,8 +314,10 @@ def main():
     section = "\n".join([
         "  <section>",
         f"    <div class=\"sec-head\"><div class=\"kicker\">{notes['kicker']}</div><h2>Workers answering alone, so far</h2></div>",
-        table(rows, "hard", total), bullets(notes["hard"]),
-        table(rows, "agentic", total), bullets(notes["agentic"]),
+        CHART_STYLE,
+        charts(rows, "hard"), table(rows, "hard", total), bullets(notes["hard"]),
+        charts(rows, "agentic"), table(rows, "agentic", total), bullets(notes["agentic"]),
+        CHART_SCRIPT,
         "  </section>"])
     status = "\n".join([
         "  <div class=\"status\">",
