@@ -16,7 +16,9 @@ idempotent, so it can run after any other tab's splice script:
 - The X1 tab's design sections (Teams ... Expert persona prompts) are folded into one <details>.
 
 --x1-notes (optional) is a JSON object with lists "stage2" and "stage1" of extra finding bullets
-(HTML) added after the computed ones.
+(HTML) added after the computed ones, plus optional "asof" (time of the X1 numbers, for the
+eyebrow) and "status" (list of HTML bullets for the Summary status box). Without "asof"/"status",
+the live page's eyebrow and status box are kept, never reset to summary_tab.html.
 """
 
 import argparse
@@ -35,6 +37,8 @@ LABELS = {"summary": "Summary", "e2-topology": "Selection × topology, 0.8B"}
 GROUPS = ("Current · hard and agentic pools", "Earlier · easy pool, 50-persona bank")
 BUTTON = re.compile(r'[ \t]*<button type="button" role="tab" id="tabbtn-([\w-]+)"[^>]*>([^<]*)</button>[ \t]*\n?')
 X1_RE = re.compile(r"\n  <!-- SUMMARY-X1:START -->.*?<!-- SUMMARY-X1:END -->", re.S)
+EYEBROW_RE = re.compile(r'(<div class="eyebrow">)Summary · [^<]*(</div>)')
+STATUS_RE = re.compile(r'(<div class="status">\s*<span class="label">.*?</span></span>\s*<ul class="findings">).*?(</ul>)', re.S)
 DESIGN_START = '  <section>\n    <div class="sec-head"><div class="kicker">Design</div><h2>Teams</h2>'
 DESIGN_SUMMARY = ("Design and setup: teams, settled decisions, ablations, smoke tests, "
                   "thinking on vs off, model cards, persona prompts")
@@ -189,6 +193,18 @@ def main():
     elif "<!-- SUMMARY-X1:START -->" in page:
         live_x1 = X1_RE.search(page)[0]
         block = X1_RE.sub(lambda _: live_x1, block, count=1)
+
+    # Eyebrow and status list: from the notes ("asof", "status") if given, else kept from the live page.
+    notes = json.load(open(args.x1_notes)) if args.x1_notes else {}
+    live = page[page.index("<!-- SUMMARY:START -->"):page.index("<!-- SUMMARY:END -->")] if "<!-- SUMMARY:START -->" in page else ""
+    if "asof" in notes:
+        block = EYEBROW_RE.sub(lambda m: m[1] + f"Summary · all experiments · X1 numbers as of {notes['asof']}" + m[2], block, count=1)
+    elif live:
+        block = EYEBROW_RE.sub(lambda _: EYEBROW_RE.search(live)[0], block, count=1)
+    if "status" in notes:
+        block = STATUS_RE.sub(lambda m: m[1] + "\n" + "\n".join(f"      <li><span>{s}</span></li>" for s in notes["status"]) + "\n    " + m[2], block, count=1)
+    elif live:
+        block = STATUS_RE.sub(lambda _: STATUS_RE.search(live)[0], block, count=1)
 
     if "<!-- SUMMARY:START -->" in page:
         a = page.index("  <!-- SUMMARY:START -->")
