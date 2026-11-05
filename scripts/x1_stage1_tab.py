@@ -8,7 +8,9 @@
 `--summary` takes x1_stage1_summary.py output from each box running stage 1; a run present in
 more than one is counted once. In the notes, "{done}" and "{planned}" become the counts of finished
 and planned runs. `--notes` is a JSON file of the hand-written parts: "eyebrow",
-"kicker", "hard" and "agentic" (finding bullets, HTML) and "status" (paragraphs, HTML). The stage 1
+"kicker", "pill", "hard" and "agentic" (finding bullets, HTML) and "status" (paragraphs, HTML), plus
+optional "pill_class" ("running", the default, or "done") and "stage1_title" / "stage2_title" (section
+headings; defaults "Workers answering alone, so far" and "Hub with its team, so far"). The stage 1
 section, the eyebrow and the status box of the tab between <!-- X1:START --> and <!-- X1:END -->
 are replaced; everything else on the page is kept.
 
@@ -358,8 +360,9 @@ def stage2_table(records):
     groups = {}
     for r in records:
         groups.setdefault((r["team"], r["modes"]), []).append(r)
-    caption = ("Hub (35B, thinking off) reading its team's four answers, summed over the fold/sample runs finished "
-               "(of 15); specialists' thinking: headline = each one's better stage 1 mode, personas always off; "
+    complete = all(len(rs) == 15 for rs in groups.values())
+    runs = "all 15 fold/sample runs" if complete else "the fold/sample runs finished (of 15)"
+    caption = (f"Hub (35B, thinking off) reading its team's four answers, summed over {runs}; specialists' thinking: headline = each one's better stage 1 mode, personas always off; "
                "best worker = the team member with most correct over the same runs, picked in hindsight; "
                "fixed / broke = questions where the hub is right and the majority vote wrong, and the reverse.")
     head = "".join(f"<th>{h}</th>" for h in ("Team", "Thinking", "Best worker"))
@@ -419,7 +422,7 @@ def main():
     notes = json.loads(fill(Path(args.notes).read_text()))
     section = "\n".join([
         "  <section>",
-        f"    <div class=\"sec-head\"><div class=\"kicker\">{notes['kicker']}</div><h2>Workers answering alone, so far</h2></div>",
+        f"    <div class=\"sec-head\"><div class=\"kicker\">{notes['kicker']}</div><h2>{notes.get('stage1_title', 'Workers answering alone, so far')}</h2></div>",
         CHART_STYLE,
         charts(rows, "hard"), table(rows, "hard", total), bullets(notes["hard"]),
         charts(rows, "agentic"), table(rows, "agentic", total), bullets(notes["agentic"]),
@@ -427,14 +430,14 @@ def main():
         "  </section>"])
     status = "\n".join([
         "  <div class=\"status\">",
-        f"    <span class=\"label\">Status <span class=\"pill running\">{notes['pill']}</span></span>",
+        f"    <span class=\"label\">Status <span class=\"pill {notes.get('pill_class', 'running')}\">{notes['pill']}</span></span>",
         *(f"    <p>{p}</p>" for p in notes["status"]),
         "  </div>"])
 
     page = Path(args.live).read_text()
     start, end = page.index("<!-- X1:START -->"), page.index("<!-- X1:END -->")
     tab = page[start:end]
-    tab, n1 = re.subn(r"  <section>\n    <div class=\"sec-head\"><div class=\"kicker\">[^<]*</div><h2>Workers answering alone, so far</h2>.*?\n  </section>",
+    tab, n1 = re.subn(r"  <section>\n    <div class=\"sec-head\"><div class=\"kicker\">[^<]*</div><h2>Workers answering alone[^<]*</h2>.*?\n  </section>",
                       lambda _: section, tab, count=1, flags=re.S)
     tab, n2 = re.subn(r"  <div class=\"status\">.*?\n  </div>", lambda _: status, tab, count=1, flags=re.S)
     tab, n3 = re.subn(r"(<div class=\"eyebrow\">)[^<]*(</div>)", lambda m: m[1] + notes["eyebrow"] + m[2], tab, count=1)
@@ -444,11 +447,11 @@ def main():
         records2 = json.load(open(args.stage2))
         hub = "\n".join([
             "  <section>",
-            f"    <div class=\"sec-head\"><div class=\"kicker\">{notes['stage2_kicker']}</div><h2>Hub with its team, so far</h2></div>",
+            f"    <div class=\"sec-head\"><div class=\"kicker\">{notes['stage2_kicker']}</div><h2>{notes.get('stage2_title', 'Hub with its team, so far')}</h2></div>",
             HUB_EXPLAINER, stage2_charts(records2, config),
             stage2_table(records2), bullets(notes["stage2"]),
             "  </section>"])
-        pattern = r"  <section>\n    <div class=\"sec-head\"><div class=\"kicker\">[^<]*</div><h2>Hub with its team, so far</h2>.*?\n  </section>"
+        pattern = r"  <section>\n    <div class=\"sec-head\"><div class=\"kicker\">[^<]*</div><h2>Hub with its team[^<]*</h2>.*?\n  </section>"
         tab, n4 = re.subn(pattern, lambda _: hub, tab, count=1, flags=re.S)
         if not n4:
             at = tab.index(section)
