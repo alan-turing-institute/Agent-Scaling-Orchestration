@@ -290,6 +290,7 @@ CHART_STYLE = """  <style>
     #x1-teams .x1-chart h3 { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 0.8rem; font-weight: 500; letter-spacing: 0.04em; margin-bottom: 6px; }
     #x1-teams .x1-chart h3 span { color: var(--faint); font-weight: 400; margin-left: 6px; }
     #x1-teams .x1-svg { overflow-x: auto; }
+    #x1-teams .x1-dots { max-width: 640px; }
     #x1-teams .x1-svg svg { min-width: 420px; width: 100%; height: auto; display: block; }
     #x1-teams .x1-bar { cursor: default; outline: none; }
     #x1-teams .x1-bar:hover rect, #x1-teams .x1-bar:focus rect { fill: var(--accent-soft); }
