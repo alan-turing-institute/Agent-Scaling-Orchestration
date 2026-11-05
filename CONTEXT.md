@@ -53,9 +53,11 @@ The set of agents the orchestrator may choose from.
 ### Choosing
 
 **Orchestrator**:
-The agent that, for each task, either answers it directly or delegates it by choosing a
-configuration, weighing what each agent gets right against what it costs.
-_Avoid_: router, selector, planner
+The agent that leads a team. In X1 the team is fixed: the orchestrator reads every worker's answer
+and gives the team's final answer, and does not choose the team. From X3 on it also, for each task,
+either answers it directly or delegates it by choosing a configuration, weighing what each agent
+gets right against what it costs. Called the hub in X1 until 2026-11-05; the code still says `hub`.
+_Avoid_: hub, router, selector, planner
 
 **Direct answer**:
 The orchestrator answering a task itself, with no team.
@@ -99,15 +101,9 @@ How a team's agents work together and how their answers become one: vote, cascad
 centralized, synthesis, or sequential.
 _Avoid_: mechanism, aggregation, architecture
 
-**Hub**:
-The agent in a centralized topology that reads every other team member's answer and gives the
-team's final answer. It combines answers; it does not choose the team, so a hub is not an
-orchestrator.
-_Avoid_: orchestrator, aggregator (when meaning the hub)
-
 **Worker**:
 A team member in a centralized topology. It answers without seeing anyone else's work, so its
-answer is also its solo answer; the hub reads it.
+answer is also its solo answer; the orchestrator reads it.
 _Avoid_: solver (when meaning the team member)
 
 **Expert persona**:

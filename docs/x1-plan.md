@@ -2,7 +2,7 @@
 
 Started in a design session on 2026-10-22, while X0 runs. X1 (prompts) and X2 (models and
 specialists) from [§10 of the v2 plan](orchestration-v2-plan.md#10-experiments-on-the-harder-benchmarks)
-become one experiment: a **fixed team** of personas and **specialists** whose **hub** reads their
+become one experiment: a **fixed team** of personas and **specialists** whose **orchestrator** reads their
 answers and gives the final one. Terms in **bold** are defined in [`CONTEXT.md`](../CONTEXT.md). How
 each specialist was trained is in [`notes/specialists.md`](notes/specialists.md) and
 [`notes/base-models.md`](notes/base-models.md). Issues: #16 (personas), #15 (specialist gates),
@@ -14,30 +14,33 @@ Status: inventory written; Q6–Q26 settled 2026-10-22; design still being settl
 
 ## 1. Settled so far
 
-- **A fixed team, centralized topology.** Workers answer alone; the hub reads all their answers and
+- **A fixed team, centralized topology.** Workers answer alone; the orchestrator reads all their answers and
   gives the team's answer (`team_config.centralized`). Nothing is chosen per task; that is X3.
 - **One run gives everything.** A worker that reads nothing *is* answering solo, so the same run
   yields each persona's and specialist's solo answer (X1's and X2's comparisons against the neutral
-  base), the majority vote over workers (by **replay**, if needed), and the hub's answer. No separate
+  base), the majority vote over workers (by **replay**, if needed), and the orchestrator's answer. No separate
   gate runs first.
 - **Questions:** the hard pool (780) and the agentic pool (350).
 - **Where:** develop on a branch off `main` on sparkie12, push it, and pull it on the second Spark
   (spark-6695), which runs the experiment. sparkie12 is busy with X0 until about 23 Oct.
-- **On agentic tasks** each worker runs its own episode in a fresh environment, and the hub starts a
-  fresh episode with the workers' attempts as advice (`runner.py:140-146`). The hub sees each
+- **On agentic tasks** each worker runs its own episode in a fresh environment, and the orchestrator starts a
+  fresh episode with the workers' attempts as advice (`runner.py:140-146`). The orchestrator sees each
   worker's final message and final answer or outcome, not its full transcript (Q10).
 - **One fixed team per source** (Q6): each source (and MMLU-Pro / GPQA subject) gets its own team of
   matching experts and specialists, fixed before the run.
-- **Hub** (Q7): Qwen3.6-35B, thinking off, neutral prompt. A 4B (thinking off) hub is a later
+- **Orchestrator** (Q7): Qwen3.6-35B, thinking off, neutral prompt. A 4B (thinking off) orchestrator is a later
   ablation.
+  Called the **hub** until 2026-11-05; the code still says `hub` (`scripts/x1_hub.py`, `ROLES["hub"]`,
+  the `hub_*` result fields). In X1 the team is fixed, so this orchestrator combines answers and does
+  not choose the team.
 - **Persona workers** (Q8) run on Qwen3.5-4B, thinking off. Each specialist runs in the thinking mode
   it was trained for.
 - **Settings** (Q9) match X0: 30,720-token answers, vendor sampling, X0's 5 folds and question keys,
   so every worker's solo answer is a new row of the X0 answer matrix. k = 3 samples per worker; the
-  hub runs once per sample.
+  orchestrator runs once per sample.
 - **Record everything** (Q10, Q11): every worker's answer, correctness and token counts (thinking
-  included) are kept, as are the hub's, so solo performance is reported per worker. Results are
-  reported raw first: per-worker, majority vote, hub. Comparisons (hub vs best single worker per
+  included) are kept, as are the orchestrator's, so solo performance is reported per worker. Results are
+  reported raw first: per-worker, majority vote, orchestrator. Comparisons (orchestrator vs best single worker per
   source vs bare 35B, against cost) come afterwards.
 - **Team composition** (Q13, Q20, Q22, Q23): **4 workers per team**: 2 expert personas and 2
   specialists. Where fewer than 2 specialists fit a source, 3 expert personas and 1 specialist.
@@ -56,8 +59,8 @@ Status: inventory written; Q6–Q26 settled 2026-10-22; design still being settl
   end of thinking) and how often the answer is still cut off, in case the budget must rise.
 - **Summary instruction** (Q22): every worker's prompt gets, before the format line: *Before your
   final answer, write "Summary:" followed by at most five sentences giving the key steps of your
-  reasoning.* The hub gets that block plus the final answer. When a worker leaves the block out, the
-  hub gets the last 600 characters instead; report this **fallback rate** (the share of a worker's
+  reasoning.* The orchestrator gets that block plus the final answer. When a worker leaves the block out, the
+  orchestrator gets the last 600 characters instead; report this **fallback rate** (the share of a worker's
   answers without a usable summary) per worker.
 - **Specialists** (Q14, Q18): chosen by the user from the reviewed list (`notes/model-cards.md`),
   for the hard pool and for tool use on the agentic pool.
@@ -66,14 +69,14 @@ Status: inventory written; Q6–Q26 settled 2026-10-22; design still being settl
 - **Thinking** (Q16): cap thinking per request in vLLM (`thinking_token_budget`, which needs
   `--reasoning-config` on the server) wherever a model supports it; where it cannot, give that model
   a larger answer cap instead.
-- **Handoff** (Q17): the hub reads each worker's summary plus its answer (Q22), not the last 600
+- **Handoff** (Q17): the orchestrator reads each worker's summary plus its answer (Q22), not the last 600
   characters.
 - **Both thinking modes for specialists** (2026-10-26): stage 1 records every specialist's answers
   with thinking on and with thinking off (Ministral only thinks), so the mode can be chosen per
   specialist at stage 2 and an orchestrator's choice of mode (L10) replayed offline. Personas stay
-  thinking off; the hub stays thinking off.
+  thinking off; the orchestrator stays thinking off.
 - **Staged run** (Q19): stage 1 serves one model at a time and collects every worker's answers;
-  stage 2 serves only the hub and runs it over the saved answers.
+  stage 2 serves only the orchestrator and runs it over the saved answers.
 - **Expert prompts** (Q12) are new, one or two per source or subject, written the same way and in
   the same style as the bank's personas (a "You are …" first line, then "Your approach:" bullets).
   Within a team they differ by problem-solving approach, not subject knowledge (2026-10-26).
@@ -151,7 +154,7 @@ Every hard and agentic module has `PERSONA_SET = []`. The only existing link is 
   user = `env.task_prompt()`.
 - **Commit-to-an-answer** prompt: planned in the original X1, dropped (Q20–Q23); the thinking
   budget handles cut-offs instead.
-- The hub's role text is `ROLES["hub"]` (`roles.py`), appended after its persona, if any.
+- The orchestrator's role text is `ROLES["hub"]` (`roles.py`), appended after its persona, if any.
 
 ### 3.4 Draft expert personas (for review)
 
@@ -478,7 +481,7 @@ MathThink-Qwen-3.5-4B, occamy and other 35B agentic fine-tunes) are listed in th
 | Qwen3.5-4B | Yes | `vllm/qwen3.5-4b/` | RL-MATH, personas, neutral |
 | Gemma-4-E4B | Yes | `vllm/gemma4-e4b/` | ShiningValiant3 |
 | Ministral-3-3B-Instruct | Yes | `vllm/ministral3-3b/` | (Reasoning is its sibling) |
-| Qwen3.6-35B-A3B NVFP4 | Yes | `vllm/qwen3.6/run_docker_nvfp4.sh` | Hub; BigBang |
+| Qwen3.6-35B-A3B NVFP4 | Yes | `vllm/qwen3.6/run_docker_nvfp4.sh` | Orchestrator; BigBang |
 | Llama-3.1-8B-Instruct | No | none | HuatuoGPT-o1-8B, Fino1, R1-Distill |
 | Qwen2.5-7B-Instruct | No | none | Fin-R1, HuatuoGPT-o1-7B |
 
@@ -490,7 +493,7 @@ and may matter for text-only checkpoints (#30).
 Ten fixed teams (Q26), 4 workers each (Q23). **Expert personas run on the base model,
 Qwen3.5-4B with thinking off, never on a fine-tune; specialists get no persona** (their prompt is
 the question, the format suffix and the summary instruction, plus any system prompt their card
-requires, such as Ministral's `SYSTEM_PROMPT.txt`). The hub is Qwen3.6-35B, thinking off.
+requires, such as Ministral's `SYSTEM_PROMPT.txt`). The orchestrator is Qwen3.6-35B, thinking off.
 
 | # | Team | Sources (n) | Shape | Expert personas (§3.4) | Specialists |
 |---|---|---|---|---|---|
@@ -541,10 +544,10 @@ first run.
 
 | # | Item | From | When |
 |---|---|---|---|
-| L1 | **4B hub ablation**: rerun stage 2 with Qwen3.5-4B (thinking off) as the hub over the same saved worker answers | Q7 | After the first run; stage 1 answers are reused |
-| L2 | **Comparisons**: hub vs best single worker per source vs bare 35B vs majority vote (replay), on accuracy against cost | Q11 | After the raw results are reported |
+| L1 | **4B orchestrator ablation**: rerun stage 2 with Qwen3.5-4B (thinking off) as the orchestrator over the same saved worker answers | Q7 | After the first run; stage 1 answers are reused |
+| L2 | **Comparisons**: orchestrator vs best single worker per source vs bare 35B vs majority vote (replay), on accuracy against cost | Q11 | After the raw results are reported |
 | L3 | **Solo rows for specialists' other bases**: Gemma-4-E4B (for ShiningValiant3) and Ministral-3-3B-Instruct (for Ministral-R) on the same questions and settings, so each specialist has its paired base | Q15 | When no experiment is running |
-| L4 | **Fuller handoff ablation**: hub served at 131k context, reading each worker's last N tokens (or full answer) instead of its summary | Q17 | After the first run; reuses stage 1 answers |
+| L4 | **Fuller handoff ablation**: orchestrator served at 131k context, reading each worker's last N tokens (or full answer) instead of its summary | Q17 | After the first run; reuses stage 1 answers |
 | L5 | **Second wave of specialists** needing new hosts (Llama-3.1-8B, Qwen2.5-7B: R1-Distill-Llama-8B, Fino1-8B, Fin-R1, …), if the user picks any | Q14 | After the Llama / Qwen2.5 serve scripts exist (#32) |
 | L6 | **Text-only checkpoints** (Med-Qwen and other `Qwen3_5ForCausalLM` fine-tunes): local wrapper or vLLM ≥ 0.27; check the `26.06-py3` image on the second Spark | §4 | Only if one is picked (#30) |
 | L7 | **Update the specialist smoke-test spec** (the 2026-10-22 smoke tests already used X1's settings) in `notes/specialists.md` (still says temperature 0 and a 4,096-token cap) to vendor sampling and X0's caps | §5 | Before any specialist is smoke-tested |
@@ -557,11 +560,11 @@ first run.
 - Expert prompts for every source and subject, in the bank's style (Q12), written into this plan
   for review before coding.
 - A worker instruction to end with a short summary of its reasoning, and a `summary` handoff that
-  passes it to the hub (Q17).
+  passes it to the orchestrator (Q17).
 - Per-agent thinking budget: `THINKING_TOKEN_BUDGET` is one global environment variable today
   (`model/openai_compat.py:17-23`), and vLLM rejects the field on servers without
   `--reasoning-config` (#11).
-- Stage 2 runner: feed saved worker answers to the hub without rerunning the workers (Q19).
+- Stage 2 runner: feed saved worker answers to the orchestrator without rerunning the workers (Q19).
 - Serve scripts and smoke tests for the chosen specialists on the second Spark (#14), including
   whether `--reasoning-config` can cap Gemma-4's and Ministral's thinking (Q16).
 - Team configs for T1–T10 (§4.4).
@@ -675,7 +678,7 @@ completion tokens, answers cut off at 30,720:
   same 4 Finance-Agent tasks).
 - **Judge.** These smoke tests used each specialist as its own judge for BrowseComp-Plus and
   Finance-Agent (Agents-A1's "claude beri langmann" was judged against "Claude Berel Langmann").
-  X1 judges both with the 35B, as the repo intends, scored in stage 2 with the hub.
+  X1 judges both with the 35B, as the repo intends, scored in stage 2 with the orchestrator.
 - Ministral is not in the table: it always thinks (no `enable_thinking` switch).
 
 Serve settings that worked are in `~sizhey/orchestrator/x1-smoke/serve.sh` and `queue.sh` on the
@@ -691,13 +694,13 @@ watchdog), `x1_hub.py`, `x1_stage2.sh`, `src/expert_personas.py`, deferred judgi
 End-to-end check on the second Spark (T6 and T7, fold 0, sample 0, 2 questions per worker, both
 stages; 1 h 37 min, `data-claude/x1-teams-test/`):
 
-| Team | Hub | Vote | Workers correct | Summary fallbacks |
+| Team | Orchestrator | Vote | Workers correct | Summary fallbacks |
 |---|---|---|---|---|
 | T6 Engineering (headline) | 2/2 | 1/2 | personas 1 + 1, RL-MATH 1, Ministral 0 | 0 |
 | T7 BrowseComp-Plus (headline) | 0/2 | 0/2 | all 0 | — |
 
 - Every stage ran with no stalls; the 35B regraded every deferred judge call in stage 2.
-- T7: three workers and the hub answered "Claude Beri Langmann" (gold "Claude Berel Langmann"),
+- T7: three workers and the orchestrator answered "Claude Beri Langmann" (gold "Claude Berel Langmann"),
   judged wrong; nobody answered the other question, and BigBang ran to the 30-step limit again.
 
 ## 8. Open decisions

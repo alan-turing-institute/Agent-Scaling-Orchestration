@@ -43,7 +43,7 @@ EYEBROW_RE = re.compile(r'(<div class="eyebrow">)Summary · [^<]*(</div>)')
 STATUS_RE = re.compile(r'(<div class="status">\s*<span class="label">.*?</span></span>\s*<ul class="findings">).*?(</ul>)', re.S)
 KICKER_RE = re.compile(r'(<!-- SUMMARY-X1:START -->\s*<section>\s*<div class="sec-head"><div class="kicker">)[^<]*(</div>)')
 PILL_RE = re.compile(r'(<div class="status">\s*<span class="label">Status )<span class="pill [\w-]+">[^<]*</span>')
-X1_KICKER = "X1 · fixed expert teams with a 35B hub · running"
+X1_KICKER = "X1 · fixed expert teams with a 35B orchestrator · running"
 DESIGN_START = '  <section>\n    <div class="sec-head"><div class="kicker">Design</div><h2>Teams</h2>'
 DESIGN_SUMMARY = ("Design and setup: teams, settled decisions, ablations, smoke tests, "
                   "thinking on vs off, model cards, persona prompts")
@@ -69,7 +69,7 @@ def x1_block(stage1_paths, stage2_path, notes):
     label = lambda w: SPECIALISTS[w][0] if w in SPECIALISTS else w
     out = ["  <!-- SUMMARY-X1:START -->", "  <section>",
            f"    <div class=\"sec-head\"><div class=\"kicker\">{notes.get('x1_kicker', X1_KICKER)}</div>"
-           "<h2>Hub with its team, and workers alone</h2>"
+           "<h2>Orchestrator with its team, and workers alone</h2>"
            "<button type=\"button\" class=\"linkbtn\" data-goto=\"x1-teams\">Full X1 tab</button></div>"]
 
     if stage2_path:
@@ -97,15 +97,15 @@ def x1_block(stage1_paths, stage2_path, notes):
                         f"<td class=\"num\">{f}</td><td class=\"num\">{b}</td></tr>")
         n = len(rows)
         out += ["    <div class=\"tablewrap\">", "      <table>",
-                f"        <caption>Stage 2{'' if runs == {15} else ' so far'}, headline thinking modes: the hub (35B, thinking off) "
+                f"        <caption>Stage 2{'' if runs == {15} else ' so far'}, headline thinking modes: the orchestrator (35B, thinking off) "
                 "against its team's majority vote and its best worker (picked in hindsight), over "
                 f"{'all 15 fold/sample runs' if runs == {15} else 'the fold/sample runs finished (of 15)'}; "
-                "fixed / broke = hub right where the vote is wrong, and the reverse.</caption>",
-                "        <thead><tr><th>Team</th><th>Best worker</th><th class=\"num\">Runs</th><th class=\"num\">Hub</th>"
+                "fixed / broke = orchestrator right where the vote is wrong, and the reverse.</caption>",
+                "        <thead><tr><th>Team</th><th>Best worker</th><th class=\"num\">Runs</th><th class=\"num\">Orchestrator</th>"
                 "<th class=\"num\">Vote</th><th class=\"num\">Best worker</th><th class=\"num\">Fixed</th>"
                 "<th class=\"num\">Broke</th></tr></thead>", "        <tbody>", *rows,
                 "        </tbody>", "      </table>", "    </div>",
-                bullets([f"The hub beats the majority vote on {beat_vote} of {n} teams and the best worker on {beat_best} of {n}.",
+                bullets([f"The orchestrator beats the majority vote on {beat_vote} of {n} teams and the best worker on {beat_best} of {n}.",
                          f"Over these teams it fixes {fixed} answers the vote got wrong and breaks {broke} it got right.",
                          *notes.get("stage2", [])])]
 
