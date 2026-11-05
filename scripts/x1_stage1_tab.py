@@ -4,6 +4,9 @@
 
 `--stage2` (optional) takes a JSON list of stage 2 holdout_summary.json records; with it, a
 "Orchestrator with its team" section (notes "stage2_kicker" and "stage2" bullets) goes above stage 1.
+`--stage2-datasets` (optional, with `--stage2`) takes x1_stage2_by_dataset.py output and adds a "By
+dataset" part to that section: a table, a chart of every dataset and team, per-worker charts for the
+teams that draw on more than one dataset, and notes "stage2_datasets" bullets.
 
 `--summary` takes x1_stage1_summary.py output from each box running stage 1; a run present in
 more than one is counted once. In the notes, "{done}" and "{planned}" become the counts of finished
@@ -46,6 +49,9 @@ SPECIALISTS = {  # model key: label, base model, size
     "occamy": ("Occamy-1.0", "Qwen3.6-35B-A3B", "35B MoE, 3B active"),
     "xyz-aquila": ("XYZ-Aquila-mini", "Qwen3.6-35B-A3B", "35B MoE, 3B active"),
 }
+DATASETS = {"math500": "MATH-500", "aime": "AIME", "gpqa_diamond": "GPQA Diamond", "mmlu_pro": "MMLU-Pro",
+            "browsecomp_plus": "BrowseComp-Plus", "finance_agent": "Finance-Agent", "workbench": "WorkBench",
+            "plancraft": "Plancraft"}
 COUNTS = ("questions", "correct", "answered", "cut_off", "completion_tokens")
 
 
@@ -193,16 +199,24 @@ def worker_mode(config, worker, modes):
     return spec["headline"] if modes == "headline" else (modes if modes in spec["modes"] else spec["headline"])
 
 
-def stage2_charts(records, config):
-    """Per team, one chart per thinking mode (switched by buttons): orchestrator, vote and each worker, with 95% intervals."""
+def stage2_charts(records, config, split=False):
+    """Per team, one chart per thinking mode (switched by buttons): orchestrator, vote and each worker, with 95% intervals.
+
+    With `split`, `records` are x1_stage2_by_dataset.py records and there is one chart per dataset of each
+    team that draws on more than one dataset."""
     groups = {}
     for r in records:
-        groups.setdefault((r["team"], r["modes"]), []).append(r)
-    teams = [t for t in TEAMS if any(k[0] == t for k in groups)]
+        groups.setdefault(((r["team"], r["dataset"]) if split else r["team"], r["modes"]), []).append(r)
+    if split:
+        multi = {t for t in TEAMS if len({k[0][1] for k in groups if k[0][0] == t}) > 1}
+        teams = [(t, d) for d in DATASETS for t in TEAMS if t in multi and any(k[0] == (t, d) for k in groups)]
+    else:
+        teams = [t for t in TEAMS if any(k[0] == t for k in groups)]
     pools = {t["id"]: t["pool"] for t in config["teams"]}
     figs = []
     for team in teams:
-        unit = "questions" if pools[team] == "hard" else "tasks"
+        title = f"{DATASETS[team[1]]} · {team[0]} {TEAMS[team[0]]}" if split else f"{team} {TEAMS[team]}"
+        unit = "questions" if pools[team[0] if split else team] == "hard" else "tasks"
         panes = []
         for mode in MODES:
             rs = groups.get((team, mode))
@@ -236,16 +250,20 @@ def stage2_charts(records, config):
                 items.append({"label": f"{name} · {wm}", "bold": c == top, "c": c, "q": q, "distinct": distinct, "unit": unit,
                               "colour": PERSONA_COLOUR if persona else SPECIALIST_COLOUR,
                               "tip": f"<b>{name}</b> · thinking {wm}<br><span class=m>{'persona' if persona else 'specialist'} · {base}</span>"})
-            svg = bar_svg(items, f"{team} {TEAMS[team]}, {MODES[mode]}: orchestrator, vote and each worker")
+            svg = bar_svg(items, f"{title}, {MODES[mode]}: orchestrator, vote and each worker")
             panes.append(f"<div class='x1-mode' data-mode='{mode}'{hidden}>"
                          f"<div class='x1-sub'>{len(rs)} of 15 runs · {distinct} {unit}</div><div class='x1-svg'>{svg}</div></div>")
-        figs.append(f"      <div class='x1-chart'><h3>{team} {TEAMS[team]}</h3>{''.join(panes)}</div>")
+        figs.append(f"      <div class='x1-chart'><h3>{title}</h3>{''.join(panes)}</div>")
     seg = "".join(f"<button type='button' data-mode='{m}' aria-pressed='{'true' if m == 'headline' else 'false'}'>{MODES[m]}</button>"
                   for m in MODES)
+    caption = ("Accuracy of the orchestrator, the majority vote and each worker on the same runs; whiskers = 95% Wilson "
+               "interval over the team's distinct questions or tasks; best worker in bold.")
+    if split:
+        caption = ("Teams that draw on more than one dataset, one chart per dataset: accuracy of the orchestrator, the majority "
+                   "vote and each worker on the same runs; whiskers = 95% Wilson interval over the distinct questions; best worker in bold.")
     return "\n".join([
         "    <figure class='x1-hubfig'>",
-        "      <figcaption>Accuracy of the orchestrator, the majority vote and each worker on the same runs; whiskers = 95% Wilson "
-        "interval over the team's distinct questions or tasks; best worker in bold.</figcaption>",
+        f"      <figcaption>{caption}</figcaption>",
         f"      <div class='controls'><div class='control'><span class='label'>Specialists' thinking</span><div class='seg x1-seg'>{seg}</div></div></div>",
         "      <div class='legend'><span><i class='swatch sq' style='background:var(--s-continual)'></i> orchestrator</span>"
         f"<span><i class='swatch sq' style='background:var(--faint)'></i> majority vote</span>{LEGEND_WORKERS}</div>",
@@ -393,6 +411,145 @@ def stage2_table(records):
     return "\n".join(out)
 
 
+def dataset_rows(records, mode="headline"):
+    """Rows of the by-dataset view for one thinking mode: per dataset, an "all teams" row where several
+    teams draw on it, then one row per team. Counts are answers (questions × samples); "distinct" is the
+    number of different questions."""
+    groups = {}
+    for r in records:
+        if r["modes"] == mode:
+            groups.setdefault((r["dataset"], r["team"]), []).append(r)
+    rows = []
+    for dataset in DATASETS:
+        teams = [t for t in TEAMS if (dataset, t) in groups]
+        members = []
+        for team in teams:
+            rs = groups[(dataset, team)]
+            folds = {}
+            for r in rs:
+                folds[r["fold"]] = max(folds.get(r["fold"], 0), r["questions"])
+            ws = {}
+            for r in rs:
+                for w, c in r["workers_correct"].items():
+                    ws[w] = ws.get(w, 0) + c
+            best = max(ws, key=ws.get)
+            members.append({"dataset": dataset, "team": team, "runs": len(rs), "distinct": sum(folds.values()),
+                            "q": sum(r["questions"] for r in rs), "hub": sum(r["hub_correct"] for r in rs),
+                            "vote": sum(r["vote_correct"] for r in rs), "best": best, "best_c": ws[best],
+                            "persona": best not in SPECIALISTS,
+                            "fixed": sum(r["hub_transitions"]["fixed"] for r in rs),
+                            "broke": sum(r["hub_transitions"]["broke"] for r in rs)})
+        if len(members) > 1:
+            total = lambda k: sum(m[k] for m in members)
+            rows.append({"dataset": dataset, "team": None, "teams": len(members), "distinct": total("distinct"),
+                         "q": total("q"), "hub": total("hub"), "vote": total("vote"), "best": None,
+                         "fixed": total("fixed"), "broke": total("broke")})
+        rows.extend(members)
+    return rows
+
+
+def worker_label(worker):
+    return SPECIALISTS[worker][0] if worker in SPECIALISTS else worker
+
+
+def dataset_table(records):
+    rows = dataset_rows(records)
+    caption = ("Stage 2 by source dataset, headline thinking modes: the orchestrator (35B, thinking off) against its team's majority "
+               "vote and its best worker on that dataset (picked in hindsight), over all fold/sample runs; questions = different "
+               "questions, each answered in 3 samples; fixed / broke = orchestrator right where the vote is wrong, and the reverse.")
+    head = "".join(f"<th>{h}</th>" for h in ("Dataset", "Team", "Best worker"))
+    head += "".join(f"<th class='num'>{h}</th>" for h in ("Questions", "Orchestrator", "Vote", "Best worker", "Fixed", "Broke"))
+    out = [f"    <div class=\"tablewrap\"><table class=\"x1-workers\"><caption>{caption}</caption>",
+           f"    <thead><tr>{head}</tr></thead><tbody>"]
+    last = None
+    for r in rows:
+        first = r["dataset"] != last
+        cls = " class='group-gap'" if first and last is not None else ""
+        name = f"<strong>{DATASETS[r['dataset']]}</strong>" if first else ""
+        last = r["dataset"]
+        if r["team"] is None:
+            tds = f"<td>{name}</td><td>all {r['teams']} teams</td><td style='color:var(--faint)'>—</td>"
+            best = "<td class='num' style='color:var(--faint)'>—</td>"
+        else:
+            tds = (f"<td>{name}</td><td><strong>{r['team']}</strong> {TEAMS[r['team']]}</td>"
+                   f"<td><span class='arm'>{worker_label(r['best'])}</span></td>")
+            best = pct(r["best_c"], r["q"])
+        tds += f"<td class='num'>{r['distinct']}</td>" + pct(r["hub"], r["q"]) + pct(r["vote"], r["q"]) + best
+        tds += f"<td class='num'>{r['fixed']}</td><td class='num'>{r['broke']}</td>"
+        out.append(f"<tr{cls}>{tds}</tr>")
+    out.append("</tbody></table></div>")
+    return "\n".join(out)
+
+
+DW, DLX, DX0, DX1, DVX = 520, 196, 204, 470, 518
+
+
+def dataset_dots_svg(rows, aria):
+    """One line per dataset and team: majority vote (hollow), best worker (square) and orchestrator (filled, with 95% interval)."""
+    rows = [r for r in rows if r["team"] is not None]
+    sx = lambda v: DX0 + (DX1 - DX0) * v
+    gaps = sum(1 for a, b in zip(rows, rows[1:]) if a["dataset"] != b["dataset"])
+    h = TOP + RH * len(rows) + 8 * gaps + 22
+    svg = [f"<svg viewBox='0 0 {DW} {h}' role='img' aria-label='{html.escape(aria, quote=True)}' "
+           "font-family='IBM Plex Mono, ui-monospace, monospace' font-size='11'>"]
+    for t in (0, 0.25, 0.5, 0.75, 1):
+        x = sx(t)
+        svg.append(f"<line x1='{x:.1f}' y1='{TOP - 2}' x2='{x:.1f}' y2='{h - 20}' stroke='var(--rule)' stroke-width='1'/>")
+        svg.append(f"<text x='{x:.1f}' y='{h - 6}' text-anchor='middle' fill='var(--faint)' font-size='10'>{int(t * 100)}%</text>")
+    y = TOP
+    for i, r in enumerate(rows):
+        if i and r["dataset"] != rows[i - 1]["dataset"]:
+            y += 8
+        cy = y + RH / 2
+        hub, vote, best = r["hub"] / r["q"], r["vote"] / r["q"], r["best_c"] / r["q"]
+        lo, hi = wilson(hub, r["distinct"])
+        name, subject = DATASETS[r["dataset"]], TEAMS[r["team"]]
+        label = name if name == subject else f"{name} · {subject}"
+        colour = PERSONA_COLOUR if r["persona"] else SPECIALIST_COLOUR
+        tip = (f"<b>{DATASETS[r['dataset']]}</b> · {r['team']} {TEAMS[r['team']]}<br>"
+               f"orchestrator {100 * hub:.1f}% ({r['hub']}/{r['q']}), 95% interval {100 * lo:.0f}–{100 * hi:.0f}%<br>"
+               f"majority vote {100 * vote:.1f}%<br>best worker {100 * best:.1f}%: {html.escape(worker_label(r['best']))}<br>"
+               f"<span class=m>{r['distinct']} questions × 3 samples · fixed {r['fixed']}, broke {r['broke']}</span>")
+        lo_x, hi_x = sx(min(hub, vote, best)), sx(max(hub, vote, best))
+        svg.append(f"<g class='x1-bar' tabindex='0' data-tip='{html.escape(tip, quote=True)}'>"
+                   f"<rect x='0' y='{y}' width='{DW}' height='{RH}' fill='transparent'/>"
+                   f"<text x='{DLX}' y='{cy + 4:.1f}' text-anchor='end' fill='var(--ink)'>{html.escape(label)}</text>"
+                   f"<line x1='{lo_x:.1f}' y1='{cy}' x2='{hi_x:.1f}' y2='{cy}' stroke='var(--rule-strong)' stroke-width='2'/>"
+                   f"<line x1='{sx(lo):.1f}' y1='{cy}' x2='{sx(hi):.1f}' y2='{cy}' stroke='{HUB_COLOUR}' stroke-width='1.5' opacity='0.6'/>"
+                   f"<circle cx='{sx(vote):.1f}' cy='{cy}' r='4.5' fill='var(--surface)' stroke='var(--muted)' stroke-width='1.5'/>"
+                   f"<rect x='{sx(best) - 4:.1f}' y='{cy - 4}' width='8' height='8' fill='{colour}'/>"
+                   f"<circle cx='{sx(hub):.1f}' cy='{cy}' r='5.5' fill='{HUB_COLOUR}'/>"
+                   f"<text x='{DVX}' y='{cy + 4:.1f}' text-anchor='end' fill='var(--ink)' font-weight='700'>{100 * hub:.0f}%</text></g>")
+        y += RH
+    svg.append("</svg>")
+    return "".join(svg)
+
+
+def dataset_dots(records):
+    panes = []
+    for mode in MODES:
+        rows = dataset_rows(records, mode)
+        hidden = "" if mode == "headline" else " hidden"
+        if not rows:
+            panes.append(f"<div class='x1-mode' data-mode='{mode}'{hidden}><p class='x1-none'>No {MODES[mode]} runs yet.</p></div>")
+            continue
+        svg = dataset_dots_svg(rows, f"Stage 2 by dataset, {MODES[mode]}: orchestrator, majority vote and best worker")
+        panes.append(f"<div class='x1-mode' data-mode='{mode}'{hidden}><div class='x1-svg'>{svg}</div></div>")
+    seg = "".join(f"<button type='button' data-mode='{m}' aria-pressed='{'true' if m == 'headline' else 'false'}'>{MODES[m]}</button>"
+                  for m in MODES)
+    return "\n".join([
+        "    <figure class='x1-hubfig'>",
+        "      <figcaption>Each dataset and team: the orchestrator (with its 95% Wilson interval over the distinct questions), the majority "
+        "vote and the best worker on that dataset, picked in hindsight; value = orchestrator.</figcaption>",
+        f"      <div class='controls'><div class='control'><span class='label'>Specialists' thinking</span><div class='seg x1-seg'>{seg}</div></div></div>",
+        "      <div class='legend'><span><i class='swatch' style='background:var(--s-continual)'></i> orchestrator</span>"
+        "<span><i class='swatch hollow'></i> majority vote</span>"
+        "<span><i class='swatch sq' style='background:var(--s-random)'></i> best worker, persona</span>"
+        "<span><i class='swatch sq' style='background:var(--s-no_memory)'></i> best worker, specialist</span></div>",
+        "      <div class='x1-dots'>", *panes, "      </div>",
+        "    </figure>"])
+
+
 def bullets(items):
     return "\n".join(["    <ul class=\"findings\">", *(f"      <li>{b}</li>" for b in items), "    </ul>"])
 
@@ -402,6 +559,7 @@ def main():
     parser.add_argument("--summary", nargs="+", required=True)
     parser.add_argument("--notes", required=True)
     parser.add_argument("--stage2")
+    parser.add_argument("--stage2-datasets")
     parser.add_argument("live")
     parser.add_argument("out")
     args = parser.parse_args()
@@ -445,11 +603,16 @@ def main():
         sys.exit(f"X1 tab layout changed: stage 1 section {n1}, status {n2}, eyebrow {n3}")
     if args.stage2:
         records2 = json.load(open(args.stage2))
+        by_dataset = []
+        if args.stage2_datasets:
+            records3 = json.load(open(args.stage2_datasets))
+            by_dataset = ["    <h3 class=\"x1-what\">By dataset</h3>", dataset_table(records3), bullets(notes.get("stage2_datasets", [])),
+                          dataset_dots(records3), stage2_charts(records3, config, split=True)]
         hub = "\n".join([
             "  <section>",
             f"    <div class=\"sec-head\"><div class=\"kicker\">{notes['stage2_kicker']}</div><h2>{notes.get('stage2_title', 'Orchestrator with its team, so far')}</h2></div>",
             HUB_EXPLAINER, stage2_charts(records2, config),
-            stage2_table(records2), bullets(notes["stage2"]),
+            stage2_table(records2), bullets(notes["stage2"]), *by_dataset,
             "  </section>"])
         pattern = r"  <section>\n    <div class=\"sec-head\"><div class=\"kicker\">[^<]*</div><h2>(?:Hub|Orchestrator) with its team[^<]*</h2>.*?\n  </section>"
         tab, n4 = re.subn(pattern, lambda _: hub, tab, count=1, flags=re.S)
