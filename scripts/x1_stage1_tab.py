@@ -104,67 +104,162 @@ def label_of(r):
     return SPECIALISTS[r["worker"]][0], SPECIALISTS[r["worker"]][1]
 
 
+W, LX, X0, X1, VX, RH, TOP = 520, 272, 278, 462, 518, 24, 6
+
+
+def bar_svg(items, aria):
+    """Horizontal bars from 0 to 100% with a 95% Wilson interval. Each item: label, colour, c, q, distinct, bold, tip."""
+    sx = lambda v: X0 + (X1 - X0) * v
+    h = TOP + RH * len(items) + 22
+    svg = [f"<svg viewBox='0 0 {W} {h}' role='img' aria-label='{html.escape(aria, quote=True)}' "
+           "font-family='IBM Plex Mono, ui-monospace, monospace' font-size='11'>"]
+    for t in (0, 0.25, 0.5, 0.75, 1):
+        x = sx(t)
+        svg.append(f"<line x1='{x:.1f}' y1='{TOP - 2}' x2='{x:.1f}' y2='{h - 20}' stroke='var(--rule)' stroke-width='1'/>")
+        svg.append(f"<text x='{x:.1f}' y='{h - 6}' text-anchor='middle' fill='var(--faint)' font-size='10'>{int(t * 100)}%</text>")
+    for i, it in enumerate(items):
+        y = TOP + RH * i
+        cy = y + RH / 2
+        weight = " font-weight='700'" if it["bold"] else ""
+        ink = "var(--ink)" if it["bold"] else "var(--muted)"
+        label = it["label"] if len(it["label"]) <= 42 else it["label"][:41] + "…"
+        svg.append(f"<text x='{LX}' y='{cy + 4:.1f}' text-anchor='end' fill='{ink}'{weight}>{html.escape(label)}</text>")
+        if not it["q"]:
+            continue
+        p = it["c"] / it["q"]
+        lo, hi = wilson(p, it["distinct"])
+        bw = max(sx(p) - X0, 0.5)
+        bh = 14
+        rad = min(4, bw)
+        top = cy - bh / 2
+        path = (f"M{X0},{top} h{bw - rad:.1f} a{rad},{rad} 0 0 1 {rad},{rad} v{bh - 2 * rad} "
+                f"a{rad},{rad} 0 0 1 -{rad},{rad} h-{bw - rad:.1f} z")
+        tip = (f"{it['tip']}<br>{100 * p:.1f}% ({it['c']}/{it['q']} answers)<br>"
+               f"95% interval {100 * lo:.0f}–{100 * hi:.0f}% over {it['distinct']} {it.get('unit', 'questions')}")
+        svg.append(f"<g class='x1-bar' tabindex='0' data-tip='{html.escape(tip, quote=True)}'>"
+                   f"<rect x='0' y='{y}' width='{W}' height='{RH}' fill='transparent'/>"
+                   f"<path d='{path}' fill='{it['colour']}'/>"
+                   f"<line x1='{sx(lo):.1f}' y1='{cy}' x2='{sx(hi):.1f}' y2='{cy}' stroke='var(--ink)' stroke-width='1.5'/>"
+                   f"<line x1='{sx(lo):.1f}' y1='{cy - 4}' x2='{sx(lo):.1f}' y2='{cy + 4}' stroke='var(--ink)' stroke-width='1.5'/>"
+                   f"<line x1='{sx(hi):.1f}' y1='{cy - 4}' x2='{sx(hi):.1f}' y2='{cy + 4}' stroke='var(--ink)' stroke-width='1.5'/>"
+                   f"<text x='{VX}' y='{cy + 4:.1f}' text-anchor='end' fill='{ink}'{weight}>{100 * p:.0f}%</text></g>")
+    svg.append("</svg>")
+    return "".join(svg)
+
+
+PERSONA_COLOUR, SPECIALIST_COLOUR = "var(--s-random)", "var(--s-no_memory)"
+HUB_COLOUR, VOTE_COLOUR = "var(--s-continual)", "var(--faint)"
+LEGEND_WORKERS = ("<span><i class='swatch sq' style='background:var(--s-random)'></i> persona (Qwen3.5-4B)</span>"
+                  "<span><i class='swatch sq' style='background:var(--s-no_memory)'></i> specialist</span>")
+
+
 def charts(rows, pool):
     """One horizontal bar chart per scored team: matched accuracy per worker, with a 95% interval."""
     teams = [t for t in TEAMS if any(r["team"] == t and r["pool"] == pool and not r["judged"] for r in rows)]
     if not teams:
         return ""
-    W, LX, X0, X1, VX, RH, TOP = 520, 272, 278, 462, 518, 24, 6
     unit = "questions" if pool == "hard" else "tasks"
-    sx = lambda v: X0 + (X1 - X0) * v
     figs = []
     for team in teams:
         members = [r for r in rows if r["team"] == team]
-        h = TOP + RH * len(members) + 22
-        svg = [f"<svg viewBox='0 0 {W} {h}' role='img' aria-label='{team} {TEAMS[team]}: accuracy of each worker alone' "
-               "font-family='IBM Plex Mono, ui-monospace, monospace' font-size='11'>"]
-        for t in (0, 0.25, 0.5, 0.75, 1):
-            x = sx(t)
-            svg.append(f"<line x1='{x:.1f}' y1='{TOP - 2}' x2='{x:.1f}' y2='{h - 20}' stroke='var(--rule)' stroke-width='1'/>")
-            svg.append(f"<text x='{x:.1f}' y='{h - 6}' text-anchor='middle' fill='var(--faint)' font-size='10'>{int(t * 100)}%</text>")
-        for i, r in enumerate(members):
-            y = TOP + RH * i
-            cy = y + RH / 2
+        items = []
+        for r in members:
             name, base = label_of(r)
-            weight = " font-weight='700'" if r["best"] else ""
-            ink = "var(--ink)" if r["best"] else "var(--muted)"
-            short = name if len(name) <= 40 else name[:39] + "…"
-            svg.append(f"<text x='{LX}' y='{cy + 4:.1f}' text-anchor='end' fill='{ink}'{weight}>{short} · {r['mode']}</text>")
-            if not r["m_q"]:
-                continue
-            p = r["m_c"] / r["m_q"]
-            lo, hi = wilson(p, r["m_distinct"])
-            colour = "var(--s-random)" if r["persona"] else "var(--s-no_memory)"
-            bw = max(sx(p) - X0, 0.5)
-            bh = 14
-            rad = min(4, bw)
-            x, top = X0, cy - bh / 2
-            path = (f"M{x},{top} h{bw - rad:.1f} a{rad},{rad} 0 0 1 {rad},{rad} v{bh - 2 * rad} "
-                    f"a{rad},{rad} 0 0 1 -{rad},{rad} h-{bw - rad:.1f} z")
             kind = "persona" if r["persona"] else "specialist"
-            tip = (f"<b>{name}</b> · thinking {r['mode']}<br><span class=m>{kind} · {base}</span><br>"
-                   f"{100 * p:.1f}% ({r['m_c']}/{r['m_q']} answers)<br>95% interval {100 * lo:.0f}–{100 * hi:.0f}% "
-                   f"over {r['m_distinct']} questions")
-            svg.append(f"<g class='x1-bar' tabindex='0' data-tip='{html.escape(tip, quote=True)}'>"
-                       f"<rect x='0' y='{y}' width='{W}' height='{RH}' fill='transparent'/>"
-                       f"<path d='{path}' fill='{colour}'/>"
-                       f"<line x1='{sx(lo):.1f}' y1='{cy}' x2='{sx(hi):.1f}' y2='{cy}' stroke='var(--ink)' stroke-width='1.5'/>"
-                       f"<line x1='{sx(lo):.1f}' y1='{cy - 4}' x2='{sx(lo):.1f}' y2='{cy + 4}' stroke='var(--ink)' stroke-width='1.5'/>"
-                       f"<line x1='{sx(hi):.1f}' y1='{cy - 4}' x2='{sx(hi):.1f}' y2='{cy + 4}' stroke='var(--ink)' stroke-width='1.5'/>"
-                       f"<text x='{VX}' y='{cy + 4:.1f}' text-anchor='end' fill='{ink}'{weight}>{100 * p:.0f}%</text></g>")
-        svg.append("</svg>")
+            items.append({"label": f"{name} · {r['mode']}", "bold": r["best"], "c": r["m_c"], "q": r["m_q"],
+                          "distinct": r["m_distinct"], "unit": unit,
+                          "colour": PERSONA_COLOUR if r["persona"] else SPECIALIST_COLOUR,
+                          "tip": f"<b>{name}</b> · thinking {r['mode']}<br><span class=m>{kind} · {base}</span>"})
         n = members[0]["m_distinct"]
+        svg = bar_svg(items, f"{team} {TEAMS[team]}: accuracy of each worker alone")
         figs.append(f"      <div class='x1-chart'><h3>{team} {TEAMS[team]} <span>{n} {unit} × {members[0]['m_q'] // max(n, 1)} samples</span></h3>"
-                    f"<div class='x1-svg'>{''.join(svg)}</div></div>")
-    what = "questions" if pool == "hard" else "tasks"
+                    f"<div class='x1-svg'>{svg}</div></div>")
     return "\n".join([
         "    <figure>",
-        f"      <figcaption>Accuracy of each worker alone on its team's {what}, over the runs every worker of the team has "
-        f"finished; whiskers = 95% Wilson interval over the team's distinct {what}; best worker in bold.</figcaption>",
-        "      <div class='legend'><span><i class='swatch sq' style='background:var(--s-random)'></i> persona (Qwen3.5-4B)</span>"
-        "<span><i class='swatch sq' style='background:var(--s-no_memory)'></i> specialist</span></div>",
+        f"      <figcaption>Accuracy of each worker alone on its team's {unit}, over the runs every worker of the team has "
+        f"finished; whiskers = 95% Wilson interval over the team's distinct {unit}; best worker in bold.</figcaption>",
+        f"      <div class='legend'>{LEGEND_WORKERS}</div>",
         "      <div class='x1-charts'>", *figs, "      </div>",
         "    </figure>"])
+
+
+def worker_mode(config, worker, modes):
+    """The thinking mode a worker answered in under a stage 2 mode setting (as x1_hub.team_workers picks it)."""
+    spec = config["specialists"].get(worker)
+    if spec is None:
+        return config["persona_model"]["mode"]
+    return spec["headline"] if modes == "headline" else (modes if modes in spec["modes"] else spec["headline"])
+
+
+def stage2_charts(records, config):
+    """Per team, one chart per thinking mode (switched by buttons): hub, vote and each worker, with 95% intervals."""
+    groups = {}
+    for r in records:
+        groups.setdefault((r["team"], r["modes"]), []).append(r)
+    teams = [t for t in TEAMS if any(k[0] == t for k in groups)]
+    pools = {t["id"]: t["pool"] for t in config["teams"]}
+    figs = []
+    for team in teams:
+        unit = "questions" if pools[team] == "hard" else "tasks"
+        panes = []
+        for mode in MODES:
+            rs = groups.get((team, mode))
+            hidden = "" if mode == "headline" else " hidden"
+            if not rs:
+                panes.append(f"<div class='x1-mode' data-mode='{mode}'{hidden}><p class='x1-none'>No {MODES[mode]} runs yet.</p></div>")
+                continue
+            q = sum(r["questions"] for r in rs)
+            folds = {}
+            for r in rs:
+                folds[r["fold"]] = max(folds.get(r["fold"], 0), r["questions"])
+            distinct = sum(folds.values())
+            ws = {}
+            for r in rs:
+                for w, c in r["workers_correct"].items():
+                    ws[w] = ws.get(w, 0) + c
+            top = max(ws.values())
+            trans = lambda k: sum(r["hub_transitions"][k] for r in rs)
+            hub_c, vote_c = sum(r["hub_correct"] for r in rs), sum(r["vote_correct"] for r in rs)
+            items = [
+                {"label": "Hub (35B) · off", "bold": True, "c": hub_c, "q": q, "distinct": distinct, "unit": unit,
+                 "colour": HUB_COLOUR,
+                 "tip": f"<b>Hub</b> · Qwen3.6-35B, thinking off<br><span class=m>fixed {trans('fixed')}, broke {trans('broke')} against the vote</span>"},
+                {"label": "Majority vote", "bold": False, "c": vote_c, "q": q, "distinct": distinct, "unit": unit,
+                 "colour": VOTE_COLOUR, "tip": "<b>Majority vote</b> over the four workers' answers"}]
+            for w, c in ws.items():
+                persona = w not in SPECIALISTS
+                name = w if persona else SPECIALISTS[w][0]
+                base = "Qwen3.5-4B" if persona else SPECIALISTS[w][1]
+                wm = worker_mode(config, w, mode)
+                items.append({"label": f"{name} · {wm}", "bold": c == top, "c": c, "q": q, "distinct": distinct, "unit": unit,
+                              "colour": PERSONA_COLOUR if persona else SPECIALIST_COLOUR,
+                              "tip": f"<b>{name}</b> · thinking {wm}<br><span class=m>{'persona' if persona else 'specialist'} · {base}</span>"})
+            svg = bar_svg(items, f"{team} {TEAMS[team]}, {MODES[mode]}: hub, vote and each worker")
+            panes.append(f"<div class='x1-mode' data-mode='{mode}'{hidden}>"
+                         f"<div class='x1-sub'>{len(rs)} of 15 runs · {distinct} {unit}</div><div class='x1-svg'>{svg}</div></div>")
+        figs.append(f"      <div class='x1-chart'><h3>{team} {TEAMS[team]}</h3>{''.join(panes)}</div>")
+    seg = "".join(f"<button type='button' data-mode='{m}' aria-pressed='{'true' if m == 'headline' else 'false'}'>{MODES[m]}</button>"
+                  for m in MODES)
+    return "\n".join([
+        "    <figure class='x1-hubfig'>",
+        "      <figcaption>Accuracy of the hub, the majority vote and each worker on the same runs; whiskers = 95% Wilson "
+        "interval over the team's distinct questions or tasks; best worker in bold.</figcaption>",
+        f"      <div class='controls'><div class='control'><span class='label'>Specialists' thinking</span><div class='seg x1-seg'>{seg}</div></div></div>",
+        "      <div class='legend'><span><i class='swatch sq' style='background:var(--s-continual)'></i> hub</span>"
+        f"<span><i class='swatch sq' style='background:var(--faint)'></i> majority vote</span>{LEGEND_WORKERS}</div>",
+        "      <div class='x1-charts'>", *figs, "      </div>",
+        "    </figure>"])
+
+
+HUB_EXPLAINER = """    <h3 class="x1-what">What the hub does</h3>
+    <ul class="findings">
+      <li>Each team is fixed: four workers (approach personas on Qwen3.5-4B plus fine-tuned specialists) and a hub, Qwen3.6-35B-A3B with thinking off. The hub does not choose the team.</li>
+      <li>Stage 1: every worker answers each question alone, and its answer is saved. Stage 2 replays those saved answers to the hub.</li>
+      <li>Hard questions: the hub gets the question and the four answers, labelled Agent 1–4 rather than by name (each worker's closing summary and final answer, or its last 600 characters if it wrote no summary). It is told to compare the answers, check the reasoning and decide the team's answer, in one call with no tools.</li>
+      <li>Agentic tasks: the hub reads each worker's actions and final message, then does the task itself with the same tools in a fresh environment.</li>
+      <li>It is scored against the majority vote over the same four answers and against the best single worker, picked in hindsight. Fixed = hub right where the vote is wrong; broke = the reverse.</li>
+      <li>Thinking: headline = each specialist in its better stage 1 mode; all on / all off = every specialist in that mode where it has one. Personas and the hub always have thinking off.</li>
+    </ul>"""
 
 
 CHART_STYLE = """  <style>
@@ -178,6 +273,8 @@ CHART_STYLE = """  <style>
     #x1-teams .x1-svg svg { min-width: 420px; width: 100%; height: auto; display: block; }
     #x1-teams .x1-bar { cursor: default; outline: none; }
     #x1-teams .x1-bar:hover rect, #x1-teams .x1-bar:focus rect { fill: var(--accent-soft); }
+    #x1-teams .x1-sub, #x1-teams .x1-none { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 0.74rem; color: var(--faint); margin-bottom: 4px; }
+    #x1-teams h3.x1-what { font-size: var(--step-1); }
   </style>"""
 
 CHART_SCRIPT = """  <script>
@@ -197,6 +294,15 @@ CHART_SCRIPT = """  <script>
       g.addEventListener('mouseleave', function () { tip.hidden = true; });
       g.addEventListener('focus', function () { var b = g.getBoundingClientRect(); show(g, b.left + b.width / 2, b.top); });
       g.addEventListener('blur', function () { tip.hidden = true; });
+    });
+    panel.querySelectorAll('.x1-seg').forEach(function (seg) {
+      var fig = seg.closest('figure');
+      seg.querySelectorAll('button').forEach(function (b) {
+        b.addEventListener('click', function () {
+          seg.querySelectorAll('button').forEach(function (o) { o.setAttribute('aria-pressed', o === b ? 'true' : 'false'); });
+          fig.querySelectorAll('.x1-mode').forEach(function (m) { m.hidden = m.getAttribute('data-mode') !== b.getAttribute('data-mode'); });
+        });
+      });
     });
   })();
   </script>"""
@@ -258,7 +364,7 @@ def stage2_table(records):
                "fixed / broke = questions where the hub is right and the majority vote wrong, and the reverse.")
     head = "".join(f"<th>{h}</th>" for h in ("Team", "Thinking", "Best worker"))
     head += "".join(f"<th class='num'>{h}</th>" for h in ("Runs", "Hub", "Vote", "Best worker", "Fixed", "Broke"))
-    out = [f"    <div class=\"tablewrap\"><table><caption>{caption}</caption>",
+    out = [f"    <div class=\"tablewrap\"><table class=\"x1-workers\"><caption>{caption}</caption>",
            f"    <thead><tr>{head}</tr></thead><tbody>"]
     teams = [t for t in TEAMS if any(k[0] == t for k in groups)]
     for i, team in enumerate(teams):
@@ -335,10 +441,12 @@ def main():
     if (n1, n2, n3) != (1, 1, 1):
         sys.exit(f"X1 tab layout changed: stage 1 section {n1}, status {n2}, eyebrow {n3}")
     if args.stage2:
+        records2 = json.load(open(args.stage2))
         hub = "\n".join([
             "  <section>",
             f"    <div class=\"sec-head\"><div class=\"kicker\">{notes['stage2_kicker']}</div><h2>Hub with its team, so far</h2></div>",
-            stage2_table(json.load(open(args.stage2))), bullets(notes["stage2"]),
+            HUB_EXPLAINER, stage2_charts(records2, config),
+            stage2_table(records2), bullets(notes["stage2"]),
             "  </section>"])
         pattern = r"  <section>\n    <div class=\"sec-head\"><div class=\"kicker\">[^<]*</div><h2>Hub with its team, so far</h2>.*?\n  </section>"
         tab, n4 = re.subn(pattern, lambda _: hub, tab, count=1, flags=re.S)
