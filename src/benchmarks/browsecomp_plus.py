@@ -55,7 +55,7 @@ import threading
 import urllib.request
 from pathlib import Path
 
-from benchmarks.base import Instance
+from benchmarks.base import Instance, local_root
 from benchmarks.environment import Outcome, function_tool
 
 _DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "data-claude" / "benchmarks" / "browsecomp-plus"
@@ -119,6 +119,9 @@ class Retriever:
         self.model = bm25s.BM25.load(str(index_dir / "bm25"), mmap=True)
         meta = json.loads((index_dir / "docmap.json").read_text())
         self.corpus_dir = Path(meta["corpus_dir"])
+        if not self.corpus_dir.exists():
+            # The index stores the building machine's absolute path; the corpus sits beside it.
+            self.corpus_dir = index_dir.resolve().parent / "corpus" / "data"
         self.shards = meta["shards"]
         self.docids = meta["docids"]                 # position in the index -> docid
         self.where = {d: tuple(w) for d, w in zip(meta["docids"], meta["where"])}
@@ -179,7 +182,7 @@ class BrowseCompTask:
             raise ValueError("browsecomp_plus is graded by an LLM judge: pass --judge_model")
         self.metadata = metadata
         self.judge = judge
-        self.retriever = retriever or Retriever.get(_index_dir(metadata.get("root") or _DEFAULT_ROOT))
+        self.retriever = retriever or Retriever.get(_index_dir(local_root(metadata.get("root"), _DEFAULT_ROOT)))
         self.done = False
         self.answer = None
         self.confidence = None

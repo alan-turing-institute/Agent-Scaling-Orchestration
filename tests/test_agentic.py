@@ -13,6 +13,7 @@ import copy
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -477,6 +478,31 @@ def test_browsecomp_environment():
     check("resume lets the next agent revise the answer", (twin.done, twin.answer, env.answer), (False, None, "Marie Curie"))
 
 
+def test_rate_budget_is_shared_across_processes():
+    import subprocess
+    from benchmarks import finance_agent
+    directory = tempfile.mkdtemp()
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    code = (f"import sys, time; sys.path.insert(0, {src!r}); from benchmarks import finance_agent as f; "
+            f"f.RATE_DIR = __import__('pathlib').Path({directory!r})\n"
+            "for _ in range(3):\n"
+            "    with f.throttled('wikimedia', 0.3, True): print(time.time())")
+    procs = [subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True) for _ in range(2)]
+    starts = sorted(float(x) for p in procs for x in p.communicate()[0].split())
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    check("two processes share one budget: six starts at least 0.3 s apart", (len(starts), min(gaps) >= 0.29), (6, True))
+    finance_agent.RATE_DIR, saved = __import__("pathlib").Path(directory), finance_agent.RATE_DIR
+    try:
+        with finance_agent.throttled("sec", 0.1, False) as state:
+            state["pause_until"] = time.time() + 0.5
+        began = time.time()
+        with finance_agent.throttled("sec", 0.1, False):
+            pass
+        check("a Retry-After pause delays the next request", time.time() - began >= 0.45, True)
+    finally:
+        finance_agent.RATE_DIR = saved
+
+
 def test_finance_environment():
     import os
     from benchmarks import finance_agent
@@ -487,8 +513,7 @@ def test_finance_environment():
     env = finance_agent.FinanceTask(metadata, FakeJudge(""))
     os.environ["FINANCE_AGENT_ONLINE"] = "0"
     check("offline, EDGAR is refused", env.call("edgar_search", {"query": "x"}), finance_agent.OFFLINE)
-    finance_agent._SEARXNG["up"] = False
-    check("no web_search when SearXNG is down", "web_search" in [t["function"]["name"] for t in env.tools()], False)
+    check("no web_search offline", "web_search" in [t["function"]["name"] for t in env.tools()], False)
     agent = os.environ.pop("SEC_USER_AGENT", None)
     try:
         check("no SEC request without a declared contact",
@@ -497,18 +522,28 @@ def test_finance_environment():
         if agent is not None:
             os.environ["SEC_USER_AGENT"] = agent
 
-    pages = {finance_agent.SEARXNG_URL: json.dumps({"results": [{"title": "US Steel", "url": "https://x", "content": "merger"}]}),
+    pages = {finance_agent.WIKIPEDIA_API: json.dumps({"query": {"search": [
+                 {"title": "U.S. Steel", "snippet": "<span>merger</span> with Nippon", "timestamp": "2025-01-01T00:00:00Z"}]}}),
+             finance_agent.WIKIDATA_API: json.dumps({"query": {"search": [{"title": "Q1046437",
+                                                                            "snippet": "American steel company"}]}}),
              "https://efts.sec.gov": json.dumps({"hits": {"hits": [{"_id": "0001-23-000001:doc.htm", "_source": {
         "ciks": ["0000320193"], "display_names": ["Apple"], "form": "10-K", "file_date": "2024-11-01"}}]}}),
              "https://www.sec.gov/page": "<html><body><p>Revenue was $5B in 2024.</p><script>x</script></body></html>"}
     original = finance_agent.http_get
-    finance_agent.http_get = lambda url, root, headers=None, needs_contact=True: (
+    finance_agent.http_get = lambda url, root, headers=None: (
         200, next(v for k, v in pages.items() if url.startswith(k)))
     os.environ.pop("FINANCE_AGENT_ONLINE")  # online is the default
-    finance_agent._SEARXNG["up"] = True
-    check("web_search when SearXNG answers", "web_search" in [t["function"]["name"] for t in env.tools()], True)
+    check("web_search when online", "web_search" in [t["function"]["name"] for t in env.tools()], True)
     try:
-        check("web search returns titles and urls", json.loads(env.call("web_search", {"query": "us steel"}))[0]["url"], "https://x")
+        found = json.loads(env.call("web_search", {"query": "us steel"}))
+        check("web search: Wikipedia hits, then Wikidata", [(r["source"], r["url"]) for r in found],
+              [("Wikipedia", "https://en.wikipedia.org/wiki/U.S._Steel"), ("Wikidata", "https://www.wikidata.org/wiki/Q1046437")])
+        check("snippets lose their markup", found[0]["snippet"], "merger with Nippon")
+        check("other sites are refused before any request",
+              original("https://www.google.com/search?q=x", metadata["root"])[1].startswith("ERROR: only these sites"), True)
+        check("hosts map to their rate budgets", [finance_agent.service(h) for h in
+              ("efts.sec.gov", "en.wikipedia.org", "www.wikidata.org", "evilsec.gov.example", "upload.wikimedia.org")],
+              ["sec", "wikimedia", "wikimedia", None, None])
         check("a page fetch with a bad URL is an error message, not a crash",
               original("mock", metadata["root"])[1].startswith("ERROR: not a web address"), True)
         check("so is a tool that raises", env.call("read_page", {"key": "k", "start": "not a number"}).startswith("ERROR"), True)
@@ -520,7 +555,6 @@ def test_finance_environment():
         check("read_page reads from a position", env.call("read_page", {"key": "k", "start": 12}).split("\n")[1], "$5B in 2024.")
     finally:
         finance_agent.http_get = original
-        finance_agent._SEARXNG.clear()
 
     env.call("submit_final_result", {"final_result": "Revenue was $5B in 2024."})
     outcome = env.outcome()

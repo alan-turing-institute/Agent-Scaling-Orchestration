@@ -1,7 +1,19 @@
 # SearXNG for Finance-Agent's web_search (src/benchmarks/finance_agent.py).
 # Started by scripts/searxng/run.sh, which copies this file under
-# data-claude/searxng/ with a fresh secret key; the key is never committed.
-use_default_settings: true
+# data-claude/searxng/ with a fresh secret key and the local contact; neither is committed.
+#
+# Only engines whose operators allow automated queries are kept (checked 2026-11-04):
+# Wikipedia (MediaWiki API) and Wikidata (query service), both of which ask for an
+# identifying User-Agent with contact details and few requests in flight. The
+# scraped web engines are dropped: Google, Bing and Brave disallow /search to bots
+# in robots.txt, and DuckDuckGo offers no web-results API (and is blocked on the
+# second Spark). Their sanctioned APIs are retired (Bing), closed to new customers
+# (Google Custom Search) or paid (Brave Search API).
+use_default_settings:
+  engines:
+    keep_only:
+      - wikipedia
+      - wikidata
 
 general:
   instance_name: "agent-scaling-searxng"
@@ -22,15 +34,8 @@ search:
 
 outgoing:
   request_timeout: 6.0
-
-# More than the default engines, so one engine rate-limiting or showing a
-# CAPTCHA does not leave the agent without results.
-engines:
-  - name: bing
-    disabled: false
-  - name: mojeek
-    disabled: false
-  - name: startpage
-    disabled: false
-  - name: wikipedia
-    disabled: false
+  # Wikimedia's User-Agent policy: name the client and give a contact (run.sh fills it in).
+  useragent_suffix: "CONTACT_SET_BY_RUN_SH"
+  # Wikimedia asks for at most 3 requests in flight per client.
+  pool_connections: 3
+  pool_maxsize: 3
