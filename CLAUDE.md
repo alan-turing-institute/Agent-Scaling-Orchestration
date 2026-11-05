@@ -376,12 +376,15 @@ episode on agentic tasks.
 - `finance_agent` — Vals AI's 50 public questions. Tools: edgar_search (EDGAR's free full-text
   search), parse_html_page / read_page / search_page, python (separate interpreter, CPU and
   memory capped, not network-isolated), web_search, submit_final_result. External calls are on by
-  default (`FINANCE_AGENT_ONLINE=0` turns them off), cached on disk under `finance-agent/http-cache/`
-  and rate-limited to 5/s. The SEC's required contact comes from `SEC_USER_AGENT`, else
+  default (`FINANCE_AGENT_ONLINE=0` turns them off) and cached on disk under
+  `finance-agent/http-cache/`. Only the SEC, Wikipedia and Wikidata can be reached. Rate limits
+  are machine-wide (lock files under `~/.cache/agent-scaling-rate`, shared by every process and
+  experiment): SEC 5/s; Wikimedia one request at a time, 1 s apart (its rules: 200/min,
+  concurrency 1). The contact for both User-Agents comes from `SEC_USER_AGENT`, else
   `data-claude/benchmarks/finance-agent/sec_user_agent.txt` (git-ignored, so no address is
-  committed). `web_search` queries a local SearXNG (`scripts/searxng/run.sh`: self-hosted
-  metasearch, no key or quota, 127.0.0.1:8888 or `SEARXNG_URL`), offered only when it answers;
-  unlike EDGAR it cannot cap results at 2025-04-07. Graded per rubric line by the judge; correct at ≥ 0.5, with the contradiction line asked as
+  committed). `web_search` is Wikipedia's and Wikidata's own search API (since 2026-11-05; the
+  SearXNG setup in `scripts/searxng/` scraped search engines and is retired); it cannot cap
+  results at 2025-04-07. Graded per rubric line by the judge; correct at ≥ 0.5, with the contradiction line asked as
   "does it contradict?" (the paper's grader inverted it).
 
 Judged benchmarks (`JUDGED = True`) take `judge=` in their environment factory;

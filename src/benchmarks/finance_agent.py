@@ -17,14 +17,29 @@ turns every tool that leaves the machine off, for an offline run. Online:
   upstream's does; `read_page` and `search_page` then read slices of it.
   Upstream reads stored pages with an LLM call (`retrieve_information`); here
   the agent reads them itself, so no model call hides outside its own budget.
-- `web_search` queries a local SearXNG (`scripts/searxng/run.sh`, at
-  `SEARXNG_URL`, default http://127.0.0.1:8888), a self-hosted metasearch
-  engine with no key and no quota, standing in for upstream's Tavily. The
-  tool is offered only when that server answers. SearXNG cannot cap results
-  at a date, so unlike EDGAR, web results can postdate 2025-04-07.
+- `web_search` searches Wikipedia (the MediaWiki Action API's full-text
+  search) and Wikidata (the same search over its items), standing in for upstream's
+  Tavily. Since 2026-11-05 these are the only search sources: scraped web
+  engines (the old SearXNG setup, `scripts/searxng/`) broke their operators'
+  rules. Wikipedia cannot cap results at a date, so unlike EDGAR, web results
+  can postdate 2025-04-07.
+- Pages can be fetched only from the SEC, Wikipedia and Wikidata
+  (`ALLOWED_HOSTS`); every other host is refused before any request.
 
-Every response from the network is cached on disk under
-`<data_dir>/finance-agent/http-cache/`, so a rerun asks the SEC nothing new.
+Rate limits hold across every process on the machine (lock files under
+`RATE_DIR`, default `~/.cache/agent-scaling-rate`), so parallel runs and
+parallel experiments share one budget:
+
+- SEC: at most 5 requests a second (the SEC allows 10).
+- Wikimedia (Wikipedia and Wikidata together): one request at a time and at
+  least 1 s between them, so at most 60 a minute. Wikimedia's published rules
+  (checked 2026-11-05): unauthenticated Action API clients get concurrency 1,
+  under 5/s and 200 requests a minute with an identifying User-Agent. The
+  User-Agent carries the SEC contact; responses are gzip; `maxlag=5` is sent;
+  a 429 or maxlag reply pauses all Wikimedia requests for its Retry-After.
+
+Every successful response is cached on disk under
+`<data_dir>/finance-agent/http-cache/`, so a rerun asks nothing new.
 `python` runs code in a separate interpreter with a 10 s CPU limit, 1 GB of
 memory and an empty working directory; it is not network-isolated. Dates are
 capped at 2025-04-07, upstream's "today".
@@ -52,6 +67,8 @@ DATA_URL = ("https://raw.githubusercontent.com/vals-ai/finance-agent/"
             "8ba65f81ab759a8e0d44e72aabc5a47cf839d563/data/public.csv")
 EDGAR_SEARCH = "https://efts.sec.gov/LATEST/search-index"
 
+import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -59,10 +76,11 @@ import re
 import subprocess
 import sys
 import tempfile
-import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -70,8 +88,6 @@ from benchmarks.base import Instance, local_root
 from benchmarks.environment import Outcome, function_tool
 
 _DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "data-claude" / "benchmarks" / "finance-agent"
-_RATE_LOCK = threading.Lock()
-_LAST_REQUEST = [0.0]
 
 
 def root_dir(data_dir=None):
@@ -105,50 +121,114 @@ def sec_user_agent(root):
     return path.read_text().strip() if path.exists() else None
 
 
-SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://127.0.0.1:8888").rstrip("/")
-_SEARXNG = {}
+WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
+RATE_DIR = Path(os.environ.get("FINANCE_RATE_DIR", Path.home() / ".cache" / "agent-scaling-rate"))
+SEC_GAP = 0.2         # seconds between request starts, machine-wide
+WIKIMEDIA_GAP = 1.0   # and one Wikimedia request in flight at a time
+RETRY_AFTER_CAP = 300
 
 
-def searxng_available():
-    """Whether the local SearXNG answers; asked once per process."""
-    if "up" not in _SEARXNG:
-        try:
-            with urllib.request.urlopen(f"{SEARXNG_URL}/healthz", timeout=3) as response:
-                _SEARXNG["up"] = response.status == 200
-        except Exception:
-            _SEARXNG["up"] = False
-    return _SEARXNG["up"]
+def service(host):
+    """Which rate budget a host draws on: 'sec', 'wikimedia', or None (not allowed)."""
+    host = (host or "").lower()
+    if host == "sec.gov" or host.endswith(".sec.gov"):
+        return "sec"
+    if host.endswith(".wikipedia.org") or host in ("wikidata.org", "www.wikidata.org", "m.wikidata.org"):
+        return "wikimedia"
+    return None
 
 
-def http_get(url, root, headers=None, needs_contact=True):
-    """GET with an on-disk cache and the SEC's rate limit. Returns (status, text).
+ALLOWED_HOSTS = "sec.gov, *.wikipedia.org, www.wikidata.org"
 
-    `needs_contact`: the request goes to the SEC, which requires a declared
-    contact in the User-Agent; the local SearXNG does not.
+
+@contextmanager
+def throttled(name, gap, hold):
+    """Wait until `gap` seconds after the last request start on budget `name`, across processes.
+
+    An exclusive lock on `<RATE_DIR>/<name>.lock` orders every process on the machine; the
+    file holds the last start time. `hold`: keep the lock for the whole request (one in flight).
+    The caller may push the next start later through the yielded dict ('pause_until').
     """
-    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+    RATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(RATE_DIR / f"{name}.lock", "a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            handle.seek(0)
+            try:
+                next_start = float(handle.read().strip() or 0)
+            except ValueError:
+                next_start = 0.0
+            wait = next_start - time.time()
+            if wait > 0:
+                time.sleep(min(wait, RETRY_AFTER_CAP))
+            state = {"pause_until": 0.0}
+
+            def stamp():
+                handle.seek(0)
+                handle.truncate()
+                handle.write(repr(max(time.time() + gap, state["pause_until"])))
+                handle.flush()
+
+            stamp()
+            if not hold:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+            yield state
+            if state["pause_until"]:
+                if not hold:
+                    fcntl.flock(handle, fcntl.LOCK_EX)
+                stamp()
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def retry_after(headers):
+    try:
+        return min(float(headers.get("Retry-After") or 30), RETRY_AFTER_CAP)
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def http_get(url, root, headers=None):
+    """GET from an allowed host, with an on-disk cache and machine-wide rate limits. Returns (status, text)."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https"):
         return 0, f"ERROR: not a web address: {url[:200]!r}; give a full http(s):// URL"
+    budget = service(parts.hostname)
+    if budget is None:
+        return 0, f"ERROR: only these sites can be reached: {ALLOWED_HOSTS}"
     cache = Path(root) / "http-cache" / (hashlib.sha1(url.encode("utf-8")).hexdigest() + ".json")
     if cache.exists():
         cached = json.loads(cache.read_text())
         return cached["status"], cached["text"]
-    agent = sec_user_agent(root) or ("" if needs_contact else "agent-scaling-orchestration")
-    if not agent:
+    contact = sec_user_agent(root)
+    if not contact:
         return 0, ("ERROR: set SEC_USER_AGENT (or write <data_dir>/finance-agent/sec_user_agent.txt) "
-                   "to an organisation and contact email; the SEC requires it")
-    with _RATE_LOCK:
-        wait = 0.2 - (time.monotonic() - _LAST_REQUEST[0])
-        if wait > 0:
-            time.sleep(wait)
-        _LAST_REQUEST[0] = time.monotonic()
-    request = urllib.request.Request(url, headers={"User-Agent": agent, **(headers or {})})
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            status, text = response.status, response.read().decode("utf-8", errors="replace")
-    except Exception as error:
-        return 0, f"ERROR: {type(error).__name__}: {error}"
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps({"url": url, "status": status, "text": text}))
+                   "to an organisation and contact email; the SEC and Wikimedia require it")
+    # The SEC asks for "Org contact@example.org"; Wikimedia for "client/version (contact) library".
+    agent = contact if budget == "sec" else f"agent-scaling-orchestration/1.0 ({contact}) python-urllib"
+    request = urllib.request.Request(url, headers={"User-Agent": agent, "Accept-Encoding": "gzip",
+                                                   **(headers or {})})
+    gap, hold = (SEC_GAP, False) if budget == "sec" else (WIKIMEDIA_GAP, True)
+    with throttled(budget, gap, hold) as state:
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                status, raw, reply = response.status, response.read(), response.headers
+        except urllib.error.HTTPError as error:
+            if error.code in (429, 503):
+                state["pause_until"] = time.time() + retry_after(error.headers)
+            return 0, f"ERROR: the site returned {error.code}; try again later or another way"
+        except Exception as error:
+            return 0, f"ERROR: {type(error).__name__}: {error}"
+        if reply.get("Content-Encoding") == "gzip":
+            raw = gzip.decompress(raw)
+        text = raw.decode("utf-8", errors="replace")
+        if budget == "wikimedia" and reply.get("MediaWiki-API-Error") == "maxlag":
+            state["pause_until"] = time.time() + retry_after(reply)
+            return 0, "ERROR: Wikipedia is busy (replication lag); try again later"
+    if status == 200:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({"url": url, "status": status, "text": text}))
     return status, text
 
 
@@ -242,9 +322,9 @@ class FinanceTask:
                                                  "end the task.",
                           {"final_result": {"type": "string"}}, ["final_result"]),
         ]
-        if online() and searxng_available():
-            tools.insert(0, function_tool("web_search", "Search the web. Returns titles, URLs and snippets; "
-                                                        "store a page with parse_html_page to read it.",
+        if online():
+            tools.insert(0, function_tool("web_search", "Search Wikipedia and Wikidata. Returns titles, URLs and "
+                                                        "snippets; store a page with parse_html_page to read it.",
                                           {"query": {"type": "string"}}, ["query"]))
         return tools
 
@@ -314,12 +394,30 @@ class FinanceTask:
         return f"Stored {len(self.pages[key])} characters under {key!r}. Stored pages: {sorted(self.pages)}"
 
     def _web_search(self, args):
-        query = urllib.parse.urlencode({"q": str(args.get("query", "")), "format": "json", "language": "en"})
-        status, text = http_get(f"{SEARXNG_URL}/search?{query}", self.root, needs_contact=False)
+        """Wikipedia full-text search (8 hits), then Wikidata's (3 items): two requests, one after the other."""
+        query = str(args.get("query", "")).strip()
+        if not query:
+            return "ERROR: give a query"
+        results = []
+        status, text = http_get(WIKIPEDIA_API + "?" + urllib.parse.urlencode({
+            "action": "query", "list": "search", "srsearch": query, "srlimit": 8, "srprop": "snippet|timestamp",
+            "format": "json", "formatversion": 2, "maxlag": 5}), self.root)
         if status != 200:
-            return text if text.startswith("ERROR") else f"ERROR: web search returned {status}"
-        results = [{"title": r.get("title"), "url": r.get("url"), "snippet": (r.get("content") or "")[:300],
-                    "published": r.get("publishedDate")} for r in json.loads(text).get("results", [])[:8]]
+            return text if text.startswith("ERROR") else f"ERROR: Wikipedia search returned {status}"
+        for hit in json.loads(text).get("query", {}).get("search", []):
+            title = hit.get("title", "")
+            results.append({"title": title, "source": "Wikipedia",
+                            "url": "https://en.wikipedia.org/wiki/" + urllib.parse.quote(title.replace(" ", "_")),
+                            "snippet": html_text(hit.get("snippet") or "")[:300], "edited": hit.get("timestamp")})
+        # Wikidata's full-text search: its label lookup (wbsearchentities) finds nothing for multi-word queries.
+        status, text = http_get(WIKIDATA_API + "?" + urllib.parse.urlencode({
+            "action": "query", "list": "search", "srsearch": query, "srnamespace": 0, "srlimit": 3,
+            "srprop": "snippet", "format": "json", "formatversion": 2, "maxlag": 5}), self.root)
+        if status == 200:
+            for hit in json.loads(text).get("query", {}).get("search", []):
+                results.append({"title": hit.get("title"), "source": "Wikidata",
+                                "url": f"https://www.wikidata.org/wiki/{hit.get('title')}",
+                                "snippet": html_text(hit.get("snippet") or "")[:300]})
         return json.dumps(results, indent=1, ensure_ascii=False) if results else "No results."
 
     def resume(self):
