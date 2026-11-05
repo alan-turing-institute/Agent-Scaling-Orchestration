@@ -30,6 +30,7 @@ CORE = ["qwen3.5-4b-off-s0", "qwen3.5-4b-on", "qwen3.6-35b-off", "qwen3.6-35b-on
 BENCHMARKS = [("gpqa_diamond", "GPQA Diamond"), ("mmlu_pro", "MMLU-Pro (hard slice)"),
               ("aime", "AIME"), ("math500", "MATH-500, levels 4–5")]
 NAME = {label: name for label, name, _ in AGENTS}
+LONG = ["qwen3.5-4b-on", "qwen3.6-35b-on"]  # rerun at 81,920 tokens where cut off at 30,720
 
 
 def wilson(k, n, z=1.96):
@@ -42,10 +43,10 @@ def wilson(k, n, z=1.96):
     return (100 * (c - h), 100 * (c + h))
 
 
-def load(root):
+def load(root, labels=None):
     """{label: {fold: {question_id: row}}} for finished folds only."""
     runs = {}
-    for label, _, _ in AGENTS:
+    for label in labels or [l for l, _, _ in AGENTS]:
         for fold in range(5):
             d = root / label / f"fold{fold}" / "bare_model"
             if not (d / "holdout_summary.json").exists():
@@ -146,6 +147,28 @@ def agreement(runs):
             "any_right": any_right, "s0_right": sum(runs[labels[0]][f][q]["correct"] for f, q in qs)}
 
 
+def long_rerun(runs, long):
+    """Thinking on with the longer limit: answers cut off at 30,720 tokens, rerun at 81,920, on finished folds."""
+    out = {}
+    for label in LONG:
+        folds = sorted(long.get(label, {}))
+        if not folds:
+            continue
+        off = label.replace("-on", "-off-s0" if "4b" in label else "-off")
+        old = {q: r for f in folds for q, r in runs[label][f].items()}
+        new = {q: r for f in folds for q, r in long[label][f].items()}
+        assert all(old[q]["cut"] for q in new), f"{label}: rerun has a question that was not cut off"
+        merged = {q: new.get(q, r) for q, r in old.items()}
+        out[label] = {"folds": folds, "n": len(old), "rerun": len(new),
+                      "rerun_right": sum(r["correct"] for r in new.values()),
+                      "still_cut": sum(r["cut"] for r in new.values()),
+                      "short": sum(r["correct"] for r in old.values()),
+                      "long": sum(r["correct"] for r in merged.values()),
+                      "off": sum(runs[off][f][q]["correct"] for f in folds for q in runs[off][f]),
+                      "off_label": off}
+    return out
+
+
 def section(kicker, title, caption, head, body, findings_html=""):
     return f'''  <section>
     <div class="sec-head">
@@ -157,7 +180,7 @@ def section(kicker, title, caption, head, body, findings_html=""):
 '''
 
 
-def render(agents, head, agree, findings, now):
+def render(agents, head, agree, findings, now, longr=None):
     th = lambda *cols: "".join(f'<th class="num">{c}</th>' if i else f"<th>{c}</th>" for i, c in enumerate(cols))
     present = [l for l, _, _ in AGENTS if l in agents]
     done = {l: len(agents[l]["folds"]) for l in present}
@@ -190,6 +213,19 @@ def render(agents, head, agree, findings, now):
                  th("Agent", *[n for _, n in BENCHMARKS], "All", "Cut off"), body, findings.get("cost", ""))
 
     out = t1 + t2
+    if longr:
+        body = ""
+        for l, v in longr.items():
+            body += (f'<tr><td class="arm">{NAME[l]}</td><td class="num">{", ".join(map(str, v["folds"]))}</td>'
+                     f'{cell(v["rerun_right"], v["rerun"])}<td class="num">{v["still_cut"]}/{v["rerun"]}</td>'
+                     f'{cell(v["short"], v["n"])}{cell(v["long"], v["n"])}{cell(v["off"], v["n"])}</tr>')
+        out += section("Hard pool · thinking on with a longer limit",
+                       "Cut-off answers rerun at 81,920 tokens",
+                       "Answers cut off at 30,720 tokens, rerun at 81,920 on the folds the rerun has finished: "
+                       "how many are now right, how many are still cut off, and the thinking-on accuracy on those "
+                       "folds before and after, against the same model with thinking off.",
+                       th("Agent", "Folds", "Rerun right", "Still cut off", "Thinking on, 30,720",
+                          "Thinking on, 81,920", "Thinking off"), body, findings.get("long", ""))
     if head:
         h = head
         body = ""
@@ -277,18 +313,23 @@ def page(tab_body, fold_note, findings, now, all_done):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default="data-claude/x0-headroom")
+    ap.add_argument("--long_root", default="data-claude/reruns/x0-long")
     ap.add_argument("--findings", default=None, help="JSON {section id: [bullet html, ...]}")
     args = ap.parse_args()
     root = Path(args.root)
     runs = load(root)
     agents, head, agree = per_agent(runs), headroom(runs), agreement(runs)
+    longr = long_rerun(runs, load(Path(args.long_root), LONG))
     raw = json.loads(Path(args.findings).read_text()) if args.findings else {}
     findings = {k: ("    <ul class=\"findings\">\n" + "".join(f"      <li>{b}</li>\n" for b in v) + "    </ul>\n")
                 if k != "caveats" else "".join(f"      <li>{b}</li>\n" for b in v) for k, v in raw.items()}
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    body, fold_note = render(agents, head, agree, findings, now)
+    body, fold_note = render(agents, head, agree, findings, now, longr)
+    if longr:
+        fold_note += "; rerun at 81,920 tokens: " + ", ".join(f"{NAME[l]} {len(v['folds'])}" for l, v in longr.items())
     all_done = all(len(agents.get(l, {}).get("folds", [])) == 5 for l, _, _ in AGENTS)
-    (root / "results.json").write_text(json.dumps({"agents": agents, "headroom": head, "agreement": agree}, indent=2))
+    all_done = all_done and all(len(longr.get(l, {}).get("folds", [])) == 5 for l in LONG)
+    (root / "results.json").write_text(json.dumps({"agents": agents, "headroom": head, "agreement": agree, "long": longr}, indent=2))
     (root / "tab.html").write_text(page(body, fold_note, findings, now, all_done))
     print(f"{root}/tab.html, {root}/results.json · folds: {fold_note}")
 
