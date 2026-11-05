@@ -1,0 +1,146 @@
+{
+ "_doc": "X1 L2 baseline: the 35B alone (nvidia/Qwen3.6-35B-A3B-NVFP4, the orchestrator's model, neutral prompt, thinking off, qwen_off sampling) on every X1 team's questions, with X1's folds, samples, caps and summary format, so it compares question by question with the orchestrator. Generated from x1_teams.json; T8 (Finance-Agent) left out until the T8 rerun on sparkie12 is done (shared Wikipedia rate limits). Run: X1_CONFIG=configs/x1_l2_bare35b.json ROOT=data-claude/x1-l2 MODELS=qwen35b ./scripts/x1_stage1.sh",
+ "settings": {
+  "folds": 5,
+  "split_seed": 0,
+  "samples": 3,
+  "hard": {
+   "max_tokens": 30720,
+   "thinking_budget": 26624,
+   "workers": 8
+  },
+  "agentic": {
+   "max_tokens": 8192,
+   "thinking_budget": 6144,
+   "workers": 4
+  },
+  "request_timeout": 54000
+ },
+ "sampling": {
+  "qwen_on": "--temperature 1.0 --top_p 0.95 --top_k 20 --min_p 0 --presence_penalty 1.5",
+  "qwen_off": "--temperature 0.7 --top_p 0.8 --top_k 20 --min_p 0 --presence_penalty 1.5",
+  "gemma": "--temperature 1.0 --top_p 0.95 --top_k 64",
+  "agents_a1_on": "--temperature 0.85 --top_p 0.95 --top_k 20 --presence_penalty 1.1",
+  "r2s_off": "--temperature 0.4 --top_p 0.95",
+  "skillgym_on": "--temperature 0.6 --top_p 0.95 --top_k 20",
+  "aquila_on": "--temperature 1.0 --top_p 0.95 --repetition_penalty 1.05",
+  "ministral": "--temperature 0.7 --top_p 0.95"
+ },
+ "persona_model": {
+  "handle": "Qwen/Qwen3.5-4B",
+  "profile": "qwen4b",
+  "quant": "fp8",
+  "mode": "off",
+  "sampling": "qwen_off"
+ },
+ "hub": {
+  "handle": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+  "profile": "qwen35b",
+  "quant": "",
+  "mode": "off",
+  "sampling": "qwen_off"
+ },
+ "specialists": {
+  "qwen35b": {
+   "handle": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+   "profile": "qwen35b",
+   "quant": "",
+   "modes": {
+    "off": "qwen_off"
+   },
+   "headline": "off"
+  }
+ },
+ "teams": [
+  {
+   "id": "T1",
+   "name": "Maths",
+   "pool": "hard",
+   "sources": "aime,math500",
+   "personas": [],
+   "specialists": [
+    "qwen35b"
+   ]
+  },
+  {
+   "id": "T2",
+   "name": "Physics",
+   "pool": "hard",
+   "sources": "gpqa_diamond:Physics,mmlu_pro:physics",
+   "personas": [],
+   "specialists": [
+    "qwen35b"
+   ]
+  },
+  {
+   "id": "T3",
+   "name": "Chemistry",
+   "pool": "hard",
+   "sources": "gpqa_diamond:Chemistry,mmlu_pro:chemistry",
+   "personas": [],
+   "specialists": [
+    "qwen35b"
+   ]
+  },
+  {
+   "id": "T4",
+   "name": "Biology",
+   "pool": "hard",
+   "sources": "gpqa_diamond:Biology",
+   "personas": [],
+   "specialists": [
+    "qwen35b"
+   ]
+  },
+  {
+   "id": "T5",
+   "name": "Law",
+   "pool": "hard",
+   "sources": "mmlu_pro:law",
+   "personas": [],
+   "specialists": [
+    "qwen35b"
+   ]
+  },
+  {
+   "id": "T6",
+   "name": "Engineering",
+   "pool": "hard",
+   "sources": "mmlu_pro:engineering",
+   "personas": [],
+   "specialists": [
+    "qwen35b"
+   ]
+  },
+  {
+   "id": "T7",
+   "name": "BrowseComp-Plus",
+   "pool": "agentic",
+   "sources": "browsecomp_plus",
+   "personas": [],
+   "specialists": [
+    "qwen35b"
+   ]
+  },
+  {
+   "id": "T9",
+   "name": "WorkBench",
+   "pool": "agentic",
+   "sources": "workbench",
+   "personas": [],
+   "specialists": [
+    "qwen35b"
+   ]
+  },
+  {
+   "id": "T10",
+   "name": "Plancraft",
+   "pool": "agentic",
+   "sources": "plancraft",
+   "personas": [],
+   "specialists": [
+    "qwen35b"
+   ]
+  }
+ ]
+}

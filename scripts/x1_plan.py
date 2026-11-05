@@ -16,6 +16,7 @@ a run with a holdout_summary.json is finished (the driver skips it).
 """
 
 import argparse
+import os
 import json
 import shlex
 import sys
@@ -25,7 +26,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-CONFIG = "configs/x1_teams.json"
+# X1_CONFIG picks another team file, e.g. configs/x1_l2_bare35b.json (L2: the 35B alone).
+CONFIG = os.environ.get("X1_CONFIG", "configs/x1_teams.json")
 ROOT = "data-claude/x1-teams"
 POOLS = {"hard": "data-claude/tagged_hard", "agentic": "data-claude/tagged_agentic"}
 JUDGED = ("browsecomp_plus", "finance_agent")
