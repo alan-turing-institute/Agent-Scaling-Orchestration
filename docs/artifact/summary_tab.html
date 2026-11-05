@@ -1,0 +1,144 @@
+  <!-- SUMMARY:START -->
+  <style>
+    .tabs .tabgroup { flex-basis: 100%; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 0.66rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); padding-top: 10px; }
+    .tabs .tabgroup:first-child { padding-top: 0; }
+    details.design-block { margin-top: 54px; border-top: 1px solid var(--rule-strong); padding-top: 18px; }
+    details.design-block > summary { cursor: pointer; color: var(--accent); font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    #summary .sec-head .linkbtn { font-size: 0.86rem; align-self: flex-start; }
+  </style>
+  <div id="summary" role="tabpanel" aria-labelledby="tabbtn-summary">
+
+  <header class="masthead">
+    <div class="eyebrow">Summary · all experiments · updated 2026-11-04 · X1 numbers as of 17:40 UTC</div>
+    <h1>Main results</h1>
+  </header>
+
+  <div class="status">
+    <span class="label">Status <span class="pill running">X1 running</span></span>
+    <ul class="findings">
+      <li><span><strong>Complete:</strong> easy-pool sweeps (persona bank), harder-pool screens, X0 headroom, agentic baselines.</span></li>
+      <li><span><strong>Running:</strong> X1 stage 1, 657 of 690 runs (BigBang's last runs); X1 stage 2 orchestrator on T1, T6, T9, T10.</span></li>
+      <li><span><strong>Paused:</strong> X1 T8 Finance-Agent, until a sanctioned web-search source is chosen; its runs will be redone.</span></li>
+    </ul>
+  </div>
+
+  <section>
+    <div class="sec-head"><div class="kicker">Easy pool · 699 questions · 50-persona bank · 5 folds</div><h2>Choosing agents did not beat random</h2><button type="button" class="linkbtn" data-goto="cv-small">Full tabs under Earlier</button></div>
+    <div class="tablewrap">
+      <table>
+        <caption>Held-out accuracy; the orchestrator (Qwen3.6-35B) picks personas for the team; last column is memory minus random, with a paired test's p.</caption>
+        <thead><tr><th>Agents</th><th>Team</th><th class="num">Bare model</th><th class="num">Random</th><th class="num">Orchestrator</th><th class="num">+ memory</th><th class="num">Memory − random</th></tr></thead>
+        <tbody>
+          <tr><td>Ministral-3-3B</td><td>4, vote</td><td class="num">68.7%<span class="sub">480/699</span></td><td class="num">73.8%<span class="sub">516/699</span></td><td class="num">75.1%<span class="sub">525/699</span></td><td class="num">76.3%<span class="sub">533/699</span></td><td class="num">+2.4<span class="sub">p 0.12</span></td></tr>
+          <tr><td>Ministral-3-3B</td><td>1</td><td class="num">68.7%<span class="sub">480/699</span></td><td class="num">63.9%<span class="sub">447/699</span></td><td class="num">68.8%<span class="sub">481/699</span></td><td class="num">69.8%<span class="sub">488/699</span></td><td class="num delta-pos">+5.9<span class="sub">p 0.01</span></td></tr>
+          <tr class="group-gap"><td>Qwen3.5-0.8B</td><td>4, vote</td><td class="num">50.6%<span class="sub">354/699</span></td><td class="num">51.6%<span class="sub">361/699</span></td><td class="num">53.9%<span class="sub">377/699</span></td><td class="num">55.1%<span class="sub">385/699</span></td><td class="num">+3.4<span class="sub">p 0.12</span></td></tr>
+          <tr><td>Qwen3.5-0.8B</td><td>1</td><td class="num">50.6%<span class="sub">354/699</span></td><td class="num">47.8%<span class="sub">334/699</span></td><td class="num">42.9%<span class="sub">300/699</span></td><td class="num">46.8%<span class="sub">327/699</span></td><td class="num">−1.0<span class="sub">p 0.66</span></td></tr>
+          <tr class="group-gap"><td>Qwen3.5-4B</td><td>4, vote</td><td class="num">—</td><td class="num">88.7%<span class="sub">620/699</span></td><td class="num">89.6%<span class="sub">626/699</span></td><td class="num">89.0%<span class="sub">622/699</span></td><td class="num">+0.3<span class="sub">p 0.88</span></td></tr>
+          <tr><td>Qwen3.6-35B, 2 folds</td><td>4, vote</td><td class="num">79.3%<span class="sub">222/280</span></td><td class="num">93.9%<span class="sub">263/280</span></td><td class="num">95.4%<span class="sub">267/280</span></td><td class="num">96.4%<span class="sub">270/280</span></td><td class="num">+2.5<span class="sub">no test</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="findings">
+      <li><span>With teams of four, the orchestrator's picks never beat random teams significantly, for any agent model (largest gap +3.4 points, p 0.12).</span></li>
+      <li><span>With one agent per batch, Ministral picks beat random (+5.9, p 0.01) but not the paper's fixed persona per dataset (70.7%); 0.8B picks do not beat random.</span></li>
+      <li><span>Topology made no difference: vote, debate, hub and synthesis are within 1.4 points of vote with 4B agents, and no comparison survives Holm correction with 0.8B or 4B agents. Debate costs about 5× vote's tokens.</span></li>
+      <li><span>With 4B agents every arm scores 87.7–90.4%, too close to the ceiling, so the work moved to harder pools.</span></li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="sec-head"><div class="kicker">Hard pool · 780 questions · 5 folds · X0</div><h2>The 35B with thinking on is best; picking per question could add 5 points</h2><button type="button" class="linkbtn" data-goto="x0-headroom">Full X0 tab</button></div>
+    <div class="tablewrap">
+      <table>
+        <caption>Each agent alone; thinking-on rows at the 30,720-token limit and with cut-off answers rerun at 81,920; tokens are mean completion per answer.</caption>
+        <thead><tr><th>Agent</th><th class="num">Accuracy</th><th class="num">Tokens</th><th class="num">Cut off</th></tr></thead>
+        <tbody>
+          <tr><td>4B · thinking off</td><td class="num">76.0%<span class="sub">593/780</span></td><td class="num">4,040</td><td class="num">1.4%</td></tr>
+          <tr><td>4B · thinking on, 30,720</td><td class="num">70.5%<span class="sub">550/780</span></td><td class="num">17,055</td><td class="num">22.3%</td></tr>
+          <tr><td>4B · thinking on, 81,920</td><td class="num">82.8%<span class="sub">646/780</span></td><td class="num">19,797</td><td class="num">1.4%</td></tr>
+          <tr class="group-gap"><td>35B · thinking off</td><td class="num">83.6%<span class="sub">652/780</span></td><td class="num">2,703</td><td class="num">0.0%</td></tr>
+          <tr><td>35B · thinking on, 30,720</td><td class="num">75.8%<span class="sub">591/780</span></td><td class="num">15,772</td><td class="num">19.2%</td></tr>
+          <tr class="headline"><td>35B · thinking on, 81,920</td><td class="num">90.1%<span class="sub">703/780</span></td><td class="num">17,566</td><td class="num">0.6%</td></tr>
+          <tr class="group-gap"><td>Oracle: any of the four (81,920 rows)</td><td class="num">95.1%<span class="sub">742/780</span></td><td class="num">—</td><td class="num">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="findings">
+      <li><span>Best single agent: the 35B with thinking on at 81,920 tokens, 90.1%. At least one of the four is right on 95.1%, so choosing per question could add at most 5.0 points; 38 questions defeat all four.</span></li>
+      <li><span>At 30,720 tokens thinking on scores below thinking off for both models; at 81,920 it is ahead, mostly on AIME (35B 114/120 against 89 with thinking off).</span></li>
+      <li><span>Thinking on costs 4.9× (4B) and 6.5× (35B) the tokens of thinking off.</span></li>
+      <li><span>A simple cascade (keep the 4B's answer when its three samples agree, pass the other 30% to the 35B with thinking off) gets 84.1%, 4 questions above the 35B alone.</span></li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="sec-head"><div class="kicker">Agentic pool · 350 tasks · 5 folds</div><h2>More room to choose on tool tasks: up to 12 points</h2><button type="button" class="linkbtn" data-goto="agentic-baselines">Full agentic tab</button></div>
+    <div class="tablewrap">
+      <table>
+        <caption>Task success for each agent alone and for the oracle (solved if any of the four solves it); the 35B's BrowseComp-Plus and Finance-Agent rows at 131k context.</caption>
+        <thead><tr><th>Benchmark</th><th class="num">4B · off</th><th class="num">4B · on</th><th class="num">35B · off</th><th class="num">35B · on</th><th class="num">Oracle</th><th class="num">Gap</th></tr></thead>
+        <tbody>
+          <tr><td>WorkBench</td><td class="num">58.0%</td><td class="num">59.0%</td><td class="num">65.0%</td><td class="num">76.0%</td><td class="num">87.0%</td><td class="num">+11.0</td></tr>
+          <tr><td>Plancraft</td><td class="num">56.0%</td><td class="num">46.0%</td><td class="num">55.0%</td><td class="num">65.0%</td><td class="num">77.0%</td><td class="num">+12.0</td></tr>
+          <tr><td>Finance-Agent</td><td class="num">54.0%</td><td class="num">44.0%</td><td class="num">56.0%</td><td class="num">70.0%</td><td class="num">84.0%</td><td class="num">+14.0</td></tr>
+          <tr><td>BrowseComp-Plus</td><td class="num">35.0%</td><td class="num">32.0%</td><td class="num">44.0%</td><td class="num">48.0%</td><td class="num">60.0%</td><td class="num">+12.0</td></tr>
+          <tr class="headline"><td>All</td><td class="num">50.3%<span class="sub">176/350</span></td><td class="num">45.4%<span class="sub">159/350</span></td><td class="num">54.9%<span class="sub">192/350</span></td><td class="num">64.0%<span class="sub">224/350</span></td><td class="num">76.0%<span class="sub">266/350</span></td><td class="num">+12.0</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="findings">
+      <li><span>The 35B with thinking on is best on every benchmark, 64.0% overall.</span></li>
+      <li><span>At least one agent solves 76.0%, so choosing per task could add up to 12 points, and 11–14 on every benchmark.</span></li>
+      <li><span>Thinking helps the 35B on all four benchmarks but costs the 4B 17 tasks, 10 of them on Plancraft.</span></li>
+      <li><span>The 35B needs 131k context on BrowseComp-Plus: 14 → 44 of 100 with thinking off.</span></li>
+    </ul>
+  </section>
+
+  <!-- SUMMARY-X1:START -->
+  <section>
+    <div class="sec-head"><div class="kicker">X1 · fixed expert teams with a 35B orchestrator · running</div><h2>The orchestrator beats its team's vote and its best worker</h2><button type="button" class="linkbtn" data-goto="x1-teams">Full X1 tab</button></div>
+    <div class="tablewrap">
+      <table>
+        <caption>Stage 2 so far (folds 0–1, 6 of 15 runs, headline thinking modes): orchestrator vs the team's majority vote and its best worker; fixed / broke = orchestrator right where the vote is wrong, and the reverse.</caption>
+        <thead><tr><th>Team</th><th>Best worker</th><th class="num">Orchestrator</th><th class="num">Vote</th><th class="num">Best worker</th><th class="num">Fixed</th><th class="num">Broke</th></tr></thead>
+        <tbody>
+          <tr><td>T1 Maths</td><td>AgentMercury-4B</td><td class="num">93%<span class="sub">428/462</span></td><td class="num">89%<span class="sub">413/462</span></td><td class="num">90%<span class="sub">415/462</span></td><td class="num">19</td><td class="num">4</td></tr>
+          <tr><td>T6 Engineering</td><td>Model_First_Engineer</td><td class="num">68%<span class="sub">43/63</span></td><td class="num">52%<span class="sub">33/63</span></td><td class="num">54%<span class="sub">34/63</span></td><td class="num">10</td><td class="num">0</td></tr>
+          <tr><td>T9 WorkBench</td><td>Occamy-1.0</td><td class="num">94%<span class="sub">113/120</span></td><td class="num">78%<span class="sub">94/120</span></td><td class="num">86%<span class="sub">103/120</span></td><td class="num">22</td><td class="num">3</td></tr>
+          <tr><td>T10 Plancraft</td><td>Crafting_Planner</td><td class="num">64%<span class="sub">77/120</span></td><td class="num">53%<span class="sub">64/120</span></td><td class="num">58%<span class="sub">70/120</span></td><td class="num">21</td><td class="num">8</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="findings">
+      <li><span>On all four teams so far the orchestrator beats both the majority vote and the best worker, which is picked in hindsight.</span></li>
+      <li><span>The vote is no better than the best worker on T6, T9 and T10; the orchestrator gains by overruling it (72 fixed, 15 broken).</span></li>
+      <li><span>Small counts: T6 has 10–11 questions per run, T9 and T10 have 20.</span></li>
+    </ul>
+
+    <div class="tablewrap">
+      <table>
+        <caption>Stage 1: each worker alone on its team's questions, on the runs both rows have finished; personas on the 4B with thinking off, specialist in its better mode.</caption>
+        <thead><tr><th>Team</th><th>Best persona</th><th>Best specialist</th><th class="num">Persona</th><th class="num">Specialist</th><th class="num">Difference</th><th class="num">Runs</th></tr></thead>
+        <tbody>
+          <tr><td>T1 Maths</td><td>Systematic_Case_Mathematician</td><td>AgentMercury-4B · on</td><td class="num">83%</td><td class="num">89%</td><td class="num delta-pos">+6</td><td class="num">15</td></tr>
+          <tr><td>T2 Physics</td><td>Applied_Physicist</td><td>BigBang (35B) · on</td><td class="num">87%</td><td class="num">88%</td><td class="num">+1</td><td class="num">14</td></tr>
+          <tr><td>T3 Chemistry</td><td>both personas</td><td>BigBang (35B) · on</td><td class="num">68%</td><td class="num">78%</td><td class="num delta-pos">+10</td><td class="num">14</td></tr>
+          <tr><td>T4 Biology</td><td>both personas</td><td>BigBang (35B) · on</td><td class="num">57%</td><td class="num">70%</td><td class="num delta-pos">+13</td><td class="num">14</td></tr>
+          <tr><td>T5 Law</td><td>IRAC_Legal_Analyst</td><td>BigBang (35B) · on</td><td class="num">52%</td><td class="num">63%</td><td class="num delta-pos">+11</td><td class="num">14</td></tr>
+          <tr><td>T6 Engineering</td><td>Estimate_First_Engineer</td><td>RL-MATH · on</td><td class="num">71%</td><td class="num">70%</td><td class="num">−1</td><td class="num">15</td></tr>
+          <tr><td>T9 WorkBench</td><td>Plan_First_Assistant</td><td>Occamy-1.0 (35B) · on</td><td class="num">69%</td><td class="num">85%</td><td class="num delta-pos">+16</td><td class="num">15</td></tr>
+          <tr><td>T10 Plancraft</td><td>Crafting_Planner</td><td>R2S ALFWorld · off</td><td class="num">63%</td><td class="num">61%</td><td class="num">−2</td><td class="num">15</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="findings">
+      <li><span>The best specialist beats the best persona on 6 of 8 teams. Every gain of 10 points or more is from a 35B-based specialist (BigBang, Occamy), so model size may explain it rather than the fine-tuning.</span></li>
+      <li><span>Among 4B specialists, only AgentMercury on maths beats the personas (+6); RL-MATH ties on engineering, and neither Plancraft specialist beats the persona.</span></li>
+      <li><span>ShiningValiant3 (Gemma E4B) trails the personas on physics (best 68% vs 86%) and chemistry (51% vs 70%).</span></li>
+      <li><span>T7 BrowseComp-Plus is judged in stage 2; T8 Finance-Agent is paused and will be rerun.</span></li>
+    </ul>
+  </section>
+  <!-- SUMMARY-X1:END -->
+
+  </div>
+  <!-- SUMMARY:END -->
