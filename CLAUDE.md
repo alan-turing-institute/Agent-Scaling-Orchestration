@@ -405,7 +405,7 @@ way (`MOCK_ARGS` in `tests/mock_e2e.sh`).
 `tests/test_agentic.py` covers the loop, every topology on a toy environment, delegation and traces;
 the mock server answers requests that offer tools with deterministic tool calls.
 
-### X1: fixed expert teams with a hub
+### X1: fixed expert teams with an orchestrator
 
 Ten fixed teams (`configs/x1_teams.json`), each of 2–3 expert personas (`src/expert_personas.py`,
 kept out of the bank so the orchestrator's pool is unchanged) on the base 4B, thinking off, and
@@ -417,13 +417,15 @@ kept out of the bank so the orchestrator's pool is unchanged) on the base 4B, th
   block before the answer), `--thinking_budget`, `--sources` (filtered after the split, so folds
   match X0) and `--defer_judge`. Results: `data-claude/x1-teams/stage1/<pool>/<worker>-<mode>/fold<f>/s<k>/`.
   A watchdog restarts the server on a silent engine stall.
-- **Stage 2** (`scripts/x1_stage2.sh` → `scripts/x1_hub.py`): only the 35B hub, thinking off. It
+- **Stage 2** (`scripts/x1_stage2.sh` → `scripts/x1_hub.py`): only the 35B orchestrator, thinking off. It
   reads each worker's summary and answer (last 600 characters when the summary is missing,
   counted per worker), or on agentic tasks each worker's `report_text`, then works the task in a
   fresh environment. It also judges: deferred BrowseComp-Plus and Finance-Agent episodes are
   regraded from the questions `judge.DeferredJudge` recorded (`judge.regrade`). `--modes
   headline|on|off` picks which thinking mode's answers each specialist contributes. Rows hold
-  every worker, the vote and the hub: `stage2/<modes>/<team>/fold<f>/s<k>/`.
+  every worker, the vote and the orchestrator: `stage2/<modes>/<team>/fold<f>/s<k>/`.
+  The orchestrator was called the hub until 2026-11-05, and the code still says `hub` (`x1_hub.py`,
+  `ROLES["hub"]`, `hub_*` result fields).
 
 Tagged pools store the building machine's absolute data roots; `benchmarks.base.local_root` and
 the BrowseComp-Plus `Retriever` fall back to the local copies. Tests: `tests/test_x1.py`.
