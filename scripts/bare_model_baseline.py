@@ -58,7 +58,14 @@ def parse_args():
                         help="Questions answered concurrently, matching --eval_workers on the other arms")
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=0.9)
+    parser.add_argument("--top_k", type=int, default=None, help="Sent only when set (vLLM extension)")
+    parser.add_argument("--min_p", type=float, default=None, help="Sent only when set (vLLM extension)")
+    parser.add_argument("--presence_penalty", type=float, default=None, help="Sent only when set")
+    parser.add_argument("--thinking", choices=["server", "on", "off"], default="server",
+                        help="on/off sets enable_thinking per request; server keeps the server's default")
     parser.add_argument("--max_tokens", type=int, default=4096)
+    parser.add_argument("--request_timeout", type=float, default=300.0,
+                        help="Seconds before the client gives up on one call; long answers on a busy server need more")
     parser.add_argument("--judge_model", default=None, help="LLM judge for judged benchmarks (BrowseComp-Plus, Finance-Agent)")
     parser.add_argument("--judge_api_base_url", default=None)
     parser.add_argument("--max_inflight", type=int, default=0,
@@ -66,10 +73,33 @@ def parse_args():
     parser.add_argument("--parse_mode", choices=["strict", "lenient"], default="strict",
                         help="strict reproduces the parsers every result so far used; lenient fixes them")
     parser.add_argument("--limit", type=int, default=0, help="Answer only the first N held-out questions; 0 means all")
+    parser.add_argument("--only", default=None,
+                        help="File of question ids and/or benchmark names, one per line: answer only the held-out "
+                             "questions it names (e.g. a rerun of the ones a run cut off)")
     parser.add_argument("--response_chars", type=int, default=0,
                         help="Clip stored responses to this many characters; 0 keeps them whole")
     parser.add_argument("--out_dir", default="data-claude/orchestrator/bare_model")
+    parser.add_argument("--resume", action="store_true",
+                        help="Keep the batches an interrupted run already wrote to --out_dir and answer only the rest")
     return parser.parse_args()
+
+
+def sampling_kwargs(args):
+    """The request fields beyond temperature and top_p: vLLM's sampling extensions and the
+    per-request thinking switch. Unset ones are left out, so older runs' requests are unchanged."""
+    extra = {key: getattr(args, key) for key in ("top_k", "min_p") if getattr(args, key) is not None}
+    if args.thinking != "server":
+        extra["chat_template_kwargs"] = {"enable_thinking": args.thinking == "on"}
+    kwargs = {"extra_body": extra} if extra else {}
+    if args.presence_penalty is not None:
+        kwargs["presence_penalty"] = args.presence_penalty
+    return kwargs
+
+
+def sampling_settings(args):
+    """What the run sent, recorded with its results so every result says how it was sampled."""
+    return {key: getattr(args, key) for key in
+            ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "thinking", "max_tokens")}
 
 
 def attempt_task(agent, sample, scorer, answer_type, args):
@@ -85,7 +115,8 @@ def attempt_task(agent, sample, scorer, answer_type, args):
     try:
         episode = run_episode(agent, env, system="You are a helpful assistant.", user=env.task_prompt(),
                               max_steps=benchmark.max_steps or 30, max_tokens=args.max_tokens,
-                              temperature=args.temperature, top_p=args.top_p)
+                              temperature=args.temperature, top_p=args.top_p,
+                              sampling=sampling_kwargs(args))
         prediction = episode.pop("prediction")
     except (APIConnectionError, APITimeoutError):
         raise
@@ -129,6 +160,7 @@ def answer_one(agent, sample, scorers, args):
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
+            **sampling_kwargs(args),
         )
         text = completion.text
     except (APIConnectionError, APITimeoutError):
@@ -165,6 +197,42 @@ def answer_one(agent, sample, scorers, args):
     }
 
 
+# A restarted 35B can take ~15 min to load, longer than the default 4 x 180 s.
+SERVER_RETRIES = 20
+
+LIMIT_COUNTS = (("context_limited", lambda r: r.get("limit") == "context"),
+                ("context_limited_correct", lambda r: r.get("limit") == "context" and r["correct"]),
+                ("max_tokens_limited", lambda r: r.get("limit") == "max_tokens"),
+                ("stage_answers", lambda r: True),
+                ("stage_answers_context_limited", lambda r: r.get("limit") == "context"))
+
+
+def resume_batches(records_path, predictions_path, batches):
+    """Batches an interrupted run finished, as {batch: results}, rebuilt from its prediction rows.
+
+    A batch counts as finished only if its record exists, it holds the same questions as now and
+    every one of them has a prediction row; the rows of any other batch are dropped from the files,
+    so the run then appends exactly the batches it answers."""
+    if not records_path.exists() or not predictions_path.exists():
+        return {}
+    records = [json.loads(line) for line in records_path.read_text(encoding="utf-8").splitlines() if line]
+    rows = [json.loads(line) for line in predictions_path.read_text(encoding="utf-8").splitlines() if line]
+    done = {}
+    for record in records:
+        b = record["batch"]
+        batch_rows = [row for row in rows if row["batch"] == b]
+        if (b <= len(batches) and record["question_indices"] == list(batches[b - 1])
+                and sorted(row["question_index"] for row in batch_rows) == sorted(batches[b - 1])):
+            done[b] = [{"correct": row["team_correct"], "limit": row.get("limit"), "tags": row["tags"]}
+                       for row in batch_rows]
+    keep = lambda line: json.loads(line)["batch"] in done
+    for path in (records_path, predictions_path, traces_path(predictions_path)):
+        if path.exists():
+            lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line and keep(line)]
+            path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    return done
+
+
 def prediction_row(r, batch_index, question_index, args):
     completion = r.get("completion")
     usage = completion.usage() if completion else {}
@@ -187,6 +255,7 @@ def prediction_row(r, batch_index, question_index, args):
         "error": r.get("error"),
         "prediction": r["prediction"], "parsed": r["parsed"], "correct": r["correct"],
         "transition": None, "copied": None, "limit": r.get("limit"),
+        "sampling": sampling_settings(args),
     }
     episode = r.get("episode")
     if episode:
@@ -230,12 +299,17 @@ def main():
     _, test_dataset = make_split(dataset, args)
     if args.limit:
         test_dataset = test_dataset.select(range(min(args.limit, len(test_dataset))))
+    if args.only:
+        wanted = {line.strip() for line in Path(args.only).read_text(encoding="utf-8").splitlines() if line.strip()}
+        test_dataset = test_dataset.filter(
+            lambda row: row["dataset"] in wanted or benchmarks.instance_of(row).id in wanted)
     print(f"✓ Held out: {len(test_dataset)} questions [{split_label(args)}]")
 
     agent = OpenAICompatChatWrapper(
         base_url=args.api_base_url,
         model_name=args.model_name,
         api_key=args.api_key,
+        timeout=args.request_timeout,
         limiter=threading.BoundedSemaphore(args.max_inflight) if args.max_inflight > 0 else None,
     )
 
@@ -252,15 +326,31 @@ def main():
 
     batches = _batch_indices(len(test_dataset), args.test_batch_size, args.split_seed)
     records_path = out_dir / "holdout_records.jsonl"
-    records_path.unlink(missing_ok=True)
     predictions_path = out_dir / "holdout_predictions.jsonl"
-    predictions_path.unlink(missing_ok=True)
+    done = resume_batches(records_path, predictions_path, batches) if args.resume else {}
+    if not done:
+        for path in (records_path, predictions_path, traces_path(predictions_path)):
+            path.unlink(missing_ok=True)
 
     total = correct = 0
     limits = {}
     tag_counts, tag_correct = Counter(), Counter()
 
     for batch_index, indices in enumerate(batches, start=1):
+        if batch_index in done:
+            # Counted from the rows the interrupted run wrote, exactly as if just answered.
+            results = done[batch_index]
+            total += len(results)
+            correct += sum(r["correct"] for r in results)
+            for key, hit in LIMIT_COUNTS:
+                limits[key] = limits.get(key, 0) + sum(1 for r in results if hit(r))
+            for r in results:
+                for tag in r["tags"]:
+                    tag_counts[tag] += 1
+                    tag_correct[tag] += int(r["correct"])
+            print(f"batch {batch_index}/{len(batches)}: kept from the earlier run "
+                  f"| running {correct}/{total} = {correct / total:.1%}")
+            continue
         batch = test_dataset.select(indices)
         samples = [batch[i] for i in range(len(batch))]
 
@@ -269,17 +359,14 @@ def main():
         results = [None] * len(samples)
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = {pool.submit(with_server_retry,
-                                   lambda s=s: answer_one(agent, s, scorers, args), "bare model call"): i
+                                   lambda s=s: answer_one(agent, s, scorers, args), "bare model call",
+                                   attempts=SERVER_RETRIES): i
                        for i, s in enumerate(samples)}
             for future in concurrent.futures.as_completed(futures):
                 results[futures[future]] = future.result()
 
         batch_correct = sum(r["correct"] for r in results)
-        for key, hit in (("context_limited", lambda r: r.get("limit") == "context"),
-                         ("context_limited_correct", lambda r: r.get("limit") == "context" and r["correct"]),
-                         ("max_tokens_limited", lambda r: r.get("limit") == "max_tokens"),
-                         ("stage_answers", lambda r: True),
-                         ("stage_answers_context_limited", lambda r: r.get("limit") == "context")):
+        for key, hit in LIMIT_COUNTS:
             limits[key] = limits.get(key, 0) + sum(1 for r in results if hit(r))
         total += len(results)
         correct += batch_correct
@@ -325,6 +412,7 @@ def main():
         "run": str(out_dir),
         "selection": "none (bare model)",
         "model": args.model_name,
+        "sampling": sampling_settings(args),
         "test_questions": total,
         "batches": len(batches),
         "team_accuracy": correct / total if total else 0.0,

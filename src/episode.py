@@ -37,7 +37,8 @@ def _clip(text, limit=OBSERVATION_CHARS):
 
 def run_episode(client, env, *, system: str, user: str, max_steps: int, max_tokens: int,
                 token_budget: Optional[int] = None, temperature=0, top_p=0.9, seed=None,
-                delegate: Optional[Dict] = None, nudge: bool = True) -> Dict:
+                delegate: Optional[Dict] = None, nudge: bool = True,
+                sampling: Optional[Dict] = None) -> Dict:
     """Run one agent on `env` and return its record.
 
     `delegate`, if given, is `{"tool": schema, "run": callable(arguments) -> str}`:
@@ -45,6 +46,9 @@ def run_episode(client, env, *, system: str, user: str, max_steps: int, max_toke
     With `nudge`, a reply without a tool call gets one reminder before it ends
     the episode; a worker called on by a lead runs without it, since its text
     reply is its report back.
+    `sampling` holds further request fields sent with every turn (vLLM's top_k and
+    min_p, presence_penalty, the per-request thinking switch), as the bare-model
+    baseline builds them.
     Connection and timeout errors propagate, so the caller's retry can wait out a
     restarting server; the environment is left as the agent left it.
     """
@@ -64,7 +68,7 @@ def run_episode(client, env, *, system: str, user: str, max_steps: int, max_toke
     for turn in range(max_steps):
         try:
             completion = client.generate(messages, max_tokens=max_tokens, temperature=temperature,
-                                         top_p=top_p, seed=seed, tools=tools)
+                                         top_p=top_p, seed=seed, tools=tools, **(sampling or {}))
         except Exception as error:
             if not is_context_limit(error):
                 raise
