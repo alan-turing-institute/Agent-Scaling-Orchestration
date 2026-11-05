@@ -18,7 +18,9 @@ idempotent, so it can run after any other tab's splice script:
 --x1-notes (optional) is a JSON object with lists "stage2" and "stage1" of extra finding bullets
 (HTML) added after the computed ones, plus optional "asof" (time of the X1 numbers, for the
 eyebrow) and "status" (list of HTML bullets for the Summary status box). Without "asof"/"status",
-the live page's eyebrow and status box are kept, never reset to summary_tab.html.
+the live page's eyebrow and status box are kept, never reset to summary_tab.html. Optional
+"x1_kicker" sets the kicker of the Summary's X1 section, and "pill" / "pill_class" ("running" or
+"done") the Summary status pill; without them the live page's are kept.
 """
 
 import argparse
@@ -39,6 +41,9 @@ BUTTON = re.compile(r'[ \t]*<button type="button" role="tab" id="tabbtn-([\w-]+)
 X1_RE = re.compile(r"\n  <!-- SUMMARY-X1:START -->.*?<!-- SUMMARY-X1:END -->", re.S)
 EYEBROW_RE = re.compile(r'(<div class="eyebrow">)Summary · [^<]*(</div>)')
 STATUS_RE = re.compile(r'(<div class="status">\s*<span class="label">.*?</span></span>\s*<ul class="findings">).*?(</ul>)', re.S)
+KICKER_RE = re.compile(r'(<!-- SUMMARY-X1:START -->\s*<section>\s*<div class="sec-head"><div class="kicker">)[^<]*(</div>)')
+PILL_RE = re.compile(r'(<div class="status">\s*<span class="label">Status )<span class="pill [\w-]+">[^<]*</span>')
+X1_KICKER = "X1 · fixed expert teams with a 35B hub · running"
 DESIGN_START = '  <section>\n    <div class="sec-head"><div class="kicker">Design</div><h2>Teams</h2>'
 DESIGN_SUMMARY = ("Design and setup: teams, settled decisions, ablations, smoke tests, "
                   "thinking on vs off, model cards, persona prompts")
@@ -63,7 +68,7 @@ def x1_block(stage1_paths, stage2_path, notes):
 
     label = lambda w: SPECIALISTS[w][0] if w in SPECIALISTS else w
     out = ["  <!-- SUMMARY-X1:START -->", "  <section>",
-           "    <div class=\"sec-head\"><div class=\"kicker\">X1 · fixed expert teams with a 35B hub · running</div>"
+           f"    <div class=\"sec-head\"><div class=\"kicker\">{notes.get('x1_kicker', X1_KICKER)}</div>"
            "<h2>Hub with its team, and workers alone</h2>"
            "<button type=\"button\" class=\"linkbtn\" data-goto=\"x1-teams\">Full X1 tab</button></div>"]
 
@@ -92,8 +97,9 @@ def x1_block(stage1_paths, stage2_path, notes):
                         f"<td class=\"num\">{f}</td><td class=\"num\">{b}</td></tr>")
         n = len(rows)
         out += ["    <div class=\"tablewrap\">", "      <table>",
-                "        <caption>Stage 2 so far, headline thinking modes: the hub (35B, thinking off) against its team's "
-                "majority vote and its best worker (picked in hindsight), over the fold/sample runs finished (of 15); "
+                f"        <caption>Stage 2{'' if runs == {15} else ' so far'}, headline thinking modes: the hub (35B, thinking off) "
+                "against its team's majority vote and its best worker (picked in hindsight), over "
+                f"{'all 15 fold/sample runs' if runs == {15} else 'the fold/sample runs finished (of 15)'}; "
                 "fixed / broke = hub right where the vote is wrong, and the reverse.</caption>",
                 "        <thead><tr><th>Team</th><th>Best worker</th><th class=\"num\">Runs</th><th class=\"num\">Hub</th>"
                 "<th class=\"num\">Vote</th><th class=\"num\">Best worker</th><th class=\"num\">Fixed</th>"
@@ -205,6 +211,15 @@ def main():
         block = STATUS_RE.sub(lambda m: m[1] + "\n" + "\n".join(f"      <li><span>{s}</span></li>" for s in notes["status"]) + "\n    " + m[2], block, count=1)
     elif live:
         block = STATUS_RE.sub(lambda _: STATUS_RE.search(live)[0], block, count=1)
+
+    if "x1_kicker" in notes:
+        block = KICKER_RE.sub(lambda m: m[1] + notes["x1_kicker"] + m[2], block, count=1)
+    elif live and KICKER_RE.search(live):
+        block = KICKER_RE.sub(lambda _: KICKER_RE.search(live)[0], block, count=1)
+    if "pill" in notes:
+        block = PILL_RE.sub(lambda m: m[1] + f'<span class="pill {notes.get("pill_class", "running")}">{notes["pill"]}</span>', block, count=1)
+    elif live and PILL_RE.search(live):
+        block = PILL_RE.sub(lambda _: PILL_RE.search(live)[0], block, count=1)
 
     if "<!-- SUMMARY:START -->" in page:
         a = page.index("  <!-- SUMMARY:START -->")
