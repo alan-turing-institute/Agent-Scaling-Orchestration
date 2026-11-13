@@ -107,6 +107,12 @@ def parse_args():
                         help="Judged tasks: record the judge's questions instead of asking them (no judge "
                              "served); scripts/x1_hub.py grades them later. Their rows score as not correct")
     parser.add_argument("--sample", type=int, default=None, help="Which repeated sample this run is; recorded only")
+    parser.add_argument("--claude_cli", action="store_true",
+                        help="Answer with Claude through headless Claude Code (`claude -p`, model --model_name, e.g. "
+                             "sonnet), one fresh session per call (src/model/claude_cli.py). Sampling flags do not "
+                             "apply; usage and list-price cost go to <out_dir>/claude_usage.jsonl")
+    parser.add_argument("--claude_effort", default=None, choices=["low", "medium", "high", "xhigh", "max"],
+                        help="--claude_cli: the session's effort level; unset keeps Claude Code's default")
     parser.add_argument("--out_dir", default="data-claude/orchestrator/bare_model")
     parser.add_argument("--resume", action="store_true",
                         help="Keep the batches an interrupted run already wrote to --out_dir and answer only the rest")
@@ -383,13 +389,18 @@ def main():
             lambda row: row["dataset"] in wanted or benchmarks.instance_of(row).id in wanted)
     print(f"✓ Held out: {len(test_dataset)} questions [{split_label(args)}]")
 
-    agent = OpenAICompatChatWrapper(
-        base_url=args.api_base_url,
-        model_name=args.model_name,
-        api_key=args.api_key,
-        timeout=args.request_timeout,
-        limiter=threading.BoundedSemaphore(args.max_inflight) if args.max_inflight > 0 else None,
-    )
+    if args.claude_cli:
+        from model.claude_cli import ClaudeCLIChatWrapper
+        agent = ClaudeCLIChatWrapper(model_name=args.model_name, usage_log=str(out_dir / "claude_usage.jsonl"),
+                                     timeout=args.request_timeout, effort=args.claude_effort)
+    else:
+        agent = OpenAICompatChatWrapper(
+            base_url=args.api_base_url,
+            model_name=args.model_name,
+            api_key=args.api_key,
+            timeout=args.request_timeout,
+            limiter=threading.BoundedSemaphore(args.max_inflight) if args.max_inflight > 0 else None,
+        )
 
     # Each question is scored as its own benchmark declared, so a split that mixes
     # numeric and multiple-choice questions asks each one for the right thing.

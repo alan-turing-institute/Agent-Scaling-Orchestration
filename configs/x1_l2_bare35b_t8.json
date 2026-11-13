@@ -1,0 +1,66 @@
+{
+  "_doc": "X1 L2, T8 only: the 35B alone on Finance-Agent, as configs/x1_l2_bare35b.json does for the other teams. Kept apart (own ROOT) because the agentic run directory is per pool, and the other agentic runs are finished. Run on one box only (Wikipedia/Wikidata rate locks): X1_CONFIG=configs/x1_l2_bare35b_t8.json ROOT=data-claude/x1-l2-t8 MODELS=qwen35b ./scripts/x1_stage1.sh",
+  "settings": {
+    "folds": 5,
+    "split_seed": 0,
+    "samples": 3,
+    "hard": {
+      "max_tokens": 30720,
+      "thinking_budget": 26624,
+      "workers": 8
+    },
+    "agentic": {
+      "max_tokens": 8192,
+      "thinking_budget": 6144,
+      "workers": 4
+    },
+    "request_timeout": 54000
+  },
+  "sampling": {
+    "qwen_on": "--temperature 1.0 --top_p 0.95 --top_k 20 --min_p 0 --presence_penalty 1.5",
+    "qwen_off": "--temperature 0.7 --top_p 0.8 --top_k 20 --min_p 0 --presence_penalty 1.5",
+    "gemma": "--temperature 1.0 --top_p 0.95 --top_k 64",
+    "agents_a1_on": "--temperature 0.85 --top_p 0.95 --top_k 20 --presence_penalty 1.1",
+    "r2s_off": "--temperature 0.4 --top_p 0.95",
+    "skillgym_on": "--temperature 0.6 --top_p 0.95 --top_k 20",
+    "aquila_on": "--temperature 1.0 --top_p 0.95 --repetition_penalty 1.05",
+    "ministral": "--temperature 0.7 --top_p 0.95"
+  },
+  "persona_model": {
+    "handle": "Qwen/Qwen3.5-4B",
+    "profile": "qwen4b",
+    "quant": "fp8",
+    "mode": "off",
+    "sampling": "qwen_off"
+  },
+  "hub": {
+    "handle": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+    "profile": "qwen35b",
+    "quant": "",
+    "mode": "off",
+    "sampling": "qwen_off"
+  },
+  "specialists": {
+    "qwen35b": {
+      "handle": "nvidia/Qwen3.6-35B-A3B-NVFP4",
+      "profile": "qwen35b",
+      "quant": "",
+      "modes": {
+        "off": "qwen_off"
+      },
+      "headline": "off"
+    }
+  },
+  "teams": [
+    {
+      "id": "T8",
+      "name": "Finance-Agent",
+      "pool": "agentic",
+      "sources": "finance_agent",
+      "personas": [],
+      "specialists": [
+        "qwen35b"
+      ]
+    }
+  ]
+}

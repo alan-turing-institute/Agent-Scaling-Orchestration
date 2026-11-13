@@ -15,6 +15,9 @@ idempotent, so it can run after any other tab's splice script:
   the end of "Current". The Summary tab is the one shown on load.
 - The X1 tab's design sections (Teams ... Expert persona prompts) are folded into one <details>.
 
+--x1-stage2-datasets (optional) takes x1_stage2_by_dataset.py output and adds a by-dataset table after
+the stage 2 table, with the notes' "stage2_datasets" bullets.
+
 --x1-notes (optional) is a JSON object with lists "stage2" and "stage1" of extra finding bullets
 (HTML) added after the computed ones, plus optional "asof" (time of the X1 numbers, for the
 eyebrow) and "status" (list of HTML bullets for the Summary status box). Without "asof"/"status",
@@ -62,9 +65,9 @@ def bullets(items):
     return "\n".join(["    <ul class=\"findings\">", *(f"      <li><span>{b}</span></li>" for b in items), "    </ul>"])
 
 
-def x1_block(stage1_paths, stage2_path, notes):
+def x1_block(stage1_paths, stage2_path, notes, datasets_path=None):
     sys.path.insert(0, str(X1_SCRIPTS))
-    from x1_stage1_tab import SPECIALISTS, TEAMS, merge  # noqa: E402
+    from x1_stage1_tab import DATASETS, SPECIALISTS, TEAMS, dataset_rows, merge  # noqa: E402
 
     label = lambda w: SPECIALISTS[w][0] if w in SPECIALISTS else w
     out = ["  <!-- SUMMARY-X1:START -->", "  <section>",
@@ -108,6 +111,30 @@ def x1_block(stage1_paths, stage2_path, notes):
                 bullets([f"The orchestrator beats the majority vote on {beat_vote} of {n} teams and the best worker on {beat_best} of {n}.",
                          f"Over these teams it fixes {fixed} answers the vote got wrong and breaks {broke} it got right.",
                          *notes.get("stage2", [])])]
+
+    if datasets_path:
+        rows, last = [], None
+        for r in dataset_rows(json.load(open(datasets_path))):
+            name = DATASETS[r["dataset"]] if r["dataset"] != last else ""
+            gap = " class=\"group-gap\"" if r["dataset"] != last and last is not None else ""
+            last = r["dataset"]
+            if r["team"] is None:
+                who, best = f"all {r['teams']} teams", "<td>—</td>"
+                bestc = "<td class=\"num\">—</td>"
+            else:
+                who, best = f"{r['team']} {TEAMS[r['team']]}", f"<td>{label(r['best'])}</td>"
+                bestc = cell(r["best_c"], r["q"])
+            rows.append(f"          <tr{gap}><td>{name}</td><td>{who}</td>{best}<td class=\"num\">{r['distinct']}</td>"
+                        f"{cell(r['hub'], r['q'])}{cell(r['vote'], r['q'])}{bestc}"
+                        f"<td class=\"num\">{r['fixed']}</td><td class=\"num\">{r['broke']}</td></tr>")
+        out += ["    <div class=\"tablewrap\">", "      <table>",
+                "        <caption>Stage 2 by source dataset, headline thinking modes: orchestrator, majority vote and best worker "
+                "on that dataset; questions = different questions, each answered in 3 samples.</caption>",
+                "        <thead><tr><th>Dataset</th><th>Team</th><th>Best worker</th><th class=\"num\">Questions</th>"
+                "<th class=\"num\">Orchestrator</th><th class=\"num\">Vote</th><th class=\"num\">Best worker</th>"
+                "<th class=\"num\">Fixed</th><th class=\"num\">Broke</th></tr></thead>", "        <tbody>", *rows,
+                "        </tbody>", "      </table>", "    </div>",
+                bullets(notes.get("stage2_datasets", []))]
 
     if stage1_paths:
         merged = merge(stage1_paths)
@@ -185,6 +212,7 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--x1-stage1", nargs="+", help="x1_stage1_summary.py output from each box")
     ap.add_argument("--x1-stage2", help="JSON list of stage 2 holdout_summary.json records")
+    ap.add_argument("--x1-stage2-datasets", help="x1_stage2_by_dataset.py output: adds a by-dataset table")
     ap.add_argument("--x1-notes", help="JSON with extra bullets: {\"stage2\": [...], \"stage1\": [...]}")
     args = ap.parse_args()
 
@@ -194,7 +222,7 @@ def main():
     # X1 part of the summary: rebuilt from the inputs, else kept from the live page.
     if args.x1_stage1 or args.x1_stage2:
         notes = json.load(open(args.x1_notes)) if args.x1_notes else {}
-        new_x1 = "\n" + x1_block(args.x1_stage1, args.x1_stage2, notes)
+        new_x1 = "\n" + x1_block(args.x1_stage1, args.x1_stage2, notes, args.x1_stage2_datasets)
         block = X1_RE.sub(lambda _: new_x1, block, count=1)
     elif "<!-- SUMMARY-X1:START -->" in page:
         live_x1 = X1_RE.search(page)[0]

@@ -8,6 +8,10 @@ Research code for the paper *Understanding Agent Scaling in LLM-Based Multi-Agen
 Diversity*. `README.md` has the paper story, personas, K\* definition and flags. Benchmarks and
 agentic environments: [`docs/benchmarks.md`](docs/benchmarks.md).
 
+**Current plan:** [`docs/plan.md`](docs/plan.md) (state of the work, paper framing, experiments to run).
+**To do:** [`docs/todo.md`](docs/todo.md), the checklist of code changes and runs by priority.
+Tick items off, and add new ones, in the same change that does the work.
+
 Experiment entry points, not a library: no lint, packaging or `__init__.py`. Two pipelines share
 `src/model` and `src/benchmarks`:
 

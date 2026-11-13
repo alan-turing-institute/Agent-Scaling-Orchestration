@@ -1,18 +1,18 @@
-# Plan: X1 + X2 as one fixed centralized team
+# X1 design: fixed expert teams with an orchestrator
 
-Started in a design session on 2026-10-22, while X0 runs. X1 (prompts) and X2 (models and
-specialists) from [§10 of the v2 plan](orchestration-v2-plan.md#10-experiments-on-the-harder-benchmarks)
-become one experiment: a **fixed team** of personas and **specialists** whose **orchestrator** reads their
+Designed on 2026-10-22, while X0 ran. X1 (prompts) and X2 (models and
+specialists) of the former v2 plan became one experiment: a **fixed team** of personas and **specialists** whose **orchestrator** reads their
 answers and gives the final one. Terms in **bold** are defined in [`CONTEXT.md`](../CONTEXT.md). How
 each specialist was trained is in [`notes/specialists.md`](notes/specialists.md) and
 [`notes/base-models.md`](notes/base-models.md). Issues: #16 (personas), #15 (specialist gates),
 #14 (serving), #10 (agent registry), #32 (new base families).
 
-Status: inventory written; Q6–Q26 settled 2026-10-22; design still being settled (§6).
+Status: **complete** (stages 1 and 2, 5 folds × 3 samples, T8 rerun on 2026-11-06). This file records the design as run;
+what comes next is in [`plan.md`](plan.md) and [`todo.md`](todo.md).
 
 ---
 
-## 1. Settled so far
+## 1. Design as run
 
 - **A fixed team, centralized topology.** Workers answer alone; the orchestrator reads all their answers and
   gives the team's answer (`team_config.centralized`). Nothing is chosen per task; that is X3.
@@ -527,35 +527,18 @@ requires, such as Ministral's `SYSTEM_PROMPT.txt`). The orchestrator is Qwen3.6-
 Caveat: AgentMercury-4B is credibility 1 (individual author, card lists only the benchmarks it
 improved).
 
-## 5. Gaps
+## 5–6. Gaps and later work
 
-- No persona is written for any hard or agentic source.
-- No specialist for MMLU-Pro engineering, GPQA biology or Plancraft; law only via the excluded Saul.
-- Med-Qwen and the HuatuoGPT models match no source in either pool.
-- The smoke-test spec in `notes/specialists.md` still says temperature 0 and a 4,096-token cap,
-  which conflicts with Q40 and X0's 30,720-token answers.
-- `src` has no per-agent thinking control beyond `chat_template_kwargs`, no `reasoning_effort`, no
-  `stop_token_ids`, and no agent registry with specialists in it (#10, #11).
+Moved to [`plan.md`](plan.md) and [`todo.md`](todo.md) on 2026-11-13. The former "later" items map as:
+- L1 → ablation A6;
+- L2 → the matched-compute baselines;
+- L3 → paired bases for specialists (A8, B1);
+- L4 → A5;
+- L9 and L10 → A9 / todo §3.
 
-## 6. Later: ablations and deferred work
+L5–L8 are dropped or done.
 
-Everything flagged during the design session as "later" or "ablation". Nothing here blocks the
-first run.
-
-| # | Item | From | When |
-|---|---|---|---|
-| L1 | **4B orchestrator ablation**: rerun stage 2 with Qwen3.5-4B (thinking off) as the orchestrator over the same saved worker answers | Q7 | After the first run; stage 1 answers are reused |
-| L2 | **Comparisons**: orchestrator vs best single worker per source vs bare 35B vs majority vote (replay), on accuracy against cost | Q11 | After the raw results are reported |
-| L3 | **Solo rows for specialists' other bases**: Gemma-4-E4B (for ShiningValiant3) and Ministral-3-3B-Instruct (for Ministral-R) on the same questions and settings, so each specialist has its paired base | Q15 | When no experiment is running |
-| L4 | **Fuller handoff ablation**: orchestrator served at 131k context, reading each worker's last N tokens (or full answer) instead of its summary | Q17 | After the first run; reuses stage 1 answers |
-| L5 | **Second wave of specialists** needing new hosts (Llama-3.1-8B, Qwen2.5-7B: R1-Distill-Llama-8B, Fino1-8B, Fin-R1, …), if the user picks any | Q14 | After the Llama / Qwen2.5 serve scripts exist (#32) |
-| L6 | **Text-only checkpoints** (Med-Qwen and other `Qwen3_5ForCausalLM` fine-tunes): local wrapper or vLLM ≥ 0.27; check the `26.06-py3` image on the second Spark | §4 | Only if one is picked (#30) |
-| L7 | **Update the specialist smoke-test spec** (the 2026-10-22 smoke tests already used X1's settings) in `notes/specialists.md` (still says temperature 0 and a 4,096-token cap) to vendor sampling and X0's caps | §5 | Before any specialist is smoke-tested |
-| L8 | **Re-sync the second Spark** (`data-claude/`, env) from sparkie12 before the run, and copy results back after | Q4 | Before stage 1 / after each stage |
-| L9 | **Thinking cap and mode for thinking-on workers.** X0 shows thinking on scores below thinking off on the same folds (35B 75.0% vs 83.0%, 4B 67.5% vs 72.0%) and ~20–26% of thinking-on answers hit 30,720. Rerun the thinking-on specialists with a larger cap (e.g. 65,536), and compare each specialist with thinking off; a first thinking on/off test (tok/s, accuracy, cut-offs) is done (§7, 2026-10-26) | X0 results, 2026-10-23 | Decide before stage 1; the larger-cap rerun after it |
-| L10 | **Orchestrator chooses each agent's thinking mode.** The on/off test (§7) shows the better mode varies by specialist and task type (on helps AgentMercury, BigBang, Occamy; off helps RL-MATH, R2S, ShiningValiant3) and off costs fewer tokens at the same tok/s. Let the orchestrator pick on or off per agent and task, trading tokens for accuracy. Stage 1 records both modes (§1), so this replays offline over saved answers | User, 2026-10-26 | After X1; data from stage 1 |
-
-## 7. To build before the first run
+## 7. Build notes and smoke tests
 
 - Expert prompts for every source and subject, in the bank's style (Q12), written into this plan
   for review before coding.
@@ -703,9 +686,7 @@ stages; 1 h 37 min, `data-claude/x1-teams-test/`):
 - T7: three workers and the orchestrator answered "Claude Beri Langmann" (gold "Claude Berel Langmann"),
   judged wrong; nobody answered the other question, and BigBang ran to the 30-step limit again.
 
-## 8. Open decisions
+## 8. Decisions taken at stage 2
 
-- Thinking mode per specialist for the headline team result (L9, §7 thinking on vs off). No longer
-  blocks stage 1, which records both modes; decide before stage 2. Proposed: off for RL-MATH, R2S,
-  SkillGym and ShiningValiant3 (or on with a stricter format instruction); on for AgentMercury,
-  BigBang and Occamy; either for Agents-A1, XYZ-Aquila and Fx-Work (off is faster).
+- **Headline thinking mode per specialist:** as set by `headline` in `configs/x1_teams.json`.
+- **Comparison runs:** stage 2 also ran with every specialist on and every specialist off (`--modes`), so the choice of mode is itself a reported comparison.
