@@ -9,12 +9,8 @@ Tick items off and add new ones as work moves. Done items go to the bottom with 
 
 ## 1. Housekeeping
 
-- [ ] **P0** Commit and open PRs for uncommitted work:
-  - `-x1` worktree: `scripts/x1_regrade.py`, `scripts/x1_l2_compare.py`, `configs/x1_l2_bare35b_t8.json`.
-  - `-frontier` worktree: `src/model/claude_cli.py`, `scripts/frontier_summary.py`, `scripts/frontier_tab.py`, the `--claude_cli` option in `scripts/bare_model_baseline.py`, and these docs.
-  - `-x1`: push orchestrator-52's two by-dataset commits.
-- [ ] **P1** Fast-forward the main checkout and the `-docs` worktree to `origin/main`; remove the `-hard` and `-x0` worktrees once nothing runs from them.
-- [ ] **P2** Delete the merged remote branches `orchestrator/small-agents` and `experiments/x1-teams`, and decide on the stale `refactor/benchmark-registry`, PR #2 and PR #1.
+- [ ] **P2** Delete the merged remote branches `orchestrator/small-agents`, `experiments/x1-teams` and `experiments/frontier-sonnet`. The permission check blocks `git push --delete` from Claude, so the user runs it.
+- [ ] **P2** Decide on the stale `refactor/benchmark-registry` branch, PR #2 (repo layout) and PR #1 (Carolyn's).
 
 ## 2. Matched-compute baselines (plan §3)
 
@@ -103,6 +99,7 @@ Experiments (tool pool, fold 0 pilot first):
 
 ## Done
 
+- 2026-11-13: housekeeping. PR #38 merged the frontier harness, the L2 scripts, orchestrator-52's by-dataset builders and these docs. The main checkout was fast-forwarded. The `-hard`, `-x0`, `-x1`, `-docs` and `-frontier` worktrees and their local branches were removed; only `-x4` (X4, running) remains.
 - 2026-11-13: Sonnet frontier baseline, fold 0 (results page "Frontier model" tab).
 - 2026-11-13: matched-compute check from existing data: the 35B thinking on vs orchestrator + team (plan §1).
 - 2026-11-13: literature notes (`notes/paper-*.md`) and this plan.
