@@ -21,6 +21,7 @@ Code:
 - [ ] **P0** `x1_hub.py --aggregate select`: Universal Self-Consistency / judge-pick prompt, where the orchestrator must return one worker's answer.
 - [ ] **P0** `x1_hub.py --workers-from`: let the orchestrator read another set of stage-1 rows (the 35B's own samples) for Self-MoA.
 - [ ] **P1** Cascade and kNN router baselines over the answer matrix (#22, #23); X4's replay scorer may already cover the cascade.
+- [ ] **P2** Symbolic-MoE baseline, the closest published training-free method: adapt its expert recruitment to our pool and run live.
 
 Experiments:
 - [ ] **P0** The 35B thinking on, samples s1–s2, long limit, hard and tool pools (k = 3 to match the orchestrator).
@@ -39,6 +40,8 @@ Code (most as `x1_hub.py` options that change the orchestrator's inputs, replayi
 - [ ] **P0** Orchestrator model and thinking from the command line, or via config variants: 4B orchestrator (A6/L1), thinking on (B5).
 - [ ] **P1** `--handoff answer|summary|full|last-n` with a 131k serve (A5/L4).
 - [ ] **P1** Analysis scripts: gain by vote margin (A1); error correlation (B1); gain against difficulty (B2); which worker is copied (B6).
+- [ ] **P2** K\* of each team against its gain (the predecessor paper's diversity measure); analysis only.
+- [ ] **P2** `--modes choose`: the orchestrator picks each specialist's thinking mode per task (L10), replayed from stage 1's two modes.
 - [ ] **P0** Statistics: question-clustered paired bootstrap with Holm (extend `scripts/compare_runs.py`), plus Pareto plots (A10).
 
 Experiments (orchestrator calls over saved answers; each about one stage-2 pass):
@@ -51,6 +54,8 @@ Experiments (orchestrator calls over saved answers; each about one stage-2 pass)
 - [ ] **P1** B3 select vs synthesise (shares code with USC).
 - [ ] **P1** A5 handoff format (131k serve).
 - [ ] **P1** B7 tool tasks: orchestrator episode with no reports, and with reports from another task.
+- [ ] **P1** L3 solo runs of the specialists' other bases, Gemma-E4B and Ministral-3B-Instruct, at X1 settings (new worker runs).
+- [ ] **P2** L10 run, once `--modes choose` exists.
 - [ ] **P2** L9 specialists with a larger thinking cap (new worker runs).
 - [ ] **P2** B4 adversarial or weak member (Qwen3.5-0.8B answers need new runs).
 - [ ] **P2** B10 style anonymisation; B9 extra rounds.
@@ -62,7 +67,7 @@ Code:
   - execution given a correct plan, per agent (needs reference plans for WorkBench and Plancraft);
   - plan quality scored with a fixed executor.
 - [ ] **P1** An X1-style runner for `team_config.delegated` with real specialists on separate endpoints (two Sparks); log tokens per agent and every delegation.
-- [ ] **P1** An `ask_expert` tool for a small driver calling the 35B (D3); shares code with X5.
+- [ ] **P1** An `ask_expert` tool and a transcript hand-off for a small driver calling the 35B (D3; absorbs the old X5).
 - [ ] **P2** A fixed pipeline arm, plan → execute → check (D4), via `team_config.pipeline`.
 
 Experiments (tool pool, fold 0 pilot first):
@@ -71,11 +76,9 @@ Experiments (tool pool, fold 0 pilot first):
 - [ ] **P1** D3: small driver with `ask_expert`.
 - [ ] **P2** D4: fixed pipeline.
 
-## 5. Selection and escalation (plan §6)
+## 5. Escalation (plan §6)
 
 - [ ] **P1** X4 solve first: in progress in the `-x4` worktree (another session). Fold its results into the plan when it reports.
-- [ ] **P2** X3 per-task selection (decide first), only if X4 and §2 leave room.
-- [ ] **P2** X5 agentic whole-task escalation (build with D3).
 
 ## 6. Evaluation fixes (plan §7)
 
@@ -99,6 +102,7 @@ Experiments (tool pool, fold 0 pilot first):
 
 ## Done
 
+- 2026-11-13: earlier plans triaged (plan §10). Dropped: X3 per-task selection, agent cards, memory, cost budgets, pool expansion and E10 on single questions. X5 was folded into D3.
 - 2026-11-13: housekeeping. PR #38 merged the frontier harness, the L2 scripts, orchestrator-52's by-dataset builders and these docs. The main checkout was fast-forwarded. The `-hard`, `-x0`, `-x1`, `-docs` and `-frontier` worktrees and their local branches were removed; only `-x4` (X4, running) remains.
 - 2026-11-13: Sonnet frontier baseline, fold 0 (results page "Frontier model" tab).
 - 2026-11-13: matched-compute check from existing data: the 35B thinking on vs orchestrator + team (plan §1).

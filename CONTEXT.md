@@ -54,20 +54,16 @@ The set of agents the orchestrator may choose from.
 
 **Orchestrator**:
 The agent that leads a team. In X1 the team is fixed: the orchestrator reads every worker's answer
-and gives the team's final answer, and does not choose the team. From X3 on it also, for each task,
-either answers it directly or delegates it by choosing a configuration, weighing what each agent
-gets right against what it costs. Called the hub in X1 until 2026-11-05; the code still says `hub`.
+and gives the team's final answer, and does not choose the team. In X4 it answers first and decides
+whether to escalate; in the delegation experiment it hands sub-steps of a tool task to workers.
+Called the hub in X1 until 2026-11-05; the code still says `hub`.
 _Avoid_: hub, router, selector, planner
 
 **Direct answer**:
 The orchestrator answering a task itself, with no team.
 
 **Delegation**:
-The orchestrator handing a task to a configuration of other agents.
-
-**Decide first**:
-The orchestrator choosing between a direct answer and delegation before it has tried the task.
-One of two ways it is run; compared with solve first at matched cost.
+The orchestrator handing a task, or a sub-step of a tool task, to other agents.
 
 **Solve first**:
 The orchestrator answering the task itself, then deciding whether to escalate. Its own answer is
@@ -118,23 +114,9 @@ _Avoid_: static team, preset
 
 **Sequential topology**:
 A topology where one agent's output is the next agent's input, so a later agent can improve on an
-earlier one's answer rather than only outvote it. Not a fixed template: for each task the
-orchestrator chooses how many steps there are and which pool agent takes each. An agent is the same
-in a sequence as in any other topology; there are no separate role prompts, so a reviewer-like step
-exists only if such an agent is in the pool.
+earlier one's answer rather than only outvote it: a fixed pipeline (plan, execute, check), or an
+orchestrator delegating sub-steps as it goes. Tested on tool tasks only.
 _Avoid_: chain, pipeline (when meaning the topology rather than the code)
-
-**Cost budget**:
-The most a task may spend, stated to the orchestrator. Its own calls, including a direct answer,
-count against it. Running at several budgets traces the orchestrator's curve.
-
-**Agent card**:
-What the orchestrator is told about each agent: what it is, how accurate it was on the training
-folds, and what it cost.
-
-**Continual memory**:
-The orchestrator's record of its own past choices and how they turned out. Tested as an ablation
-against agent cards alone.
 
 **Handoff**:
 What a later step in a sequence sees of the earlier steps, with the one fixed instruction that comes
@@ -142,11 +124,8 @@ with it. The same for every agent and every step.
 
 **Best single agent**:
 The one agent that does best on the training folds, used alone for every task. The fixed baseline;
-it stays the same whatever topology the orchestrator picks.
+the agent that does best on the test folds, in hindsight, is reported only as an upper bound.
 _Avoid_: best fixed configuration, manual selection
-
-**Random configuration**:
-A configuration drawn at random from the pool, at a stated team size. A baseline.
 
 **Bare model**:
 One call to one model with no persona and no team. A baseline.
@@ -158,8 +137,8 @@ What answering a task spends, including the orchestrator's own calls. Measured t
 (thinking included), compute (tokens weighted by each model's active parameters), and wall-clock.
 
 **Development split**:
-A slice of questions, stratified by source, set aside for choices made before evaluation:
-shortlisting personas, admitting specialists, placing the cost budgets. Never used to report results.
+A slice of questions, stratified by source, set aside for choices made before evaluation, such as
+picking a team's members. Never used to report results.
 
 **Oracle**:
 For each task, the cheapest single agent that answered it correctly, known only in hindsight. The
