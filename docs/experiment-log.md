@@ -4,6 +4,9 @@ Running record of orchestrator experiments: what was run, on what data, with whi
 code, and what came out. Newest entry last. Results tables are filled in when a run
 finishes; a run still in flight says so.
 
+**Covers the easy-pool work (September 2026) only.** From October onward the record is the results
+page ("Does Orchestrator Memory Help?"), [`plan.md`](plan.md) §1 and [`todo.md`](todo.md).
+
 The goal of this line of work differs from the paper the repository was built for.
 The paper studies how collective performance scales with the number of heterogeneous
 persona-guided agents. Here the question is narrower: **can an orchestrator learn to
