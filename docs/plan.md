@@ -26,7 +26,7 @@ Literature notes, each with sources:
 | X1 | 10 fixed expert teams (personas + specialists), 35B orchestrator reads summaries | Done (5 folds × 3 samples, T8 rerun) | Orchestrator beats the vote 10/10 and the best worker 7/10 |
 | L2 | The 35B alone, thinking off, X1 settings | Done | Team beats it on maths, physics and 3 tool tasks; n.s. elsewhere; ~10× tokens |
 | Frontier | Claude Sonnet via headless Claude Code, fold 0, 1 sample | Done; **not to be rerun** (usage) | Beats every open configuration on all 8 benchmarks with far fewer output tokens |
-| X4 | Solve first, then escalate | **In progress** (another session, worktree `-x4`) | — |
+| X4 | Solve first, then escalate (35B thinking off answers first) | Live calls done 2026-11-14; fold-fitted rules and results tab pending | Its own judgement plus a 35B-on review: 83.6% → 85.4% at 1.6× compute; always passing on to the 35B on reaches 90.1% at 7.5× |
 | Delegation | Division of labour on tool tasks (includes the old X5) | Not started | — |
 
 ### The matched-compute check that sets the framing
@@ -179,6 +179,23 @@ If no worker beats the 35B at any sub-step, delegation can only add cost. That w
   - accuracy against cost vs the cascade and the matched-compute baselines.
 - Scoring: replay from the X0 matrix, with only judgement and review calls made live.
 
+**Results so far** (780 hard questions; compute = tokens × active parameters, per question):
+
+| Policy | Accuracy | Compute | Fixed / broke |
+|---|---|---|---|
+| Never escalate (the 35B thinking off) | 83.6% | 8,109 | — |
+| Own judgement → review by the 35B thinking on | 85.4% | 13,307 | +14 / −0 |
+| Own judgement → pass on to the 35B thinking on | 86.7% | 24,429 | +29 / −5 |
+| Always pass on to the 35B thinking on | 90.1% | 60,806 | — |
+| Ceiling: escalate exactly the wrong answers, pass on | 92.9% | — | — |
+| Ceiling: escalate exactly the wrong answers, review | 87.2% | — | — |
+
+- **Its own judgement escalates at about the right rate:** 15.8%, against 16.4% wrong. It always chose review by the 35B thinking on.
+- **Reviewers are anchored.** The 35B thinking on changed 39 of 780 answers (+28 / −2), the 4B thinking on 42 (+19 / −11) and the 4B thinking off 21 (+10 / −4).
+- **Stated confidence is no use as a trigger.** Its AUROC is 0.78, but nearly every answer says 95 or 100.
+- **Still to do:** thresholds and forms fit on the training folds, and a results tab.
+- **Code:** branch `experiments/x4-solve-first`, not pushed yet. Data: `data-claude/x4-solve-first/`.
+
 ## 7. Evaluation rules
 
 - **Statistics.**
@@ -227,6 +244,7 @@ If no worker beats the 35B at any sub-step, delegation can only add cost. That w
   - Further Sonnet coverage needs a decision.
   - The hard set costs about $1.60 a fold; the tool set about $70 a fold, almost all of it BrowseComp-Plus.
   - A local open frontier-class model (e.g. gpt-oss-120b, which fits one Spark) is an alternative bridge.
+- **Serving note.** The 35B orchestrator server froze silently 6 times during long thinking-on reviews in X4, with prefix caching on. Relaunching it with `--no-enable-prefix-caching` was proposed and awaits the user's decision.
 - **Order.**
   1. Analysis-only items and the statistics.
   2. The 35B maj@k / Self-MoA samples (decides framing A or B).

@@ -10,6 +10,7 @@ Tick items off and add new ones as work moves. Done items go to the bottom with 
 ## 1. Housekeeping
 
 - [ ] **P2** Delete the merged remote branches `orchestrator/small-agents`, `experiments/x1-teams` and `experiments/frontier-sonnet`. The permission check blocks `git push --delete` from Claude, so the user runs it.
+- [ ] **P1** Decision for the user: relaunch the 35B server with `--no-enable-prefix-caching`? It froze 6 times during X4's long thinking-on reviews.
 - [ ] **P2** Decide on the stale `refactor/benchmark-registry` branch, PR #2 (repo layout) and PR #1 (Carolyn's).
 
 ## 2. Matched-compute baselines (plan §3)
@@ -78,7 +79,9 @@ Experiments (tool pool, fold 0 pilot first):
 
 ## 5. Escalation (plan §6)
 
-- [ ] **P1** X4 solve first: in progress in the `-x4` worktree (another session). Fold its results into the plan when it reports.
+- [ ] **P1** X4: fit escalation thresholds and help forms on the training folds, and score them on the held-out folds.
+- [ ] **P1** X4 results tab on the results page.
+- [ ] **P1** Push `experiments/x4-solve-first` (fc5a5e9 plus one local commit) and open a PR for review.
 
 ## 6. Evaluation fixes (plan §7)
 
@@ -102,6 +105,7 @@ Experiments (tool pool, fold 0 pilot first):
 
 ## Done
 
+- 2026-11-14: X4 live calls (judgement, confidence and review over 780 hard questions); results in plan §6.
 - 2026-11-13: earlier plans triaged (plan §10). Dropped: X3 per-task selection, agent cards, memory, cost budgets, pool expansion and E10 on single questions. X5 was folded into D3.
 - 2026-11-13: housekeeping. PR #38 merged the frontier harness, the L2 scripts, orchestrator-52's by-dataset builders and these docs. The main checkout was fast-forwarded. The `-hard`, `-x0`, `-x1`, `-docs` and `-frontier` worktrees and their local branches were removed; only `-x4` (X4, running) remains.
 - 2026-11-13: Sonnet frontier baseline, fold 0 (results page "Frontier model" tab).
