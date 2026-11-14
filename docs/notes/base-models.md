@@ -1,5 +1,7 @@
 # Candidate base-model families for the agent pool (survey, 2026-10-19)
 
+**Status (2026-11-13):** reference only. The pool expansion this survey supported was dropped (plan §10); the pool is X1's agents plus the 35B.
+
 **Scope.** The machine is one DGX Spark (GB10, aarch64, 121 GB unified memory) running vLLM 0.21.0 from `nvcr.io/nvidia/vllm:26.05.post1-py3`, which ships transformers 5.6.0. The pool already has Qwen3.5-0.8B/4B, Gemma-4-E4B, Ministral-3-3B (+Reasoning) and Qwen3.6-35B-A3B NVFP4.
 
 **How I checked.**

@@ -26,8 +26,8 @@ Literature notes, each with sources:
 | X1 | 10 fixed expert teams (personas + specialists), 35B orchestrator reads summaries | Done (5 folds × 3 samples, T8 rerun) | Orchestrator beats the vote 10/10 and the best worker 7/10 |
 | L2 | The 35B alone, thinking off, X1 settings | Done | Team beats it on maths, physics and 3 tool tasks; n.s. elsewhere; ~10× tokens |
 | Frontier | Claude Sonnet via headless Claude Code, fold 0, 1 sample | Done; **not to be rerun** (usage) | Beats every open configuration on all 8 benchmarks with far fewer output tokens |
-| X4 | Solve first, then escalate | **In progress** (another session, worktree `-x4`) | — |
-| X3, X5, delegation | Per-task selection; agentic escalation; division of labour | Not started | — |
+| X4 | Solve first, then escalate (35B thinking off answers first) | Live calls done 2026-11-14; fold-fitted rules and results tab pending | Its own judgement plus a 35B-on review: 83.6% → 85.4% at 1.6× compute; always passing on to the 35B on reaches 90.1% at 7.5× |
+| Delegation | Division of labour on tool tasks (includes the old X5) | Not started | — |
 
 ### The matched-compute check that sets the framing
 
@@ -89,7 +89,8 @@ All run on our pool; no published numbers transfer.
 | 35B self-consistency maj@k, thinking off and on | k swept to bracket the team's tokens. Estimate maj@k by averaging over subsets of a larger sample pool. | Missing |
 | Universal Self-Consistency / judge-pick | The 35B picks one worker's answer from the same summaries | Missing |
 | Self-MoA | The 35B orchestrator reads 4 of its own samples instead of the team's | Missing |
-| Cascade and kNN router over the pool | Thresholds and routers fit on the training folds (also answers X3) | Missing |
+| Cascade and kNN router over the pool | Thresholds and routers fit on the training folds | Missing |
+| Symbolic-MoE (optional) | The closest published training-free method on our hard benchmarks: per-question expert recruitment plus an aggregator | Missing; live runs |
 | Frontier | Sonnet fold 0; state model id, effort, harness, date; compare in $ | Have (subset) |
 | Oracle | Any worker right | Have |
 
@@ -108,6 +109,7 @@ Most are replays over saved stage-1 worker answers: only the orchestrator is rer
    - B1: worker error correlation.
    - B2: gain against difficulty.
    - B6: which worker the orchestrator copies.
+   - K\* (the predecessor paper's diversity measure) of each team against its gain: links the paper to its predecessor.
 2. **Orchestrator calls only.**
    - A3: blank, other-question and all-wrong inputs. This is the "is it just re-solving?" control; no prior paper ran it.
    - A4: input order. Workers are always shown personas first and specialists last, so position is confounded with type; this one is required.
@@ -117,8 +119,10 @@ Most are replays over saved stage-1 worker answers: only the orchestrator is rer
    - B3: select vs synthesise.
    - B5: orchestrator thinking on.
    - A5: answer only, summary, or full response (L4, needs a 131k serve).
+   - L10: the orchestrator picks each specialist's thinking mode per task (stage 1 has both modes).
 3. **New generation.**
    - The 35B samples for maj@k and Self-MoA.
+   - L3: solo runs of the specialists' other bases (Gemma-E4B, Ministral-3B-Instruct), so each fine-tune is compared with its own base.
    - L9: larger thinking cap for the specialists.
    - B7: orchestrator episodes with no reports, the re-run control for the tool-task gains.
    - B4: adversarial and weak members.
@@ -143,7 +147,7 @@ Hard questions are atomic: a chain there is solve → review → revise, which E
 | Arm | Set-up | Tests |
 |---|---|---|
 | D2 | The 35B manages and delegates sub-steps to the team's specialists (e.g. Occamy for WorkBench actions, Agents-A1 or BigBang for search) | Division of labour vs parallel answering, at matched tokens |
-| D3 | A small specialist drives and can `ask_expert` the 35B | The cheap direction: most tokens on the small model |
+| D3 | A small specialist drives and can `ask_expert` the 35B, or hands the 35B its transcript on failure (the old X5) | The cheap direction: most tokens on the small model |
 | D4 | Fixed chain: the 35B plans → specialist executes → the 35B checks | Fixed vs chosen decomposition |
 | C1 | D2 with the 35B delegating to itself | Heterogeneity vs extra turns |
 | C2 | D2 with a random worker per call | Whether choosing *which* agent matters |
@@ -162,7 +166,7 @@ If no worker beats the 35B at any sub-step, delegation can only add cost. That w
 
 **Serving.** The 35B on one Spark, the specialist on the other. Finance-Agent on one box only (rate locks).
 
-## 6. Selection and escalation (from the v2 plan)
+## 6. Escalation: solve first (X4)
 
 **X4 Solve first.** In progress in `-x4`. The orchestrator answers alone, then escalates.
 - Helpers: the same model thinking on, the 35B, or a specialist.
@@ -172,16 +176,25 @@ If no worker beats the 35B at any sub-step, delegation can only add cost. That w
   - escalation rate;
   - trigger AUROC;
   - fixes and breaks by help form;
-  - accuracy against cost vs decide-first and the cascade.
+  - accuracy against cost vs the cascade and the matched-compute baselines.
 - Scoring: replay from the X0 matrix, with only judgement and review calls made live.
 
-**X3 Per-task selection (decide first).** One call returns a direct answer or a configuration: the agents and topology, sequential steps composed per task (Q31, Q34).
-- The orchestrator sees an agent card per agent: what it is, its training-fold accuracy by source, and its cost.
-- It runs at stated soft cost budgets.
-- It shares its baselines with §3: cascade and kNN router.
-- Start only if X4 and the matched-compute baselines leave room.
+**Results so far** (780 hard questions; compute = tokens × active parameters, per question):
 
-**X5 Agentic whole-task escalation (Q42).** The 4B runs the task; on failure or self-judged doubt it retries with the 35B or hands over its transcript. It overlaps with §5 D3; build them together.
+| Policy | Accuracy | Compute | Fixed / broke |
+|---|---|---|---|
+| Never escalate (the 35B thinking off) | 83.6% | 8,109 | — |
+| Own judgement → review by the 35B thinking on | 85.4% | 13,307 | +14 / −0 |
+| Own judgement → pass on to the 35B thinking on | 86.7% | 24,429 | +29 / −5 |
+| Always pass on to the 35B thinking on | 90.1% | 60,806 | — |
+| Ceiling: escalate exactly the wrong answers, pass on | 92.9% | — | — |
+| Ceiling: escalate exactly the wrong answers, review | 87.2% | — | — |
+
+- **Its own judgement escalates at about the right rate:** 15.8%, against 16.4% wrong. It always chose review by the 35B thinking on.
+- **Reviewers are anchored.** The 35B thinking on changed 39 of 780 answers (+28 / −2), the 4B thinking on 42 (+19 / −11) and the 4B thinking off 21 (+10 / −4).
+- **Stated confidence is no use as a trigger.** Its AUROC is 0.78, but nearly every answer says 95 or 100.
+- **Still to do:** thresholds and forms fit on the training folds, and a results tab.
+- **Code:** branch `experiments/x4-solve-first`, not pushed yet. Data: `data-claude/x4-solve-first/`.
 
 ## 7. Evaluation rules
 
@@ -213,10 +226,9 @@ If no worker beats the 35B at any sub-step, delegation can only add cost. That w
 - Non-interacting topologies are scored by **replay** ([ADR-0002](adr/0002-replay-for-non-interacting-topologies.md)).
 - No training of our own ([ADR-0003](adr/0003-no-training-of-our-own.md)).
 - **Sampling (Q40).** Vendor-recommended, never below T 0.1. Each result set states its settings.
-- **Splits.** X0's 5 folds, stratified by source, split seed 0. Every learned baseline and agent card is fit on the training folds only.
+- **Splits.** X0's 5 folds, stratified by source, split seed 0. Every learned baseline, and the CV-chosen best worker, is fit on the training folds only.
 - **Answer matrix.** Every agent × question × k. k = 3 for thinking-off agents; thinking-on agents have 1 sample so far.
-- **Personas** join the pool only by beating the neutral prompt answering alone (Q35).
-- **Specialists** must load in our vLLM image (0.21; text-only Qwen3.5/3.6 checkpoints need a wrapper or vLLM ≥ 0.27) and pass a gate against their base.
+- **No more pool building.** The pool is X1's agents plus the 35B; new models only as baselines (e.g. an open frontier-class model). Our vLLM image is 0.21: text-only Qwen3.5/3.6 checkpoints need a wrapper or vLLM ≥ 0.27.
 - **Debate** is dropped (5× vote's tokens for +0.5 points).
 - **Web search.** Finance-Agent reaches only SEC, Wikipedia and Wikidata, through machine-wide rate locks. Run it on one box at a time.
 - **Frontier runs.** No further Claude CLI runs without the user's go-ahead: fold 0 took four 5-hour usage windows.
@@ -232,6 +244,7 @@ If no worker beats the 35B at any sub-step, delegation can only add cost. That w
   - Further Sonnet coverage needs a decision.
   - The hard set costs about $1.60 a fold; the tool set about $70 a fold, almost all of it BrowseComp-Plus.
   - A local open frontier-class model (e.g. gpt-oss-120b, which fits one Spark) is an alternative bridge.
+- **Serving note.** The 35B orchestrator server froze silently 6 times during long thinking-on reviews in X4, with prefix caching on. Relaunching it with `--no-enable-prefix-caching` was proposed and awaits the user's decision.
 - **Order.**
   1. Analysis-only items and the statistics.
   2. The 35B maj@k / Self-MoA samples (decides framing A or B).
@@ -239,3 +252,32 @@ If no worker beats the 35B at any sub-step, delegation can only add cost. That w
   4. The delegation pilot.
   5. The independent judge.
   6. Frontier coverage, if approved.
+
+## 10. Earlier plans: what was kept
+
+Triaged 2026-11-13. The sources are the plan page "Orchestration Meets Agent Scaling" (E1–E14, October), the v2 plan (X2–X5, pool, agent cards) and X1's later list (L1–L10).
+
+| Kept as | From |
+|---|---|
+| A5 handoff format | E12, L4 |
+| A6 4B orchestrator (a weak model checking strong ones; D3 is the reverse) | E14, L1 |
+| A7 subsets and team size | E9 (n > 1) |
+| X4, and D3 | E4, E13, X4, X5 |
+| Delegation D4 (tool tasks only) | E10 |
+| Cascade and kNN router baselines | E1, #22, #23 |
+| K\* analysis | E7 |
+| L3, L9, L10 | X1 later list |
+
+**Done:**
+- E2 (selection × topology);
+- E8 (X1 teams mix families);
+- E9 at n = 1;
+- X2 (inside X1 stage 1);
+- the persona gate (personas add nothing).
+
+**Dropped:**
+- **E3, E5, E6, E11, X3, agent cards, continual memory and cost budgets.** They all improve a selector that learns which agents to pick, and choosing agents did no better than random.
+- **E10 on single questions.** Chains there were no better than voting in E2.
+- **Pool expansion.** Llama, Granite, Nemotron, Qwen2.5 hosts and the second wave of specialists (L5).
+- **The ToM partner, and L6–L8.**
+

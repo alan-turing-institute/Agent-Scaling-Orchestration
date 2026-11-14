@@ -15,7 +15,7 @@ what comes next is in [`plan.md`](plan.md) and [`todo.md`](todo.md).
 ## 1. Design as run
 
 - **A fixed team, centralized topology.** Workers answer alone; the orchestrator reads all their answers and
-  gives the team's answer (`team_config.centralized`). Nothing is chosen per task; that is X3.
+  gives the team's answer (`team_config.centralized`). Nothing is chosen per task (that was X3, since dropped).
 - **One run gives everything.** A worker that reads nothing *is* answering solo, so the same run
   yields each persona's and specialist's solo answer (X1's and X2's comparisons against the neutral
   base), the majority vote over workers (by **replay**, if needed), and the orchestrator's answer. No separate
